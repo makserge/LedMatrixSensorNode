@@ -1,9 +1,8 @@
-#include "co2sensor.h"
+#include "co2_sensor.h"
 
 Co2Sensor co2Sensor;
 
 void Co2Sensor::begin() {
-    Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN); 
     _scd4x.begin(Wire, CO2_SENSOR_ADDRESS);
     _scd4x.stopPeriodicMeasurement();
     _scd4x.startPeriodicMeasurement();

@@ -1,4 +1,4 @@
-#include "temphumiditysensor.h"
+#include "temp_humidity_sensor.h"
 
 TempHumiditySensor tempHumSensor;
 

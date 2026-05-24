@@ -1,4 +1,4 @@
-#include "lightsensor.h"
+#include "light_sensor.h"
 
 LightSensor lightSensor;
 

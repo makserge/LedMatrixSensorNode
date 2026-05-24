@@ -2,9 +2,7 @@
 #define CONSTANTS_H
 
 #include <Arduino.h>
-
-#define I2C_SDA_PIN 12 
-#define I2C_SCL_PIN 7
+#include "pins.h"
 
 static const char* const MQTT_HOST = "192.168.8.100";
 static const uint16_t MQTT_PORT = 1883;
@@ -27,6 +25,8 @@ static const uint8_t CO2_SENSOR_ADDRESS = 0x62;
 
 static const char* const WIFI_PORTAL_NAME = "Led Matrix Node";
 static const uint16_t WIFI_CONFIG_TIMEOUT = 180; // 3 minutes
+
+static const uint8_t DISPLAY_BRIGHTNESS = 20;
 
 static const uint32_t SENSOR_TASK_STACK_SIZE = 4096;
 static const uint8_t SENSOR_TASK_PRIORITY = 1;

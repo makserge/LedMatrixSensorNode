@@ -1,7 +1,4 @@
-#include "mqttmanager.h"
-#include "co2sensor.h"
-#include "lightsensor.h"
-#include "temphumiditysensor.h"
+#include "mqtt_manager.h"
 
 MqttManager mqttManager;
 
