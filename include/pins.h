@@ -26,9 +26,9 @@
 //#define RADAR_BAUD   256000
 
 // UI Elements
-//#define BEEPER_PIN   9 // D10
-//#define BUTTON1_PIN   13 // D17
-//#define BUTTON2_PIN   12 // D18
+#define BEEPER_PIN          13
+#define MODE_BUTTON_PIN     D9 // D9
+#define SWITCH_OFF_LED_PIN  D10 // D10
 
 //#define RADAR_PRESENCE_PIN   21 // D19
 

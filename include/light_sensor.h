@@ -3,21 +3,24 @@
 
 #include <Arduino.h>
 #include <BH1750.h>
-#include <Wire.h>
 #include "constants.h"
+#include "led_matrix.h"
 
 class LightSensor {
 public:
     void begin();
     void update();
-    float getLux() const { return _currentLux; }
+    float getCurrentLux() const { return _currentLux; }
+    uint8_t getMatrixBrightness() const { return _matrixBrightness; }
 
 private:
-    float _currentLux = 0.0f;
     BH1750 _lightMeter;
+    float _currentLux = 0.0f;
+    uint8_t _matrixBrightness = 32;
 };
 
 extern LightSensor lightSensor;
+
 void initLightSensorTask();
 
 #endif

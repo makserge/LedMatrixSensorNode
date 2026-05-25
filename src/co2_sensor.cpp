@@ -24,6 +24,7 @@ void Co2Sensor::update() {
 }
 
 void co2SensorTask(void *pvParameters) {
+    Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN); 
     co2Sensor.begin();
 
     for (;;) {
