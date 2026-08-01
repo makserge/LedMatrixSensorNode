@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>24x16 RLE Icon Editor & MQTT Publisher (2:1 Pixels)</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+  <h1>24x16 RLE Icon Editor</h1>
+  <p class="subtitle">Draw manually, convert images, or import old strings back to editable 2:1 rectangular pixels.</p>
+
+  <div class="app-container">
+    
+    <!-- MQTT Client Profile Configuration Block -->
+    <div class="config-grid">
+      <div class="input-group">
+        <label for="mqttHost">MQTT Host / IP</label>
+        <input type="text" id="mqttHost" value="x.x.x.x" placeholder="e.g. 192.168.1.50">
+      </div>
+      <div class="input-group">
+        <label for="mqttUser">Username</label>
+        <input type="text" id="mqttUser" value="user" placeholder="MQTT User">
+      </div>
+      <div class="input-group">
+        <label for="mqttPass">Password</label>
+        <input type="password" id="mqttPass" value="pass" placeholder="MQTT Password">
+      </div>
+    </div>
+
+    <!-- Drag & Drop Converter Component Box -->
+    <div class="drop-zone" id="dropZone">
+      <div class="drop-zone-content" id="dropZoneContent">
+        <span class="drop-zone-text">Drop an image here or click to upload (Auto-scales to 24x16 2:1 Matrix)</span>
+      </div>
+      <img src="" alt="Preview" class="thumb-preview" id="thumbPreview" style="display: none;">
+      <input type="file" id="fileInput" accept="image/*" style="display: none;">
+    </div>
+
+    <div class="toolbar">
+      <div class="color-picker-wrapper">
+        <label for="colorPicker">Brush Color:</label>
+        <input type="color" id="colorPicker" value="#FFFFFF">
+      </div>
+      <button id="clearBtn">Clear (Black)</button>
+    </div>
+
+    <!-- Enhanced Grid Container with 2:1 aspect bounds mapping -->
+    <div class="grid-container">
+      <div class="grid" id="pixelGrid"></div>
+    </div>
+
+    <div class="output-section">
+      <!-- Standard Raw Code Out & Back-Converter Input Section -->
+      <div class="output-group">
+        <div class="output-header">
+          <label for="rleOutput">Raw RLE Hex Code / Import Stream:</label>
+          <div style="display: flex; gap: 8px;">
+            <button id="importBtn" class="btn-sm" style="background-color: #10b981;">Import & Decode to Grid</button>
+            <button id="copyRawBtn" class="btn-sm">Copy Code</button>
+          </div>
+        </div>
+        <textarea id="rleOutput" rows="2" placeholder="Paste an RLE string or complete command here and click Import..."></textarea>
+      </div>
+
+      <!-- Prepared Command Line Script Code Out -->
+      <div class="output-group">
+        <div class="output-header">
+          <label for="mqttOutput">Mosquitto Pub Shell Command:</label>
+          <button id="copyMqttBtn" class="btn-sm primary">Copy Command</button>
+        </div>
+        <textarea id="mqttOutput" rows="4" readonly></textarea>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
