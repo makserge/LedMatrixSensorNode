@@ -437,7 +437,7 @@
         "uuid": "366c615b-9c48-48b1-87b1-faab6a67cc80"
       }
     ],
-    "used_designators": "U8,J1,J8-14",
+    "used_designators": "U7-8,J1,J8-14",
     "variants": []
   },
   "sheets": [
