@@ -9,5 +9,7 @@ void renderTemperatureView(MatrixPanel_I2S_DMA* matrixPtr, uint16_t color);
 void renderCo2View(MatrixPanel_I2S_DMA* matrixPtr, uint16_t currentCo2, uint16_t normalColor, uint16_t alertColor);
 void renderSpectrumBarsView(uint8_t* currentBars, uint8_t* currentPeaks, uint16_t barColor, uint16_t peakColor);
 void renderScrollingAlertView(MatrixPanel_I2S_DMA* matrixPtr, int& scrollX, unsigned long& lastScrollTime, uint16_t color);
+void renderOtaProgressView(MatrixPanel_I2S_DMA* matrixPtr, uint8_t percent, uint16_t color);
+void renderIconView(MatrixPanel_I2S_DMA* matrixPtr);
 
 #endif

@@ -6,6 +6,8 @@
 #include <ElegantOTA.h>
 #include <ESPAsyncWebServer.h>
 #include "constants.h"
+#include "display_manager.h"
+#include "task_registry.h"
 
 void initWiFiManagement();
 void updateWiFiManagement();

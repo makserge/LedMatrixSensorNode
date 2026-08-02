@@ -3,8 +3,12 @@
 
 #include <Arduino.h>
 #include <BH1750.h>
+#include <math.h>
 #include "constants.h"
+#include "display_manager.h"
+#include "i2c_mutex.h"
 #include "led_matrix.h"
+#include "task_registry.h"
 
 class LightSensor {
 public:

@@ -5,6 +5,8 @@
 #include <SensirionI2cScd4x.h>
 #include <Wire.h>
 #include "constants.h"
+#include "i2c_mutex.h"
+#include "task_registry.h"
 
 class Co2Sensor {
 public:
@@ -20,6 +22,7 @@ private:
     float _currentTemp = 0.0f;
     float _currentHum = 0.0f;
     SensirionI2cScd4x _scd4x;
+    uint32_t _lastDataReadyMs = 0;
 };
 
 extern Co2Sensor co2Sensor;

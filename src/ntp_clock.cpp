@@ -1,6 +1,3 @@
-#include <Arduino.h>
-#include "time.h"
-#include "constants.h"
 #include "ntp_clock.h"
 
 QueueHandle_t clockQueue = NULL;
@@ -11,8 +8,9 @@ void NtpClock::begin() {
 
 void NtpClock::update(bool showColon) {
     struct tm timeinfo;
+    ClockMessage msg;
+
     if (getLocalTime(&timeinfo)) {
-        ClockMessage msg;
         int currentHour = timeinfo.tm_hour;
         int currentMinute = timeinfo.tm_min;
 
@@ -22,7 +20,7 @@ void NtpClock::update(bool showColon) {
             msg.text[2] = '0' + (currentMinute / 10);
             msg.text[3] = '0' + (currentMinute % 10);
             msg.text[4] = 0;
-            msg.startX = 2; 
+            msg.startX = 2;
         } else {
             msg.text[0] = '0' + (currentHour / 10);
             msg.text[1] = '0' + (currentHour % 10);
@@ -30,12 +28,17 @@ void NtpClock::update(bool showColon) {
             msg.text[3] = '0' + (currentMinute / 10);
             msg.text[4] = '0' + (currentMinute % 10);
             msg.text[5] = 0;
-            msg.startX = 0; 
+            msg.startX = 0;
         }
+        msg.synced = true;
+    } else {
+        msg.text[0] = 0;
+        msg.startX = 0;
+        msg.synced = false;
+    }
 
-        if (clockQueue != NULL) {
-            xQueueOverwrite(clockQueue, &msg);
-        }
+    if (clockQueue != NULL) {
+        xQueueOverwrite(clockQueue, &msg);
     }
 }
 
@@ -55,12 +58,7 @@ void initNtpClockTask() {
     clockQueue = xQueueCreate(CLOCK_QUEUE_LENGTH, sizeof(ClockMessage));
 
     xTaskCreatePinnedToCore(
-        ntpClockTask,
-        "NtpClockTask",
-        CLOCK_TASK_STACK_SIZE,
-        NULL,
-        CLOCK_TASK_PRIORITY,
-        NULL,
-        1
+        ntpClockTask, "NtpClockTask", CLOCK_TASK_STACK_SIZE, NULL,
+        CLOCK_TASK_PRIORITY, &ntpClockTaskHandle, 1   // was NULL
     );
 }

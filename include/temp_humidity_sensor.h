@@ -5,6 +5,8 @@
 #include <HTU21D.h> 
 #include <Wire.h>
 #include "constants.h"
+#include "i2c_mutex.h"
+#include "task_registry.h"
 
 class TempHumiditySensor {
 public:

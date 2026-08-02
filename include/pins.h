@@ -20,16 +20,16 @@
 #define I2C_SDA_PIN 12 
 #define I2C_SCL_PIN 7
 
-// LD2450 Radar (Hardware Serial 1)
-//#define RADAR_RX_PIN 41 // D14
-//#define RADAR_TX_PIN 42 // D15
-//#define RADAR_BAUD   256000
-
 // UI Elements
 #define BEEPER_PIN          13
 #define MODE_BUTTON_PIN     D9 // D9
 #define SWITCH_OFF_LED_PIN  D10 // D10
 
-//#define RADAR_PRESENCE_PIN   21 // D19
+#define RADAR_PRESENCE_PIN   D1
+
+// LD2450 Radar (Hardware Serial 1)
+#define RADAR_RX_PIN 11
+#define RADAR_TX_PIN D7
+#define RADAR_BAUD   256000
 
 #endif

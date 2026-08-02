@@ -8,15 +8,18 @@
 
 #include "constants.h"
 #include "co2_sensor.h"
-#include "temp_humidity_sensor.h"
-#include "light_sensor.h"
 #include "display_manager.h"
+#include "ld2412_sensor.h"
+#include "ld2450_sensor.h"
+#include "light_sensor.h"
+#include "temp_humidity_sensor.h"
 
 class MqttManager {
 public:
     void begin();
     void update();
     void publishSensorData();
+    void publishRadarData();
     bool isConnected();
     void setCallback();
 

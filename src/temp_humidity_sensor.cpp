@@ -3,13 +3,19 @@
 TempHumiditySensor tempHumSensor;
 
 void TempHumiditySensor::begin() {
+    xSemaphoreTake(i2cMutex, portMAX_DELAY);
     _htu.begin();
+    xSemaphoreGive(i2cMutex);
 }
 
 void TempHumiditySensor::update() {
-    float temp = _htu.readTemperature();
-    float hum = _htu.readHumidity();
-    
+    float temp, hum;
+
+    xSemaphoreTake(i2cMutex, portMAX_DELAY);
+    temp = _htu.readTemperature();
+    hum = _htu.readHumidity();
+    xSemaphoreGive(i2cMutex);
+
     if (hum < 101.0f && temp > -40.0f) {
         _currentTemp = temp;
         _currentHum = hum;
@@ -28,12 +34,7 @@ void tempHumiditySensorTask(void *pvParameters) {
 
 void initTempHumiditySensorTask() {
     xTaskCreatePinnedToCore(
-        tempHumiditySensorTask,
-        "TempHumTask",
-        SENSOR_TASK_STACK_SIZE,
-        NULL,
-        SENSOR_TASK_PRIORITY,
-        NULL,
-        0
+        tempHumiditySensorTask, "TempHumTask", SENSOR_TASK_STACK_SIZE, NULL,
+        SENSOR_TASK_PRIORITY, &tempHumTaskHandle, 0   // was NULL
     );
 }
