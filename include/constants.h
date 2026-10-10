@@ -142,19 +142,19 @@ static const float BALLISTICS_MAX_LEVEL = 16.0f;
 static const float SPECTRUM_PEAK_GRAVITY_STEPS_PER_S2 = 220.0f;
 
 static const unsigned long MQTT_MSG_DURATION_MS = 15000;
-static const uint16_t CO2_WARNING_THRESHOLD = 1000;
-static const uint16_t CO2_ALARM_LOW_THRESHOLD = 900;
-static const uint8_t CO2_ALARM_BEEP_COUNT = 5;
+static const uint16_t CO2_WARNING_THRESHOLD = 1200;
+static const uint16_t CO2_ALARM_LOW_THRESHOLD = 1000;
+static const uint8_t CO2_ALARM_BEEP_COUNT = 3;
 
 static const unsigned long DISPLAY_AUTO_RETURN_DELAY_MS = 5000;
 static const unsigned long BEEP_DURATION_MS = 100;
 
-static const unsigned long CO2_ALARM_INTERVAL_MS = 30000;
+static const unsigned long CO2_ALARM_INTERVAL_MS = 600000;
 static const int CO2_ALARM_START_HOUR = 8;
-static const int CO2_ALARM_END_HOUR = 22;
+static const int CO2_ALARM_END_HOUR = 21;
 static const unsigned long CO2_ALARM_DISPLAY_DURATION_MS = 10000;
-static const unsigned long CO2_ALARM_BEEP_ON_MS = 1000;
-static const unsigned long CO2_ALARM_BEEP_OFF_MS = 1000;
+static const unsigned long CO2_ALARM_BEEP_ON_MS = 500;
+static const unsigned long CO2_ALARM_BEEP_OFF_MS = 500;
 static const unsigned long CO2_ALARM_POPUP_SAFETY_MS = 20000;
 
 #endif
