@@ -1,9 +1,21 @@
 #include "led_matrix.h"
+#include "constants.h"
+#include "pins.h"
 
-#define G1_MASK   (1UL << 4)
-#define CLK_MASK  (1UL << 5)
-#define B1_MASK   (1UL << 10)
-#define R1_MASK   (1UL << (42 - 32)) 
+// The shift loop writes the GPIO set/clear registers directly, so its data and clock
+// pins are compile-time constants taken from pins.h: each one lands in the bank it
+// lives in (OUT for GPIO 0-31, OUT1 for 32-48). Masks of the other bank are 0 and
+// their register writes compile away.
+static constexpr uint32_t gpioBankMask(int pin, bool highBank) {
+  return ((pin >= 32) == highBank) ? (1UL << (pin & 31)) : 0;
+}
+static_assert(R1_PIN >= 0 && R1_PIN <= 48 && G1_PIN >= 0 && G1_PIN <= 48 &&
+              B1_PIN >= 0 && B1_PIN <= 48 && CLK_PIN >= 0 && CLK_PIN <= 48,
+              "panel data/clock pins must be ESP32-S3 GPIOs 0-48");
+static constexpr uint32_t R1_MASK_LO  = gpioBankMask(R1_PIN, false),  R1_MASK_HI  = gpioBankMask(R1_PIN, true);
+static constexpr uint32_t G1_MASK_LO  = gpioBankMask(G1_PIN, false),  G1_MASK_HI  = gpioBankMask(G1_PIN, true);
+static constexpr uint32_t B1_MASK_LO  = gpioBankMask(B1_PIN, false),  B1_MASK_HI  = gpioBankMask(B1_PIN, true);
+static constexpr uint32_t CLK_MASK_LO = gpioBankMask(CLK_PIN, false), CLK_MASK_HI = gpioBankMask(CLK_PIN, true);
 
 LedMatrix::LedMatrix(const HUB75_I2S_CFG& mxconfig) : _config(mxconfig), _bufferMux(portMUX_INITIALIZER_UNLOCKED) {
   _brightness = 2; 
@@ -32,6 +44,10 @@ LedMatrix::~LedMatrix() {
 }
 
 bool LedMatrix::begin() {
+  if (_config.pins.r1 != R1_PIN || _config.pins.g1 != G1_PIN ||
+      _config.pins.b1 != B1_PIN || _config.pins.clk != CLK_PIN) {
+    Serial.println("[Matrix] R1/G1/B1/CLK differ from pins.h - the shift loop drives the pins.h ones");
+  }
   pinMode(_config.pins.clk, OUTPUT); pinMode(_config.pins.lat, OUTPUT);
   pinMode(_config.pins.r1, OUTPUT); pinMode(_config.pins.g1, OUTPUT); pinMode(_config.pins.b1, OUTPUT);
   pinMode(_config.pins.a, OUTPUT); pinMode(_config.pins.b, OUTPUT); pinMode(_config.pins.c, OUTPUT);
@@ -47,7 +63,10 @@ bool LedMatrix::begin() {
   swapBuffers(); 
 
   if (_displayTaskHandle == NULL) {
-    xTaskCreatePinnedToCore(this->displayTaskEngine, "DisplayTask", 4096, this, 5, &_displayTaskHandle, 1);
+    // Not "DisplayTask": that is the view/render task (display_manager.cpp), and a shared
+    // name makes stack-overflow panics and task lists ambiguous.
+    xTaskCreatePinnedToCore(this->displayTaskEngine, "MatrixEngine", MATRIX_ENGINE_TASK_STACK_SIZE, this,
+                            MATRIX_ENGINE_TASK_PRIORITY, &_displayTaskHandle, 1);
   }
   return true;
 }
@@ -86,23 +105,40 @@ void LedMatrix::swapBuffers() {
   portEXIT_CRITICAL(&_bufferMux);
 }
 
+// Every character takes one cell: one the font lacks is drawn as the placeholder
+// rather than dropped, so "-5" can't turn into "5" and a text's drawn width is
+// always length * FONT_4X14_CELL_WIDTH.
+static int glyphIndex(uint16_t c) {
+  if (c >= 'a' && c <= 'z') c -= 'a' - 'A';
+  if (c >= '0' && c <= '9') return c - '0';
+  if (c >= 'A' && c <= 'Z') return (c - 'A') + 10;
+  switch (c) {
+    case ':':  return 36;
+    case '*':  return 37; // degree sign
+    case '.':  return 38;
+    case '-':  return 39;
+    case '!':  return 40;
+    case '?':  return 41;
+    case '/':  return 42;
+    case '%':  return 43;
+    case '+':  return 44;
+    case ',':  return 45;
+    case '\'': return 46;
+    default:   return FONT_4X14_UNKNOWN;
+  }
+}
+
 void LedMatrix::drawText4x14(const uint16_t* text, int length, int startX, int startY, uint16_t color) {
   int currentX = startX;
   for (int i = 0; i < length; i++) {
     uint16_t c = text[i];
     if (c == ' ' || c == 0x0020) {
       for (int rowOffset = 0; rowOffset < 14; rowOffset++) {
-        for (int colOffset = 0; colOffset < 5; colOffset++) drawPixel(currentX + colOffset, startY + rowOffset, 0x0000);
+        for (int colOffset = 0; colOffset < FONT_4X14_CELL_WIDTH; colOffset++) drawPixel(currentX + colOffset, startY + rowOffset, 0x0000);
       }
-      currentX += 5; continue;
+      currentX += FONT_4X14_CELL_WIDTH; continue;
     }
-    int fontIndex = -1;
-    if (c >= '0' && c <= '9')         fontIndex = c - '0';       
-    else if (c >= 'A' && c <= 'Z')    fontIndex = (c - 'A') + 10; 
-    else if (c == ':')                fontIndex = 36;            
-    else if (c == '*')                fontIndex = 37;            
-    else if (c == '.')                fontIndex = 38;            
-    else continue;                  
+    int fontIndex = glyphIndex(c);
 
     uint16_t colData0 = 0;
     uint16_t colData1 = 0;
@@ -132,27 +168,32 @@ void LedMatrix::drawText4x14(const uint16_t* text, int length, int startX, int s
       
       drawPixel(currentX + 4, startY + rowOffset, 0x0000);
     }
-    currentX += 5; 
+    currentX += FONT_4X14_CELL_WIDTH;
   }
 }
 
-void IRAM_ATTR LedMatrix::shiftOutRGBParallel(int clk, int rPin, int gPin, int bPin, uint16_t rData, uint16_t gData, uint16_t bData) {
+void IRAM_ATTR LedMatrix::shiftOutRGBParallel(uint16_t rData, uint16_t gData, uint16_t bData) {
   for (int i = 0; i < 16; i++) {
     uint32_t low_set = 0; uint32_t low_clear = 0;
     uint32_t high_set = 0; uint32_t high_clear = 0;
 
-    if ((gData >> i) & 0x01) low_set |= G1_MASK; else low_clear |= G1_MASK;
-    if ((bData >> i) & 0x01) low_set |= B1_MASK; else low_clear |= B1_MASK;
-    if ((rData >> i) & 0x01) high_set |= R1_MASK; else high_clear |= R1_MASK;
+    if ((gData >> i) & 0x01) { low_set |= G1_MASK_LO; high_set |= G1_MASK_HI; }
+    else                     { low_clear |= G1_MASK_LO; high_clear |= G1_MASK_HI; }
+    if ((bData >> i) & 0x01) { low_set |= B1_MASK_LO; high_set |= B1_MASK_HI; }
+    else                     { low_clear |= B1_MASK_LO; high_clear |= B1_MASK_HI; }
+    if ((rData >> i) & 0x01) { low_set |= R1_MASK_LO; high_set |= R1_MASK_HI; }
+    else                     { low_clear |= R1_MASK_LO; high_clear |= R1_MASK_HI; }
 
     if (low_set)    REG_WRITE(GPIO_OUT_W1TS_REG, low_set);
     if (low_clear)  REG_WRITE(GPIO_OUT_W1TC_REG, low_clear);
     if (high_set)   REG_WRITE(GPIO_OUT1_W1TS_REG, high_set);
     if (high_clear) REG_WRITE(GPIO_OUT1_W1TC_REG, high_clear);
 
-    REG_WRITE(GPIO_OUT_W1TS_REG, CLK_MASK);
+    if (CLK_MASK_LO) REG_WRITE(GPIO_OUT_W1TS_REG, CLK_MASK_LO);
+    if (CLK_MASK_HI) REG_WRITE(GPIO_OUT1_W1TS_REG, CLK_MASK_HI);
     asm volatile("nop; nop; nop; nop; nop; nop; nop; nop; nop; nop; nop; nop;");
-    REG_WRITE(GPIO_OUT_W1TC_REG, CLK_MASK);
+    if (CLK_MASK_LO) REG_WRITE(GPIO_OUT_W1TC_REG, CLK_MASK_LO);
+    if (CLK_MASK_HI) REG_WRITE(GPIO_OUT1_W1TC_REG, CLK_MASK_HI);
     asm volatile("nop; nop; nop; nop; nop; nop;");
   }
 }
@@ -186,7 +227,7 @@ void IRAM_ATTR LedMatrix::displayTaskEngine(void* pvParameters) {
       fastPinWrite(panel->_config.pins.b, ((subAddress >> 1) & 0x01));
       fastPinWrite(panel->_config.pins.c, ((subAddress >> 2) & 0x01));
 
-      shiftOutRGBParallel(panel->_config.pins.clk, panel->_config.pins.r1, panel->_config.pins.g1, panel->_config.pins.b1, rDisp[col], gDisp[col], bDisp[col]);
+      shiftOutRGBParallel(rDisp[col], gDisp[col], bDisp[col]);
 
       fastPinWrite(panel->_config.pins.lat, HIGH);
       asm volatile("nop; nop; nop; nop; nop; nop; nop; nop; nop; nop; nop; nop; nop; nop; nop; nop;");

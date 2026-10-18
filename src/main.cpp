@@ -10,8 +10,9 @@
 #include "mqtt_manager.h"
 #include "ntp_clock.h"
 #include "ld2412_sensor.h"
-#include "ld2450_sensor.h"
+#include "ld2454_sensor.h"
 #include "i2c_mutex.h"
+#include "web_server_ui.h"
 
 void setup() {
     Serial.begin(115200);
@@ -28,9 +29,12 @@ void setup() {
     initNtpClockTask();
     initLightSensorTask();
     initLd2412SensorTask();
-    initLd2450SensorTask();
+    initLd2454SensorTask();
     initMqttTask();
 }
 
 void loop() {
+    webUi.loop(); // web UI + OTA; a successful upload reboots from inside this call
+    updateWiFiManagement();
+    vTaskDelay(pdMS_TO_TICKS(5));
 }

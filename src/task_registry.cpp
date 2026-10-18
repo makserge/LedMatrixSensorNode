@@ -1,46 +1,22 @@
 #include "task_registry.h"
 
-TaskHandle_t co2TaskHandle = NULL;
-TaskHandle_t tempHumTaskHandle = NULL;
-TaskHandle_t lightTaskHandle = NULL;
-TaskHandle_t ld2412TaskHandle = NULL;
-TaskHandle_t ld2450TaskHandle = NULL;
-TaskHandle_t ntpClockTaskHandle = NULL;
-TaskHandle_t mqttTaskHandle = NULL;
-TaskHandle_t streamIngestTaskHandle = NULL;
-TaskHandle_t ballisticsTaskHandle = NULL;
-TaskHandle_t spectrumViewTaskHandle = NULL;
-
-static void suspendIfRunning(TaskHandle_t handle) {
-    if (handle != NULL) vTaskSuspend(handle);
-}
-
-static void resumeIfSuspended(TaskHandle_t handle) {
-    if (handle != NULL) vTaskResume(handle);
-}
+// Tasks park themselves instead of being vTaskSuspend()-ed from the OTA callback:
+// a task suspended mid-call can hold the lwIP core lock (or the I2C/UART mutex)
+// and freeze the network stack in the middle of the upload.
+static volatile bool otaPauseRequested = false;
 
 void pauseBackgroundTasksForOta() {
-    suspendIfRunning(co2TaskHandle);
-    suspendIfRunning(tempHumTaskHandle);
-    suspendIfRunning(lightTaskHandle);
-    suspendIfRunning(ld2412TaskHandle);
-    suspendIfRunning(ld2450TaskHandle);
-    suspendIfRunning(ntpClockTaskHandle);
-    suspendIfRunning(mqttTaskHandle);
-    suspendIfRunning(streamIngestTaskHandle);
-    suspendIfRunning(ballisticsTaskHandle);
-    suspendIfRunning(spectrumViewTaskHandle);
+    otaPauseRequested = true;
 }
 
 void resumeBackgroundTasksAfterOta() {
-    resumeIfSuspended(co2TaskHandle);
-    resumeIfSuspended(tempHumTaskHandle);
-    resumeIfSuspended(lightTaskHandle);
-    resumeIfSuspended(ld2412TaskHandle);
-    resumeIfSuspended(ld2450TaskHandle);
-    resumeIfSuspended(ntpClockTaskHandle);
-    resumeIfSuspended(mqttTaskHandle);
-    resumeIfSuspended(streamIngestTaskHandle);
-    resumeIfSuspended(ballisticsTaskHandle);
-    resumeIfSuspended(spectrumViewTaskHandle);
+    otaPauseRequested = false;
+}
+
+bool waitWhileOtaPaused() {
+    if (!otaPauseRequested) return false;
+    while (otaPauseRequested) {
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
+    return true;
 }

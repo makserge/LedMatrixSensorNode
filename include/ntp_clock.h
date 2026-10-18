@@ -22,6 +22,9 @@ public:
 
 extern QueueHandle_t clockQueue;
 
+// Local time, if it has been set (NTP fix since boot). Never waits.
+bool readLocalTime(struct tm* info);
+
 void initNtpClockTask();
 
 #endif

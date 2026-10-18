@@ -7,8 +7,14 @@ DisplayManager displayManager;
 DisplayView DisplayManager::_currentView = VIEW_TIME;
 uint16_t DisplayManager::_customMsgBuffer[MQTT_MSG_MAX_LEN] = {0};
 int DisplayManager::_customMsgLength = 0;
+uint32_t DisplayManager::_customMsgGeneration = 0;
+uint8_t DisplayManager::_customMsgPasses = 1;
+unsigned long DisplayManager::_customMsgDurationMs = 0;
+unsigned long DisplayManager::_iconDurationMs = ICON_DISPLAY_DURATION_MS;
 int DisplayManager::_scrollCount = 0;
-unsigned long DisplayManager::_viewExpireTime = 0;
+unsigned long DisplayManager::_viewStartMs = 0;
+unsigned long DisplayManager::_viewDurationMs = 0;
+bool DisplayManager::_beepRequested = false;
 bool DisplayManager::_displayOff = false;
 uint32_t DisplayManager::_clockColorRGB = 0xFFFFFF;
 uint32_t DisplayManager::_customMsgColorRGB = 0xFF0000;
@@ -21,22 +27,24 @@ portMUX_TYPE DisplayManager::_displayMux = portMUX_INITIALIZER_UNLOCKED;
 DisplayView DisplayManager::_returnToView = VIEW_TIME;
 
 static const char* PREFS_NAMESPACE = "display";
-static const char* PREFS_VIEW_KEY = "view";
+static const char* PREFS_SPECTRUM_OFF_KEY = "spec_off";
 static const char* PREFS_COLOR_KEY = "color";
 
-DisplayView DisplayManager::loadPersistedView() {
+// The manual spectrum override is the one view choice with a lasting effect, so it
+// is what survives a reboot. A persisted view never did: temp/CO2 time out at once
+// and spectrum without audio falls back to the clock.
+bool DisplayManager::loadPersistedSpectrumOverride() {
     Preferences prefs;
     prefs.begin(PREFS_NAMESPACE, true); // read-only
-    uint8_t stored = prefs.getUChar(PREFS_VIEW_KEY, (uint8_t)VIEW_TIME);
+    bool stored = prefs.getBool(PREFS_SPECTRUM_OFF_KEY, false);
     prefs.end();
-    if (stored > (uint8_t)VIEW_CUSTOM_ICON) return VIEW_TIME; // guard against corrupt/out-of-range data
-    return (DisplayView)stored;
+    return stored;
 }
 
-void DisplayManager::persistView(DisplayView view) {
+void DisplayManager::persistSpectrumOverride(bool suppressed) {
     Preferences prefs;
     prefs.begin(PREFS_NAMESPACE, false); // read-write
-    prefs.putUChar(PREFS_VIEW_KEY, (uint8_t)view);
+    prefs.putBool(PREFS_SPECTRUM_OFF_KEY, suppressed);
     prefs.end();
 }
 
@@ -56,7 +64,7 @@ void DisplayManager::persistColor(uint32_t rgb888) {
 }
 
 void DisplayManager::begin() {
-    _currentView = loadPersistedView();
+    _spectrumAutoEntrySuppressed = loadPersistedSpectrumOverride();
     _clockColorRGB = loadPersistedColor();
 
     HUB75_I2S_CFG::i2s_pins matrix_pins = {
@@ -107,54 +115,86 @@ void DisplayManager::drawPixel2D(int x, int y, uint16_t color) {
     }
 }
 
-DisplayView DisplayManager::getCurrentView() {
-    portENTER_CRITICAL(&_displayMux);
-    bool expired = millis() > _viewExpireTime;
-    if (_currentView == VIEW_CUSTOM_MSG && (_scrollCount >= 3 || expired)) {
-        _currentView = _returnToView;
-    } else if (_currentView == VIEW_CUSTOM_ICON && expired) {
-        _currentView = _returnToView;
+void DisplayManager::startViewTimerLocked(unsigned long durationMs) {
+    _viewStartMs = millis();
+    _viewDurationMs = durationMs;
+}
+
+void DisplayManager::resolveExpiredViewLocked() {
+    bool expired = millis() - _viewStartMs >= _viewDurationMs;
+    bool overlayDone = (_currentView == VIEW_CUSTOM_MSG && (_scrollCount >= _customMsgPasses || expired)) ||
+                       (_currentView == VIEW_CUSTOM_ICON && expired);
+    if (overlayDone) {
+        // A temp/CO2 peek or CO2 popup the overlay interrupted has had its time, and its timer
+        // was the overlay's: handing back to it would show a stray peek until that ran out.
+        bool transient = (_returnToView == VIEW_TEMP_DATA || _returnToView == VIEW_CO2);
+        _currentView = transient ? VIEW_TIME : _returnToView;
     } else if ((_currentView == VIEW_TEMP_DATA || _currentView == VIEW_CO2) && expired) {
         _currentView = VIEW_TIME;
     }
+}
+
+bool DisplayManager::applyViewLocked(DisplayView view, unsigned long autoReturnDelayMs) {
+    bool blockedByActiveProtectedView =
+        (_currentView == VIEW_CUSTOM_MSG || _currentView == VIEW_CUSTOM_ICON) &&
+        (view == VIEW_SPECTRUM) &&
+        (millis() - _viewStartMs < _viewDurationMs);
+
+    bool blockedByManualOverride = (view == VIEW_SPECTRUM) && _spectrumAutoEntrySuppressed;
+
+    if (blockedByActiveProtectedView || blockedByManualOverride) {
+        return false;
+    }
+    _currentView = view;
+    if (view == VIEW_CUSTOM_MSG) {
+        // Back to a message the CO2 popup interrupted: replay it from the start.
+        _scrollCount = 0;
+        _customMsgGeneration++;
+        startViewTimerLocked(_customMsgDurationMs);
+    } else if (view == VIEW_CUSTOM_ICON) {
+        startViewTimerLocked(_iconDurationMs);
+    } else if (view == VIEW_TEMP_DATA || view == VIEW_CO2) {
+        startViewTimerLocked(autoReturnDelayMs);
+    }
+    return true;
+}
+
+DisplayView DisplayManager::getCurrentView() {
+    portENTER_CRITICAL(&_displayMux);
+    resolveExpiredViewLocked();
     DisplayView view = _currentView;
     portEXIT_CRITICAL(&_displayMux);
     return view;
 }
 
-void DisplayManager::setView(DisplayView view) {
-    setView(view, DISPLAY_AUTO_RETURN_DELAY_MS);
+bool DisplayManager::setView(DisplayView view) {
+    return setView(view, DISPLAY_AUTO_RETURN_DELAY_MS);
 }
 
-void DisplayManager::setView(DisplayView view, unsigned long autoReturnDelayMs) {
+bool DisplayManager::setView(DisplayView view, unsigned long autoReturnDelayMs) {
     portENTER_CRITICAL(&_displayMux);
-
-    bool blockedByActiveProtectedView =
-        (_currentView == VIEW_CUSTOM_MSG || _currentView == VIEW_CUSTOM_ICON) &&
-        (view == VIEW_SPECTRUM) &&
-        (millis() <= _viewExpireTime);
-
-    bool blockedByManualOverride = (view == VIEW_SPECTRUM) && _spectrumAutoEntrySuppressed;
-
-    if (!blockedByActiveProtectedView && !blockedByManualOverride) {
-        _currentView = view;
-        if (view == VIEW_CUSTOM_MSG) {
-            _scrollCount = 0;
-        }
-        if (view == VIEW_TEMP_DATA || view == VIEW_CO2) {
-            _viewExpireTime = millis() + autoReturnDelayMs;
-        }
-    }
+    bool switched = applyViewLocked(view, autoReturnDelayMs);
     portEXIT_CRITICAL(&_displayMux);
+    return switched;
+}
+
+bool DisplayManager::trySetView(DisplayView expected, DisplayView view) {
+    portENTER_CRITICAL(&_displayMux);
+    resolveExpiredViewLocked(); // 'expected' came from getCurrentView(), which resolves the same way
+    bool switched = (_currentView == expected) && applyViewLocked(view, DISPLAY_AUTO_RETURN_DELAY_MS);
+    portEXIT_CRITICAL(&_displayMux);
+    return switched;
 }
 
 void DisplayManager::selectView(DisplayView view) {
+    bool suppress = (view != VIEW_SPECTRUM);
     portENTER_CRITICAL(&_displayMux);
-    _spectrumAutoEntrySuppressed = (view != VIEW_SPECTRUM);
+    bool changed = (_spectrumAutoEntrySuppressed != suppress);
+    _spectrumAutoEntrySuppressed = suppress;
     portEXIT_CRITICAL(&_displayMux);
 
     setView(view);
-    persistView(view);
+    if (changed) persistSpectrumOverride(suppress); // NVS commit only when the choice changes
 }
 
 void DisplayManager::nextView() {
@@ -174,28 +214,43 @@ void DisplayManager::nextView() {
 }
 
 void DisplayManager::setCustomMessage(const char* msg, unsigned long durationMs, uint32_t colorRGB) {
+    int len = 0;
+    while (msg[len] != '\0' && len < (int)(MQTT_MSG_MAX_LEN - 1)) len++;
+    if (len == 0) return; // nothing to show: keep the current view instead of a blank panel
+
+    // Whole passes only, so a long text is never cut off before its end has been on screen.
+    unsigned long passMs = scrollPassMs(len);
+    unsigned long passes = (durationMs + passMs / 2) / passMs;
+    passes = constrain(passes, 1UL, (unsigned long)MSG_MAX_SCROLL_PASSES);
+
     portENTER_CRITICAL(&_displayMux);
+    resolveExpiredViewLocked(); // an expired view must not become the return target
     if (_currentView != VIEW_CUSTOM_MSG && _currentView != VIEW_CUSTOM_ICON) {
         _returnToView = _currentView;
     }
-    _customMsgLength = 0;
-    while (msg[_customMsgLength] != '\0' && _customMsgLength < (MQTT_MSG_MAX_LEN - 1)) {
-        _customMsgBuffer[_customMsgLength] = static_cast<uint16_t>(msg[_customMsgLength]);
-        _customMsgLength++;
+    for (int i = 0; i < len; i++) {
+        _customMsgBuffer[i] = static_cast<uint8_t>(msg[i]);
     }
+    _customMsgLength = len;
+    _customMsgPasses = (uint8_t)passes;
+    // Normally the pass count ends the message; this only ends one that can't scroll
+    // (panel off, WiFi down).
+    _customMsgDurationMs = passes * passMs + MSG_EXPIRY_MARGIN_MS;
+    _customMsgGeneration++;
     _currentView = VIEW_CUSTOM_MSG;
     _scrollCount = 0;
-    _viewExpireTime = millis() + durationMs;
+    startViewTimerLocked(_customMsgDurationMs);
     _customMsgColorRGB = colorRGB;
     portEXIT_CRITICAL(&_displayMux);
 }
 
-void DisplayManager::getCustomMessage(uint16_t* outBuffer, int& outLength) {
+void DisplayManager::getCustomMessage(uint16_t* outBuffer, int& outLength, uint32_t& generation) {
     portENTER_CRITICAL(&_displayMux);
     outLength = _customMsgLength;
     for(int i = 0; i < _customMsgLength; i++) {
         outBuffer[i] = _customMsgBuffer[i];
     }
+    generation = _customMsgGeneration;
     portEXIT_CRITICAL(&_displayMux);
 }
 
@@ -206,22 +261,9 @@ uint32_t DisplayManager::getCustomMsgColorRGB() {
     return c;
 }
 
-int DisplayManager::getScrollCount() {
+void DisplayManager::completeScrollPass(uint32_t generation) {
     portENTER_CRITICAL(&_displayMux);
-    int count = _scrollCount;
-    portEXIT_CRITICAL(&_displayMux);
-    return count;
-}
-
-void DisplayManager::incrementScrollCount() {
-    portENTER_CRITICAL(&_displayMux);
-    _scrollCount++;
-    portEXIT_CRITICAL(&_displayMux);
-}
-
-void DisplayManager::resetScrollCount() {
-    portENTER_CRITICAL(&_displayMux);
-    _scrollCount = 0;
+    if (generation == _customMsgGeneration) _scrollCount++;
     portEXIT_CRITICAL(&_displayMux);
 }
 
@@ -300,31 +342,16 @@ bool DisplayManager::isSpectrumAutoEntrySuppressed() {
     return s;
 }
 
-void DisplayManager::drawIconPixel(int x, int y, uint8_t r, uint8_t g, uint8_t b) {
-    if (x < 0 || x >= MATRIX_WIDTH || y < 0 || y >= MATRIX_HEIGHT) return;
-
-    uint16_t color = 0;
-    if (r > 127) color |= 0x0004;
-    if (g > 127) color |= 0x0002;
-    if (b > 127) color |= 0x0001;
-
-    int index = y * MATRIX_WIDTH + x;
+void DisplayManager::showIcon(const uint16_t* pixels, unsigned long durationMs) {
     portENTER_CRITICAL(&_displayMux);
-    _iconBuffer[index] = color;
-    portEXIT_CRITICAL(&_displayMux);
-}
-
-void DisplayManager::showIconView(unsigned long durationMs) {
-    portENTER_CRITICAL(&_displayMux);
+    memcpy(_iconBuffer, pixels, sizeof(_iconBuffer));
+    resolveExpiredViewLocked(); // an expired view must not become the return target
     if (_currentView != VIEW_CUSTOM_MSG && _currentView != VIEW_CUSTOM_ICON) {
         _returnToView = _currentView;
     }
-    portEXIT_CRITICAL(&_displayMux);
-
-    setView(VIEW_CUSTOM_ICON, durationMs);
-
-    portENTER_CRITICAL(&_displayMux);
-    _viewExpireTime = millis() + durationMs; // setView() only sets this for TEMP/CO2
+    _currentView = VIEW_CUSTOM_ICON;
+    _iconDurationMs = durationMs;
+    startViewTimerLocked(durationMs);
     portEXIT_CRITICAL(&_displayMux);
 }
 
@@ -334,7 +361,55 @@ void DisplayManager::getIconBuffer(uint16_t* outBuffer) {
     portEXIT_CRITICAL(&_displayMux);
 }
 
-enum Co2BeepState { BEEP_IDLE, BEEP_ON, BEEP_OFF };
+void DisplayManager::requestBeep() {
+    portENTER_CRITICAL(&_displayMux);
+    _beepRequested = true;
+    portEXIT_CRITICAL(&_displayMux);
+}
+
+bool DisplayManager::takeBeepRequest() {
+    portENTER_CRITICAL(&_displayMux);
+    bool requested = _beepRequested;
+    _beepRequested = false;
+    portEXIT_CRITICAL(&_displayMux);
+    return requested;
+}
+
+enum BeepState { BEEP_IDLE, BEEP_ON, BEEP_OFF };
+
+// Fires once per press, on the first poll that sees it pressed (a 33-50 ms poll can't
+// afford to wait for a second sample: short taps would be missed), and is re-armed only
+// once it has read released for BUTTON_DEBOUNCE_MS. Holding a button never repeats,
+// and bounce on press or release can't fire it twice.
+struct DebouncedButton {
+    uint8_t pin;
+    bool pressed;           // fired, not yet re-armed
+    bool releasing;         // pressed, and read released since releasedSinceMs
+    unsigned long releasedSinceMs;
+
+    // After pinMode(): a button held during boot fires only after it has been let go.
+    explicit DebouncedButton(uint8_t p)
+        : pin(p), pressed(digitalRead(p) == LOW), releasing(false), releasedSinceMs(0) {}
+
+    bool poll(unsigned long nowMs) {
+        bool down = digitalRead(pin) == LOW;
+        if (!pressed) {
+            if (!down) return false;
+            pressed = true;
+            releasing = false;
+            return true;
+        }
+        if (down) {
+            releasing = false;
+        } else if (!releasing) {
+            releasing = true;
+            releasedSinceMs = nowMs;
+        } else if (nowMs - releasedSinceMs >= BUTTON_DEBOUNCE_MS) {
+            pressed = false;
+        }
+        return false;
+    }
+};
 
 void displayTask(void* pvParameters) {
     displayManager.begin();
@@ -343,22 +418,39 @@ void displayTask(void* pvParameters) {
     uint8_t currentBars[24] = {0};
     uint8_t currentPeaks[24] = {0};
     
-    int scrollX = 24;
-    unsigned long lastScrollTime = 0;
-    DisplayView lastCheckedView = VIEW_TIME;
+    MessageScroll msgScroll = {MATRIX_WIDTH, 0, 0};
     bool otaActiveLastLoop = false;
 
+    DebouncedButton modeButton(MODE_BUTTON_PIN);
+    DebouncedButton powerButton(SWITCH_OFF_LED_PIN);
+
+    // All timers below are start + length, compared as elapsed time (now - start),
+    // so they stay right across the 49.7-day millis() wrap.
     bool co2AlarmModeActive = false;   // true while CO2 is above the low threshold (hysteresis band)
+    bool co2AlarmLapsedOnDropout = false; // the alarm ended only because the CO2 value went unknown
     bool co2PopupShowing = false;      // true while the CO2 popup is currently on screen
     bool co2PopupBeepGated = false;    // true: this popup closes when the beep sequence reaches BEEP_IDLE
-                                        // false: this popup closes at the fixed co2PopupEndTime instead
+                                        // false: it closes CO2_ALARM_DISPLAY_DURATION_MS after co2PopupShownMs
     DisplayView co2PopupPreviousView = VIEW_TIME;
-    unsigned long co2PopupEndTime = 0;
-    unsigned long nextCo2PopupTime = 0;
+    unsigned long co2PopupShownMs = 0;
+    unsigned long co2PopupWaitStartMs = 0; // the next popup is due co2PopupWaitMs after this
+    unsigned long co2PopupWaitMs = 0;
 
-    Co2BeepState beepState = BEEP_IDLE;
+    // The beeper has one owner, this task: the CO2 alarm sequence and the MQTT beep
+    // command (DisplayManager::requestBeep) both run through this state machine.
+    BeepState beepState = BEEP_IDLE;
     uint8_t beepsDone = 0;
+    uint8_t beepCount = 0;             // beeps in the running sequence
+    unsigned long beepOnMs = 0;        // length of each of them
     unsigned long beepStateChangeTime = 0;
+    auto startBeeps = [&](uint8_t count, unsigned long onMs, unsigned long nowMs) {
+        digitalWrite(BEEPER_PIN, HIGH);
+        beepState = BEEP_ON;
+        beepsDone = 0;
+        beepCount = count;
+        beepOnMs = onMs;
+        beepStateChangeTime = nowMs;
+    };
 
     uint16_t colorWhite = MatrixPanel_I2S_DMA::color565(255, 255, 255);
     uint16_t colorGreen = MatrixPanel_I2S_DMA::color565(0, 255, 0);
@@ -366,12 +458,15 @@ void displayTask(void* pvParameters) {
     uint16_t colorBlue  = MatrixPanel_I2S_DMA::color565(0, 0, 255);
 
     for (;;) {
-        unsigned long nowMs = millis();
-
         if (DisplayManager::isOtaActive()) {
             if (!otaActiveLastLoop) {
                 Serial.println("[OTA] displayTask: entering OTA render mode");
                 otaActiveLastLoop = true;
+                // The beep state machine doesn't run during the upload: a beep that is
+                // on now would sound until the reboot. Pending beep requests are dropped.
+                digitalWrite(BEEPER_PIN, LOW);
+                beepState = BEEP_IDLE;
+                DisplayManager::takeBeepRequest();
             }
 
             MatrixPanel_I2S_DMA* matrixPtr = displayManager.getMatrixPtr();
@@ -388,84 +483,85 @@ void displayTask(void* pvParameters) {
             otaActiveLastLoop = false;
         }
 
-        if (digitalRead(MODE_BUTTON_PIN) == LOW) {
-            static unsigned long lastBtnPress = 0;
-            if (nowMs - lastBtnPress > 300) {
-                lastBtnPress = nowMs;
-                DisplayManager::nextView();
-            }
+        unsigned long buttonMs = millis();
+        if (modeButton.poll(buttonMs)) {
+            DisplayManager::nextView();
+        }
+        if (powerButton.poll(buttonMs)) {
+            DisplayManager::toggleDisplayPower();
         }
 
-        if (digitalRead(SWITCH_OFF_LED_PIN) == LOW) {
-            static unsigned long lastPowerBtnPress = 0;
-            if (nowMs - lastPowerBtnPress > 300) {
-                lastPowerBtnPress = nowMs;
-                DisplayManager::toggleDisplayPower();
-            }
-        }
+        // After the buttons: a view selection may have waited on an NVS commit.
+        unsigned long nowMs = millis();
 
         if (clockQueue != NULL) {
             xQueueReceive(clockQueue, &clockMsg, 0);
         }
 
-        uint16_t currentCo2 = co2Sensor.getCo2();
+        // Unknown CO2 (no fresh sample: sensor missing, failing or still starting) never
+        // counts as high, so a frozen last value can't keep the alarm and its beeps going.
+        bool co2Known = co2Sensor.hasFreshData();
+        uint16_t currentCo2 = co2Known ? co2Sensor.getCo2() : 0;
 
-        bool co2AboveHigh = currentCo2 >= CO2_WARNING_THRESHOLD;
-        bool co2AboveLow  = currentCo2 >= CO2_ALARM_LOW_THRESHOLD;
+        bool co2AboveHigh = co2Known && currentCo2 >= CO2_WARNING_THRESHOLD;
+        bool co2AboveLow  = co2Known && currentCo2 >= CO2_ALARM_LOW_THRESHOLD;
 
-        if (co2AboveHigh && !co2AlarmModeActive) {
+        // An alarm that only lapsed while the value was unknown resumes at any reading still
+        // in the band: there was no reading below CO2_ALARM_LOW_THRESHOLD to end it.
+        if ((co2AboveHigh || (co2AlarmLapsedOnDropout && co2AboveLow)) && !co2AlarmModeActive) {
             co2AlarmModeActive = true;
-            nextCo2PopupTime = nowMs; // fire the first popup right away
+            // Fire the first popup right away, unless the alarm only lapsed while the value
+            // was unknown: then keep its cadence, so a flaky sensor can't re-beep on every recovery.
+            if (!co2AlarmLapsedOnDropout) co2PopupWaitMs = 0;
+            co2AlarmLapsedOnDropout = false;
         } else if (!co2AboveLow && co2AlarmModeActive) {
             co2AlarmModeActive = false;
+            co2AlarmLapsedOnDropout = !co2Known;
             if (co2PopupShowing) {
                 co2PopupShowing = false;
+                co2PopupWaitStartMs = nowMs; // as if it had closed normally
+                co2PopupWaitMs = CO2_ALARM_INTERVAL_MS;
                 if (DisplayManager::getCurrentView() == VIEW_CO2) {
                     DisplayManager::setView(co2PopupPreviousView);
                 }
-                if (beepState != BEEP_IDLE) {
+                // A beep-gated popup's beeps are the alarm's own; with a silent popup any
+                // beep is an MQTT one, which ends by itself.
+                if (co2PopupBeepGated && beepState != BEEP_IDLE) {
                     digitalWrite(BEEPER_PIN, LOW);
                     beepState = BEEP_IDLE;
+                    beepStateChangeTime = nowMs;
                 }
             }
+        } else if (co2Known && !co2AboveLow) {
+            co2AlarmLapsedOnDropout = false; // a real reading below the band ends the episode
         }
 
-        if (co2AlarmModeActive && !co2PopupShowing && nowMs >= nextCo2PopupTime) {
+        if (co2AlarmModeActive && !co2PopupShowing && nowMs - co2PopupWaitStartMs >= co2PopupWaitMs) {
             co2PopupShowing = true;
+            co2PopupShownMs = nowMs;
             co2PopupPreviousView = DisplayManager::getCurrentView();
             DisplayManager::setView(VIEW_CO2, CO2_ALARM_POPUP_SAFETY_MS);
 
-            bool allowBeep = true;
+            // Quiet hours fail closed: beep only while the local time is known to be in
+            // the window. Without an NTP fix since boot the popup still shows, silently.
             struct tm timeinfo;
-            if (getLocalTime(&timeinfo)) {
-                int currentHour = timeinfo.tm_hour;
-                if (currentHour < CO2_ALARM_START_HOUR || currentHour >= CO2_ALARM_END_HOUR) {
-                    allowBeep = false;
-                }
-            }
+            bool allowBeep = readLocalTime(&timeinfo) &&
+                             timeinfo.tm_hour >= CO2_ALARM_START_HOUR &&
+                             timeinfo.tm_hour < CO2_ALARM_END_HOUR;
 
             if (allowBeep) {
-                digitalWrite(BEEPER_PIN, HIGH);
-                beepState = BEEP_ON;
-                beepsDone = 0;
-                beepStateChangeTime = nowMs;
+                startBeeps(CO2_ALARM_BEEP_COUNT, CO2_ALARM_BEEP_ON_MS, nowMs); // takes over an MQTT beep
                 co2PopupBeepGated = true;
             } else {
-                beepState = BEEP_IDLE;
-                co2PopupBeepGated = false;
-                co2PopupEndTime = nowMs + CO2_ALARM_DISPLAY_DURATION_MS;
+                co2PopupBeepGated = false; // a running MQTT beep ends by itself
             }
         }
 
-        if (beepState == BEEP_ON && nowMs - beepStateChangeTime >= CO2_ALARM_BEEP_ON_MS) {
+        if (beepState == BEEP_ON && nowMs - beepStateChangeTime >= beepOnMs) {
             digitalWrite(BEEPER_PIN, LOW);
             beepsDone++;
-            if (beepsDone >= CO2_ALARM_BEEP_COUNT) {
-                beepState = BEEP_IDLE;
-            } else {
-                beepState = BEEP_OFF;
-                beepStateChangeTime = nowMs;
-            }
+            beepStateChangeTime = nowMs;
+            beepState = (beepsDone >= beepCount) ? BEEP_IDLE : BEEP_OFF;
         } else if (beepState == BEEP_OFF && nowMs - beepStateChangeTime >= CO2_ALARM_BEEP_OFF_MS) {
             digitalWrite(BEEPER_PIN, HIGH);
             beepState = BEEP_ON;
@@ -474,14 +570,23 @@ void displayTask(void* pvParameters) {
 
         bool co2PopupShouldClose = co2PopupBeepGated
             ? (beepState == BEEP_IDLE)
-            : (nowMs >= co2PopupEndTime);
+            : (nowMs - co2PopupShownMs >= CO2_ALARM_DISPLAY_DURATION_MS);
 
         if (co2PopupShowing && co2PopupShouldClose) {
             if (DisplayManager::getCurrentView() == VIEW_CO2) {
                 DisplayManager::setView(co2PopupPreviousView);
             }
             co2PopupShowing = false;
-            nextCo2PopupTime = nowMs + CO2_ALARM_INTERVAL_MS;
+            co2PopupWaitStartMs = nowMs;
+            co2PopupWaitMs = CO2_ALARM_INTERVAL_MS;
+        }
+
+        // MQTT beep: after an alarm sequence (never cutting into it) and at least
+        // BEEP_DURATION_MS after the last beep ended, so back-to-back requests stay
+        // separate beeps; requests made meanwhile wait here as one.
+        if (beepState == BEEP_IDLE && nowMs - beepStateChangeTime >= BEEP_DURATION_MS &&
+            DisplayManager::takeBeepRequest()) {
+            startBeeps(1, BEEP_DURATION_MS, nowMs);
         }
 
         MatrixPanel_I2S_DMA* matrixPtr = displayManager.getMatrixPtr();
@@ -508,16 +613,11 @@ void displayTask(void* pvParameters) {
                 }
                 matrixPtr->swapBuffers();
             }
-            vTaskDelay(pdMS_TO_TICKS(200));
+            vTaskDelay(pdMS_TO_TICKS(50)); // as with the panel off: a short button tap can't fall between polls
             continue;
         }
-        
+
         DisplayView activeView = DisplayManager::getCurrentView();
-        if (activeView == VIEW_CUSTOM_MSG && lastCheckedView != VIEW_CUSTOM_MSG) {
-            scrollX = 24;
-            DisplayManager::resetScrollCount();
-        }
-        lastCheckedView = activeView;
 
         switch (activeView) {
             case VIEW_TIME: {
@@ -533,7 +633,7 @@ void displayTask(void* pvParameters) {
                 renderTemperatureView(matrixPtr, colorGreen);
                 break;
             case VIEW_CO2:
-                renderCo2View(matrixPtr, currentCo2, colorGreen, colorRed);
+                renderCo2View(matrixPtr, co2Known, currentCo2, co2AlarmModeActive, colorGreen, colorRed);
                 break;
             case VIEW_SPECTRUM:
                 renderSpectrumBarsView(currentBars, currentPeaks, colorGreen, colorBlue);
@@ -544,7 +644,7 @@ void displayTask(void* pvParameters) {
                     (uint8_t)((msgRgb >> 16) & 0xFF),
                     (uint8_t)((msgRgb >> 8) & 0xFF),
                     (uint8_t)(msgRgb & 0xFF));
-                renderScrollingAlertView(matrixPtr, scrollX, lastScrollTime, msgColor);
+                renderScrollingAlertView(matrixPtr, msgScroll, msgColor);
                 break;
             }
             case VIEW_CUSTOM_ICON:

@@ -12,20 +12,31 @@
   <p class="subtitle">Draw manually, convert images, or import old strings back to editable 2:1 rectangular pixels.</p>
 
   <div class="app-container">
-    
+
     <!-- MQTT Client Profile Configuration Block -->
     <div class="config-grid">
       <div class="input-group">
         <label for="mqttHost">MQTT Host / IP</label>
-        <input type="text" id="mqttHost" value="x.x.x.x" placeholder="e.g. 192.168.1.50">
+        <input type="text" id="mqttHost" placeholder="e.g. 192.168.1.50" autocomplete="off" spellcheck="false">
       </div>
       <div class="input-group">
         <label for="mqttUser">Username</label>
-        <input type="text" id="mqttUser" value="user" placeholder="MQTT User">
+        <input type="text" id="mqttUser" placeholder="empty: no login" autocomplete="off" spellcheck="false">
       </div>
       <div class="input-group">
         <label for="mqttPass">Password</label>
-        <input type="password" id="mqttPass" value="pass" placeholder="MQTT Password">
+        <input type="password" id="mqttPass" placeholder="empty: use $MQTT_PASS" autocomplete="off">
+        <label class="checkbox-label" for="rememberPass">
+          <input type="checkbox" id="rememberPass">
+          Remember (saved unencrypted in this browser)
+        </label>
+      </div>
+      <div class="input-group">
+        <label for="shellSelect">Command for</label>
+        <select id="shellSelect">
+          <option value="posix">bash / zsh / sh</option>
+          <option value="powershell">PowerShell</option>
+        </select>
       </div>
     </div>
 
@@ -34,17 +45,18 @@
       <div class="drop-zone-content" id="dropZoneContent">
         <span class="drop-zone-text">Drop an image here or click to upload (Auto-scales to 24x16 2:1 Matrix)</span>
       </div>
-      <img src="" alt="Preview" class="thumb-preview" id="thumbPreview" style="display: none;">
+      <img alt="Preview" class="thumb-preview" id="thumbPreview" style="display: none;">
       <input type="file" id="fileInput" accept="image/*" style="display: none;">
     </div>
 
     <div class="toolbar">
-      <div class="color-picker-wrapper">
-        <label for="colorPicker">Brush Color:</label>
-        <input type="color" id="colorPicker" value="#FFFFFF">
+      <div class="palette-wrapper">
+        <span class="palette-label" id="paletteLabel">Brush Color:</span>
+        <div class="palette" id="palette" role="group" aria-labelledby="paletteLabel"></div>
       </div>
       <button id="clearBtn">Clear (Black)</button>
     </div>
+    <p class="hint">The panel has 8 colors: each of red, green and blue is either fully on or off (the firmware switches a channel on above 127). Imported images and codes are reduced the same way, so the grid shows what the panel will show.</p>
 
     <!-- Enhanced Grid Container with 2:1 aspect bounds mapping -->
     <div class="grid-container">
@@ -71,6 +83,7 @@
           <button id="copyMqttBtn" class="btn-sm primary">Copy Command</button>
         </div>
         <textarea id="mqttOutput" rows="4" readonly></textarea>
+        <p class="command-note" id="mqttNote" hidden></p>
       </div>
     </div>
   </div>

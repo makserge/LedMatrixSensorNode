@@ -2406,11 +2406,28 @@
 			(embedded_fonts no)
 		)
 	)
+	(text "Radar header (HLK-LD2454) to radar J1 [1 5V, 2 G, 3 T, 4 R] - the cable is NOT 1:1:\n  header 1  VBUS     -> J1-1 5V  (LD2454 manual: DC 5 V, >200 mA)\n  header 4  GND      -> J1-2 G\n  header 3  RADAR_T  -> J1-3 T  (radar TX -> GPIO11 / Serial1 RX)\n  header 2  RADAR_R  -> J1-4 R  (radar RX <- D7 / GPIO44 / Serial1 TX, needed to enable multi-target mode)"
+		(exclude_from_sim no)
+		(at 127 132.08 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(justify left top)
+		)
+		(uuid "66bc8663-4635-4b50-b132-9bd70b6bdb37")
+	)
 	(junction
 		(at 218.44 81.28)
 		(diameter 0)
 		(color 0 0 0 0)
 		(uuid "0648de29-018c-4a2a-ad31-0c17cb5578b3")
+	)
+	(junction
+		(at 199.39 49.53)
+		(diameter 0)
+		(color 0 0 0 0)
+		(uuid "10340aa2-cc05-4d2a-8759-727e67183097")
 	)
 	(junction
 		(at 196.85 86.36)
@@ -2495,6 +2512,12 @@
 		(diameter 0)
 		(color 0 0 0 0)
 		(uuid "cee6142e-b0ac-4e9e-a053-a82ce51bb47d")
+	)
+	(junction
+		(at 226.06 86.36)
+		(diameter 0)
+		(color 0 0 0 0)
+		(uuid "d3295eef-b919-4fc8-94c7-999ce325ed8c")
 	)
 	(junction
 		(at 213.36 121.92)
@@ -2956,16 +2979,6 @@
 	)
 	(wire
 		(pts
-			(xy 231.14 67.31) (xy 231.14 73.66)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "58673f0b-62e0-4871-ab2b-60e05e36a405")
-	)
-	(wire
-		(pts
 			(xy 212.09 52.07) (xy 212.09 59.69)
 		)
 		(stroke
@@ -3136,7 +3149,7 @@
 	)
 	(wire
 		(pts
-			(xy 196.85 86.36) (xy 236.22 86.36)
+			(xy 196.85 86.36) (xy 226.06 86.36)
 		)
 		(stroke
 			(width 0)
@@ -3296,6 +3309,16 @@
 	)
 	(wire
 		(pts
+			(xy 226.06 73.66) (xy 226.06 86.36)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "8e6b3934-3279-41d3-bbf7-8ef6bae71049")
+	)
+	(wire
+		(pts
 			(xy 38.1 58.42) (xy 38.1 57.15)
 		)
 		(stroke
@@ -3303,16 +3326,6 @@
 			(type default)
 		)
 		(uuid "90052148-cb51-48d5-88f1-bf37fc3fd4c0")
-	)
-	(wire
-		(pts
-			(xy 231.14 73.66) (xy 236.22 73.66)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "93531a60-5f39-4a9c-8bf3-3b9d8af9f24c")
 	)
 	(wire
 		(pts
@@ -3373,6 +3386,16 @@
 			(type default)
 		)
 		(uuid "a27565d5-50ee-46de-9697-8d757372d833")
+	)
+	(wire
+		(pts
+			(xy 199.39 49.53) (xy 199.39 33.02)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "a46fc5c4-ccb0-42c1-aa72-ade313da4141")
 	)
 	(wire
 		(pts
@@ -3516,6 +3539,16 @@
 	)
 	(wire
 		(pts
+			(xy 226.06 73.66) (xy 236.22 73.66)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "d1c8235c-8713-4ead-aa1a-b137bf871c14")
+	)
+	(wire
+		(pts
 			(xy 238.76 109.22) (xy 238.76 124.46)
 		)
 		(stroke
@@ -3573,6 +3606,16 @@
 			(type default)
 		)
 		(uuid "dc4bc464-02a5-45fb-b144-6c3c9264b806")
+	)
+	(wire
+		(pts
+			(xy 226.06 86.36) (xy 236.22 86.36)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "e2735f71-785a-493d-b883-e7e3f9a5493e")
 	)
 	(wire
 		(pts
@@ -3754,6 +3797,26 @@
 		)
 		(uuid "fe05a75c-d4a3-43c5-a41d-017f09a8ddec")
 	)
+	(label "RADAR_T"
+		(at 236.22 78.74 180)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(justify right bottom)
+		)
+		(uuid "9bbbeb6a-3415-473b-b5ac-169fd1e456f7")
+	)
+	(label "RADAR_R"
+		(at 236.22 76.2 180)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(justify right bottom)
+		)
+		(uuid "d0d60dfe-1908-4712-b048-3fb299f649b0")
+	)
 	(symbol
 		(lib_id "Connector_Generic:Conn_01x04")
 		(at 241.3 76.2 0)
@@ -3778,7 +3841,7 @@
 				(justify left)
 			)
 		)
-		(property "Value" "HLK-LD2450"
+		(property "Value" "HLK-LD2454"
 			(at 243.84 77.4699 0)
 			(show_name no)
 			(do_not_autoplace no)
