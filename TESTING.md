@@ -115,3 +115,29 @@ mosquitto_sub -h <broker> -u <user> -P "$MQTT_PASSWORD" -v -t 'led_matrix_node/r
 - `.gitattributes` keeps text files LF in the repository and native in the working tree; the add-on (`ha-addon/`), shell scripts and Dockerfiles are always LF because they run on Linux.
 - Executable scripts carry the executable bit in git (mode 100755). On Windows, set it with `git update-index --chmod=+x <file>` (Windows does not track it on disk); on macOS and Linux, `chmod +x` before `git add`.
 - To check a checkout: `git ls-files --eol` (index column `i/lf` for text) and `git ls-files -s` (100755 for scripts). `git status` should be clean right after a clone.
+
+## 7. Learner app on Home Assistant (P3, shadow mode)
+
+The app learns where people are in the room from the P1 frames stream. In P3 it only **observes and suggests**: it creates no zones, drives no automations and publishes nothing to `led_matrix_node/#`. Full install and update steps are in [`ha-addon/radar_zone_learner/README.md`](ha-addon/radar_zone_learner/README.md), section 3; the entities are in section 4 and "Mark spot here" in section 5.
+
+1. **Install and start** (README section 3). The log shows `connected to core-mosquitto:1883`, `subscribed (9 topics)`, and `status learning` once frames arrive. Turn on **Watchdog** on the Info tab.
+2. **Nothing reaches the node.** The app must not publish to the node's topics:
+
+   ```bash
+   mosquitto_sub -h <broker> -u <user> -P "$MQTT_PASSWORD" -v -t 'led_matrix_node/#' -C 20 -W 60
+   ```
+
+   Only the node's own messages should appear (radar, sensors, status); no line may come from the app.
+3. **Learner status** (entity "Learner status"). It reads `learning` in the room during the day and `no_data` only when the node or the broker is down. Its attributes give `nights` (0 on the first day, growing by one a night), `covered_days`, `observed_h_24h`, and `ingest` (frame counters, with lost frames and sequence gaps; a few gaps during a Wi-Fi blip are normal).
+4. **Debug map** (entity "Learner debug map"). The picture shows the room's radar coordinates and where time was spent. It appears after the first nights; before that it is empty.
+5. **Mark spot here** (README section 5). Type "Desk" into "Spot name", sit still at the desk for 20 s or more, press the button, and read `last_mark` in the status attributes: `"result": "ok"` means the label is stored. Before the P2 night schedule the radars run all day, so any hour works for this test.
+6. **Bed label (later).** Press "Mark spot here" with "Spot name" set to `Bed` while lying in bed, only after the P2 night schedule is running; the window is 00:00–06:00, so press between 06:00 and 00:00.
+7. **Resource check** (the acceptance test for the CM4). Leave the app running for 24 h and read the status attributes:
+   - `rss_mb` below **40**;
+   - `cpu_pct_1h` below **1.0**;
+   - `core_errors` and `nightly_errors` at **0**.
+
+   Over the same 24 h, the node's frames check (section 4, step 12) should still pass.
+8. **Updates** (README "Updating"): copy the new files with LF endings, raise `version` in `config.yaml`, then Settings → Apps → Radar Zone Learner → Update, or **Rebuild** on the Info page.
+
+**Not verifiable on a PC:** the image build on the CM4, the Supervisor's watchdog and restart behaviour, and the actual suggestions. Suggestions appear in the simulation around nights 4–7 for the desk, table, counter and sofa, and around night 14 for the bed, with 00:00–06:00 as the window. Real rooms differ, so compare the first suggestions with what you know about the room.

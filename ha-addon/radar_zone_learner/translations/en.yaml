@@ -1,0 +1,25 @@
+configuration:
+  log_level:
+    name: "Log level"
+    description: "How much the app writes to its log: debug, info, warning or error."
+  node_prefix:
+    name: "Node topic prefix"
+    description: "MQTT prefix of the LED matrix node, default led_matrix_node"
+  discovery_prefix:
+    name: "Discovery prefix"
+    description: "MQTT discovery prefix of Home Assistant, default homeassistant"
+  debug_map:
+    name: "Debug map"
+    description: "Publish the learner's debug map image"
+  mqtt_host:
+    name: "MQTT host"
+    description: "Optional: own MQTT broker login instead of the Mosquitto app service. Used only when an MQTT user name is set; default core-mosquitto."
+  mqtt_port:
+    name: "MQTT port"
+    description: "Optional: own MQTT broker login instead of the Mosquitto app service. Used only when an MQTT user name is set; default 1883."
+  mqtt_username:
+    name: "MQTT user name"
+    description: "Optional: own MQTT broker login instead of the Mosquitto app service. Leave empty to use the Mosquitto app service."
+  mqtt_password:
+    name: "MQTT password"
+    description: "Optional: own MQTT broker login instead of the Mosquitto app service. The password of the MQTT user name."
