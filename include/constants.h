@@ -19,7 +19,8 @@ static const char* MQTT_STATE_TOPIC      = "led_matrix_node/sensors/state";
 static const char* MQTT_STATUS_TOPIC     = "led_matrix_node/sensors/status";
 static const char* MQTT_DISCOVERY_PREFIX = "homeassistant";
 
-static const char* MQTT_CONFIG_TOPIC_TPL = "%s/sensor/%s_%s/config";
+static const char* MQTT_CONFIG_TOPIC_TPL = "%s/%s/%s_%s/config";   // prefix, component, client id, object id
+static const size_t DISCOVERY_JSON_MAX   = 512;                    // publishDiscovery() buffer; a larger config is logged and skipped
 
 static const char* const MQTT_DISPLAY_MODE_TOPIC  = "led_matrix_node/display/mode";
 static const char* const MQTT_DISPLAY_MSG_TOPIC   = "led_matrix_node/display/message";
@@ -31,6 +32,7 @@ static const char* const MQTT_BEEPER_TOPIC        = "led_matrix_node/beeper";
 
 static const char* const MQTT_LD2412_TOPIC = "led_matrix_node/radar/ld2412";
 static const char* const MQTT_LD2454_TOPIC = "led_matrix_node/radar/ld2454";
+static const char* const MQTT_LD2454_FRAMES_TOPIC = "led_matrix_node/radar/ld2454/frames";
 
 static const unsigned long CO2_SENSOR_INTERVAL = 30000;
 static const unsigned long CO2_FAST_POLL_MS = 5000;        // poll interval while there is no fresh value (boot, after a
@@ -55,6 +57,15 @@ static const unsigned long LD2454_CONFIG_RETRY_MS = 60000;    // backoff ceiling
 static const unsigned long LD2454_ACK_TIMEOUT_MS = 1500;
 static const unsigned long LD2454_COMMAND_GAP_MS = 25;
 static const unsigned long LD2454_RESTART_GAP_MS = 1000;
+
+// LD2454 frames stream (MQTT_LD2454_FRAMES_TOPIC): every parsed frame goes through a ring from
+// LD2454Task to MqttTask, which publishes the frames in batches. A batch never spans a pause of
+// LD2454_RESTART_GAP_MS between two frames.
+static const uint16_t LD2454_RING_FRAMES = 64;            // 6.4 s at 10 frames/s; a power of two
+static const uint32_t LD2454_STREAM_BATCH_MS = 500;       // while targets exist: one batch per 500 ms
+static const uint32_t LD2454_STREAM_IDLE_MS = 5000;       // no targets: a heartbeat batch this often
+static const uint8_t LD2454_STREAM_MAX_FRAMES = 20;       // frames with targets listed in one batch, at most
+static const uint32_t LD2412_HEARTBEAT_MS = 60000;        // legacy LD2412 topic: on change, else this often
 
 static const uint8_t CO2_SENSOR_ADDRESS = 0x62;
 

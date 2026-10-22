@@ -272,12 +272,15 @@ The connection is dropped and re-established if the HTTP and WAV headers aren't 
 |---|---|---|---|
 | `led_matrix_node/sensors/state` | `{"co2":812,"temp":21.4,"hum":47.2,"lux":18.6}` | 10s | A field is left out while its sensor has no fresh value (missing, failing, still starting); sent even if that leaves `{}` |
 | `led_matrix_node/sensors/status` | `online` / `offline` | on connect / LWT | Retained |
-| `led_matrix_node/radar/ld2412` | `1` / `0` | 1s | Retained |
-| `led_matrix_node/radar/ld2454` | `{"targets":[{"id":0,"x":-120,"y":1850,"speed":0,"distance":1854}],"count":N,"multi_target":true}` | 1s | Up to 3 targets; x/y/distance in mm, speed in cm/s; `multi_target` = radar ACKed multi-target mode |
+| `led_matrix_node/radar/ld2412` | `1` / `0` | on change, else 60s | Retained; the raw OUT level |
+| `led_matrix_node/radar/ld2454` | `{"targets":[{"id":0,"x":-120,"y":1850,"speed":0,"distance":1854}],"count":N,"multi_target":true}` | not sent | Legacy 1 Hz JSON, off: nothing reads it (the code path stays, for a later switch) |
+| `led_matrix_node/radar/ld2454/frames` | `{"v":1,"b":"9f3c21aa","t":81234567,"s":1234560,"n":5,"a0":480,"a1":40,"mt":1,"p2":1,"pw":3,"sm":"A","f":[[0,480,0,-15,1193,55],[4,40,0,-761,5446,58]]}` | ≤500ms with targets, else 5s | Every parsed LD2454 frame, batched; QoS 0, not retained, dropped (not queued) while MQTT is down. The batch holds frames `s`…`s+n-1` of boot `b` (random per boot), so a seq gap means lost frames; `t` = uptime in ms; `a0`/`a1` = age in ms of the first/last frame; `f` = `[k, age, slot, x, y, speed, …]` per frame with targets (k = seq − `s`; mm, cm/s); `mt` = multi-target mode, `p2` = LD2412 OUT |
 
 ```bash
 mosquitto_sub -v -t 'led_matrix_node/#'
 ```
+
+`tools/frames_checker.py` (Python 3 with `paho-mqtt` 2.x; an MQTT 5 broker such as Mosquitto 1.6+) checks the frames stream (seq gaps, cadence, rates, sizes), the legacy radar topics and the discovery configs on the broker, by default for 24 h: `read -rs MQTT_PASSWORD; export MQTT_PASSWORD; python3 tools/frames_checker.py --host <broker> --user <user>`. `python3 -I tools/tests/frames_batcher_model.py` tests the batching logic on the PC.
 
 ### Home Assistant Auto-Discovery
 
@@ -289,7 +292,7 @@ Retained discovery configs are published under `homeassistant/sensor/Led_Matrix_
 
 ### Connection
 
-When the broker is unreachable or refuses the login, the node retries after `MQTT_RECONNECT_MIN_MS` (2s), doubling the gap up to `MQTT_RECONNECT_MAX_MS` (60s), instead of every 40ms. A dropped connection is retried at once, but never sooner than 2s after the previous attempt, so a broker that kicks the node right away (e.g. a duplicate client ID) doesn't get a reconnect storm. `MQTT_SOCKET_TIMEOUT_S` (5s) bounds the wait for the broker's CONNACK, and that wait sleeps instead of busy-spinning on core 1.
+When the broker is unreachable or refuses the login, the node retries after `MQTT_RECONNECT_MIN_MS` (2s), doubling the gap up to `MQTT_RECONNECT_MAX_MS` (60s), instead of every 40ms. A dropped connection is retried at once, but never sooner than 2s after the previous attempt, so a broker that kicks the node right away (e.g. a duplicate client ID) doesn't get a reconnect storm. `MQTT_SOCKET_TIMEOUT_S` (5s) bounds the wait for the broker's CONNACK, and that wait sleeps instead of busy-spinning on core 1. When WiFi drops, the MQTT connection is closed at once: the dead socket would otherwise look connected for minutes and block every publish. It is re-established, with `online`, once the link is back.
 
 ---
 

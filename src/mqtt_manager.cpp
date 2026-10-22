@@ -1,6 +1,16 @@
 #include "mqtt_manager.h"
 
+#include <esp_random.h>
+#include <esp_timer.h>
+
 MqttManager mqttManager;
+
+// The frames' "pw" (bit0 LD2454 observing, bit1 LD2412 observing) and "sm" (code of the radar state):
+// fixed in P1, which has no radar switch. P2 takes both from the RadarStatus snapshot.
+static const uint8_t FRAMES_PW_P1 = 3;
+static const char FRAMES_SM_P1 = 'A';
+static const size_t FRAMES_DRAIN_CHUNK = 16;              // ring entries copied out per spinlock hold
+static const uint32_t FRAMES_LOG_INTERVAL_MS = 60000;     // drop counters logged at most this often
 
 extern Co2Sensor co2Sensor;
 extern TempHumiditySensor tempHumSensor;
@@ -199,11 +209,11 @@ void mqttTask(void *pvParameters) {
     mqttManager.setCallback();
     
     unsigned long lastPublishTime = 0;
-    unsigned long lastRadarPublishTime = 0;
     
     for (;;) {
         waitWhileOtaPaused();
         mqttManager.update();
+        mqttManager.serviceFrameStream();   // every loop, connected or not: offline it drops, never queues
 
         if (mqttManager.isConnected()) {
             unsigned long now = millis();
@@ -211,10 +221,7 @@ void mqttTask(void *pvParameters) {
                 lastPublishTime = now;
                 mqttManager.publishSensorData();
             }
-            if (now - lastRadarPublishTime >= MQTT_RADAR_PUBLISH_INTERVAL) {
-                lastRadarPublishTime = now;
-                mqttManager.publishRadarData();
-            }
+            mqttManager.publishLegacyRadar(now);
         }
 
         vTaskDelay(pdMS_TO_TICKS(40));
@@ -233,6 +240,9 @@ void MqttManager::begin() {
     _client.setServer(MQTT_HOST, MQTT_PORT);
     _client.setBufferSize(4096); 
     _client.setSocketTimeout(MQTT_SOCKET_TIMEOUT_S);
+    // setup() has started WiFi before this task exists, so esp_random() draws on RF noise here.
+    snprintf(_bootId, sizeof(_bootId), "%08lx", (unsigned long)esp_random());
+    Serial.printf("[MQTT] frames boot id %s\n", _bootId);
 }
 
 void MqttManager::setCallback() {
@@ -250,7 +260,14 @@ void MqttManager::subscribeTopics() {
 
 void MqttManager::update() {
     if (WiFi.status() != WL_CONNECTED) {
-        return; 
+        // The dead socket would look connected until lwIP gives up on it (up to minutes; PubSubClient
+        // checks the keepalive only in loop()), and every publish into it can block MqttTask for ~10 s.
+        // Closed now, the session is re-established after the link returns and publishes "online".
+        if (_client.connected()) {
+            Serial.println("[MQTT] Wi-Fi lost, closing the MQTT connection");
+            _espClient.stop();
+        }
+        return;
     }
 
     if (!_client.connected()) {
@@ -270,6 +287,7 @@ void MqttManager::update() {
             // Not 0: a broker that drops the session right away (e.g. a duplicate
             // client ID) still gets a gap between reconnects.
             _reconnectDelayMs = MQTT_RECONNECT_MIN_MS;
+            _ld2412Published = -1;   // resend at once: the retained value may predate the outage
             
             sendDiscovery();
             subscribeTopics();
@@ -299,13 +317,40 @@ void MqttManager::sendDiscovery() {
                   "{{ value_json.lux if 'lux' in value_json else None }}");
 }
 
+// One retained discovery config for any HA component. It appends uniq_id, avty_t (unless the entity
+// has an "avty" list; an avty_t already set keeps its place) and the device block, in that order.
+// A config that would not fit DISCOVERY_JSON_MAX is logged and skipped, never truncated.
+bool MqttManager::publishDiscovery(const char* component, const char* id, JsonDocument& doc) {
+    char topic[128];
+    int topicLen = snprintf(topic, sizeof(topic), MQTT_CONFIG_TOPIC_TPL,
+                            MQTT_DISCOVERY_PREFIX, component, MQTT_CLIENT_ID, id);
+    if (topicLen < 0 || (size_t)topicLen >= sizeof(topic)) {
+        Serial.printf("[MQTT] discovery %s/%s: topic too long, skipped\n", component, id);
+        return false;
+    }
+
+    doc["uniq_id"] = String(MQTT_CLIENT_ID) + "_" + id;
+    if (!doc["avty"].is<JsonArray>()) doc["avty_t"] = MQTT_STATUS_TOPIC;
+
+    JsonObject dev = doc["dev"].to<JsonObject>();
+    dev["ids"] = MQTT_CLIENT_ID;
+    dev["name"] = WIFI_PORTAL_NAME;
+    dev["mf"] = "";
+    dev["mdl"] = "";
+
+    char buffer[DISCOVERY_JSON_MAX];
+    size_t len = measureJson(doc);
+    if (doc.overflowed() || len >= sizeof(buffer)) {
+        Serial.printf("[MQTT] discovery %s/%s is %u B, skipped\n", component, id, (unsigned)len);
+        return false;
+    }
+    serializeJson(doc, buffer, sizeof(buffer));
+    return _client.publish(topic, buffer, true);
+}
+
+// The four sensor configs: same topic and same bytes as before publishDiscovery() existed.
 void MqttManager::publishConfig(const char* id, const char* name, const char* unit, const char* devClass, const char* valTpl) {
     JsonDocument doc;
-    char configTopic[128];
-    
-    snprintf(configTopic, sizeof(configTopic), MQTT_CONFIG_TOPIC_TPL, 
-             MQTT_DISCOVERY_PREFIX, MQTT_CLIENT_ID, id);
-
     doc["name"] = name;
     doc["stat_t"] = MQTT_STATE_TOPIC;
     doc["avty_t"] = MQTT_STATUS_TOPIC;
@@ -314,17 +359,7 @@ void MqttManager::publishConfig(const char* id, const char* name, const char* un
     doc["stat_cla"] = "measurement"; // HA keeps long-term statistics only for sensors with a state class
     doc["exp_aft"] = MQTT_EXPIRE_AFTER_S; // no state for this long (node hung or gone) -> unavailable
     doc["val_tpl"] = valTpl;
-    doc["uniq_id"] = String(MQTT_CLIENT_ID) + "_" + id;
-    
-    JsonObject dev = doc["dev"].to<JsonObject>();
-    dev["ids"] = MQTT_CLIENT_ID;
-    dev["name"] = WIFI_PORTAL_NAME;
-    dev["mf"] = "";
-    dev["mdl"] = "";
-
-    char buffer[512];
-    serializeJson(doc, buffer, sizeof(buffer));
-    _client.publish(configTopic, buffer, true);
+    publishDiscovery("sensor", id, doc);
 }
 
 void MqttManager::publishSensorData() {
@@ -353,13 +388,28 @@ void MqttManager::publishSensorData() {
 }
 
 bool MqttManager::isConnected() {
-    return _client.connected();
+    return WiFi.status() == WL_CONNECTED && _client.connected();
 }
 
-void MqttManager::publishRadarData() {
-    // LD2412: simple presence state on its own topic.
-    _client.publish(MQTT_LD2412_TOPIC, ld2412Sensor.isPresent() ? "1" : "0", true);
+// The legacy radar topics. Nothing consumes them; the frames stream replaces the LD2454 JSON.
+void MqttManager::publishLegacyRadar(uint32_t nowMs) {
+    // LD2412: the raw OUT level, retained, on change plus a heartbeat (it was sent every second).
+    int8_t present = ld2412Sensor.isPresent() ? 1 : 0;
+    if (present != _ld2412Published || nowMs - _ld2412PublishedMs >= LD2412_HEARTBEAT_MS) {
+        if (_client.publish(MQTT_LD2412_TOPIC, present ? "1" : "0", true)) {
+            _ld2412Published = present;
+            _ld2412PublishedMs = nowMs;
+        }
+    }
 
+    // LD2454 1 Hz JSON: off. The code path stays for P2's 'Legacy radar JSON' switch (#11).
+    if (_ld2454LegacyJson && nowMs - _ld2454LegacyMs >= MQTT_RADAR_PUBLISH_INTERVAL) {
+        _ld2454LegacyMs = nowMs;
+        publishLd2454LegacyJson();
+    }
+}
+
+void MqttManager::publishLd2454LegacyJson() {
     // LD2454: up to 3 tracked targets as JSON on its own topic.
     JsonDocument doc;
     JsonArray targets = doc["targets"].to<JsonArray>();
@@ -379,4 +429,60 @@ void MqttManager::publishRadarData() {
     char buffer[384]; // 3 targets with worst-case coordinates need ~250 bytes
     serializeJson(doc, buffer, sizeof(buffer));
     _client.publish(MQTT_LD2454_TOPIC, buffer);
+}
+
+// Frames stream (P1 spec section 1). Drains the ring every MqttTask loop, connected or not, so the
+// frames never queue up: while Wi-Fi or MQTT is down their batches are dropped and the next published
+// batch starts at a later seq. At most one ring's worth per call, so the timer rules always run.
+void MqttManager::serviceFrameStream() {
+    Ld2454Frame chunk[FRAMES_DRAIN_CHUNK];
+    bool publishFailed = false;   // set by the first failed publish: the rest of this call is dropped
+    size_t drained = 0;
+    while (drained < LD2454_RING_FRAMES) {
+        size_t got = ld2454FrameRing.pop(chunk, FRAMES_DRAIN_CHUNK);
+        if (got == 0) break;
+        drained += got;
+        for (size_t i = 0; i < got; i++) {
+            const Ld2454Batch* closed = _frameBatcher.add(chunk[i], millis());
+            if (closed) sendFrameBatch(*closed, publishFailed);
+        }
+    }
+    const Ld2454Batch* closed = _frameBatcher.poll(millis());
+    if (closed) sendFrameBatch(*closed, publishFailed);
+
+    uint32_t nowMs = millis();
+    uint32_t overflow = ld2454FrameRing.overwritten();
+    uint32_t total = overflow + _framesDroppedOffline + _framesDroppedPublish;
+    if (total != _framesLoggedTotal && nowMs - _framesLogMs >= FRAMES_LOG_INTERVAL_MS) {
+        _framesLoggedTotal = total;
+        _framesLogMs = nowMs;
+        Serial.printf("[FRAMES] dropped since boot: %lu ring overflow, %lu MQTT down, %lu publish failed\n",
+                      (unsigned long)overflow, (unsigned long)_framesDroppedOffline,
+                      (unsigned long)_framesDroppedPublish);
+    }
+}
+
+// A publish fails when the socket stays unwritable for ~10 s (a stalled link), so once one has failed
+// (publishFailed) the batches after it in the same serviceFrameStream() call are dropped unsent: one
+// write timeout per MqttTask loop, as for the other topics, instead of one per batch.
+void MqttManager::sendFrameBatch(const Ld2454Batch& batch, bool& publishFailed) {
+    static char payload[LD2454_FRAMES_JSON_MAX];   // MqttTask is the only caller
+    if (!isConnected()) {
+        _framesDroppedOffline += batch.n;   // dropped, not queued: the seq gap shows it downstream
+        return;
+    }
+    if (publishFailed) {
+        _framesDroppedPublish += batch.n;
+        return;
+    }
+    uint64_t tMs = (uint64_t)(esp_timer_get_time() / 1000);
+    size_t len = formatLd2454Frames(payload, sizeof(payload), batch, tMs, _bootId,
+                                    ld2454Sensor.isMultiTargetEnabled(), ld2412Sensor.isPresent(),
+                                    FRAMES_PW_P1, FRAMES_SM_P1);
+    if (len == 0) {
+        _framesDroppedPublish += batch.n;
+    } else if (!_client.publish(MQTT_LD2454_FRAMES_TOPIC, (const uint8_t*)payload, len, false)) {
+        _framesDroppedPublish += batch.n;
+        publishFailed = true;
+    }
 }

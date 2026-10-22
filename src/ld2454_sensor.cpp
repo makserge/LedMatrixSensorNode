@@ -1,4 +1,5 @@
 #include "ld2454_sensor.h"
+#include "ld2454_frames.h"
 
 Ld2454Sensor ld2454Sensor;
 
@@ -228,6 +229,7 @@ void Ld2454Sensor::processTrackingFrame() {
     portEXIT_CRITICAL(&_targetsMux);
 
     uint32_t nowMs = millis();
+    ld2454FrameRing.push(parsed, nowMs);   // to the frames stream (MqttTask)
     if (_configuring) {
         // The radar pauses reporting during our own configuration attempt; no restart heuristics.
     } else if (_retryOnNextFrame) {
@@ -303,8 +305,16 @@ void ld2454SensorTask(void *pvParameters) {
     ld2454Sensor.begin();
 
     for (;;) {
-        waitWhileOtaPaused();
+        // After an aborted OTA upload the UART still holds frames from before and during the pause.
+        // The driver parses them as always, but they would all carry the resume time: keep them out
+        // of the frames stream.
+        bool resumed = waitWhileOtaPaused();
+        if (resumed) ld2454FrameRing.beginMute();
         ld2454Sensor.update();
+        if (resumed) {
+            Serial.printf("[LD2454] resumed after OTA pause, %lu stale frames kept out of the stream\n",
+                          (unsigned long)ld2454FrameRing.endMute());
+        }
         vTaskDelay(pdMS_TO_TICKS(LD2454_SENSOR_INTERVAL));
     }
 }
