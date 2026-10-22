@@ -2,6 +2,15 @@
 
 QueueHandle_t clockQueue = NULL;
 
+// getLocalTime() polls for up to 5 s while the time is unset, which stalls the caller
+// (the display task on every CO2 popup); with a 0 ms timeout it reports "unset" whenever
+// millis() ticks between its two reads. Same validity test, without either.
+bool readLocalTime(struct tm* info) {
+    time_t now = time(nullptr);
+    localtime_r(&now, info);
+    return info->tm_year > (2016 - 1900);
+}
+
 void NtpClock::begin() {
     configTzTime(TIME_ZONE, NTP_SERVER);
 }
@@ -10,7 +19,7 @@ void NtpClock::update(bool showColon) {
     struct tm timeinfo;
     ClockMessage msg;
 
-    if (getLocalTime(&timeinfo)) {
+    if (readLocalTime(&timeinfo)) {
         int currentHour = timeinfo.tm_hour;
         int currentMinute = timeinfo.tm_min;
 
@@ -48,6 +57,7 @@ void ntpClockTask(void *pvParameters) {
     bool showColon = true;
 
     for (;;) {
+        waitWhileOtaPaused();
         ntpClock.update(showColon);
         showColon = !showColon;
         vTaskDelay(pdMS_TO_TICKS(500));
@@ -59,6 +69,6 @@ void initNtpClockTask() {
 
     xTaskCreatePinnedToCore(
         ntpClockTask, "NtpClockTask", CLOCK_TASK_STACK_SIZE, NULL,
-        CLOCK_TASK_PRIORITY, &ntpClockTaskHandle, 1   // was NULL
+        CLOCK_TASK_PRIORITY, NULL, 1
     );
 }

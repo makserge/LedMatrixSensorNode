@@ -3,18 +3,11 @@
 
 #include <Arduino.h>
 
-extern TaskHandle_t co2TaskHandle;
-extern TaskHandle_t tempHumTaskHandle;
-extern TaskHandle_t lightTaskHandle;
-extern TaskHandle_t ld2412TaskHandle;
-extern TaskHandle_t ld2450TaskHandle;
-extern TaskHandle_t ntpClockTaskHandle;
-extern TaskHandle_t mqttTaskHandle;
-extern TaskHandle_t streamIngestTaskHandle;
-extern TaskHandle_t ballisticsTaskHandle;
-extern TaskHandle_t spectrumViewTaskHandle;
-
 void pauseBackgroundTasksForOta();
 void resumeBackgroundTasksAfterOta();
+
+// Called by every background task at a safe point of its loop (no I2C/UART/socket
+// call in flight). Blocks while an OTA update is running; returns true if it waited.
+bool waitWhileOtaPaused();
 
 #endif

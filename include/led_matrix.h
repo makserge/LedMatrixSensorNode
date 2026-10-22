@@ -69,7 +69,8 @@ private:
 
     portMUX_TYPE _bufferMux;
 
-    static void IRAM_ATTR shiftOutRGBParallel(int clk, int rPin, int gPin, int bPin, uint16_t rData, uint16_t gData, uint16_t bData);
+    // Drives R1/G1/B1/CLK from pins.h (compile-time masks, see led_matrix.cpp).
+    static void IRAM_ATTR shiftOutRGBParallel(uint16_t rData, uint16_t gData, uint16_t bData);
     static void IRAM_ATTR displayTaskEngine(void* pvParameters);
 };
 

@@ -10,9 +10,21 @@
 #include "co2_sensor.h"
 #include "display_manager.h"
 #include "ld2412_sensor.h"
-#include "ld2450_sensor.h"
+#include "ld2454_sensor.h"
 #include "light_sensor.h"
 #include "temp_humidity_sensor.h"
+
+// PubSubClient waits for CONNACK, and for the rest of a packet, in a tight
+// `while (!available())` loop: up to its socket timeout of busy-spinning on core 1.
+// Sleeping a tick whenever nothing has arrived turns that spin into a real wait.
+class MqttSocket : public WiFiClient {
+public:
+    int available() override {
+        int n = WiFiClient::available();
+        if (n == 0) vTaskDelay(1);
+        return n;
+    }
+};
 
 class MqttManager {
 public:
@@ -28,8 +40,10 @@ private:
     void publishConfig(const char* id, const char* name, const char* unit, const char* devClass, const char* valTpl);
     void subscribeTopics();
     
-    WiFiClient _espClient;
+    MqttSocket _espClient;
     PubSubClient _client;
+    uint32_t _lastConnectAttemptMs = 0;
+    uint32_t _reconnectDelayMs = 0;   // minimum gap from the last connect attempt to the next one
 };
 
 extern MqttManager mqttManager;

@@ -5,7 +5,7 @@ MqttManager mqttManager;
 extern Co2Sensor co2Sensor;
 extern TempHumiditySensor tempHumSensor;
 extern Ld2412Sensor ld2412Sensor;
-extern Ld2450Sensor ld2450Sensor;
+extern Ld2454Sensor ld2454Sensor;
 
 static bool isHexChar(char c) {
     return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
@@ -17,18 +17,97 @@ static uint8_t hexNibble(char c) {
     return c - 'A' + 10;
 }
 
-static size_t decodeHexPayload(const byte* payload, unsigned int length, uint8_t* outBuf, size_t outBufCap) {
-    if (length == 0 || length % 2 != 0) return 0;
-    size_t outLen = length / 2;
-    if (outLen > outBufCap) return 0;
+static bool isSpaceChar(char c) {
+    return c == ' ' || c == '\t' || c == '\r' || c == '\n';
+}
 
+// Decodes an RLE icon - runs of [runLength, r, g, b] in row-major order - into a
+// whole panel of colors. Pixels the runs don't cover stay black, never the previous
+// icon. The payload is hex text if it holds only hex digits and whitespace (skipped
+// anywhere: the final newline of mosquitto_pub -f or a YAML block, wrapped lines),
+// else raw bytes. Returns false, after one log line saying why, if it isn't a usable icon.
+static bool decodeIconPayload(const byte* payload, unsigned int length, uint16_t* pixels) {
+    unsigned int hexDigits = 0;
+    int firstNonHex = -1;   // offset of the first byte that is neither hex digit nor whitespace
+    bool printable = true;  // nothing but printable ASCII and whitespace
     for (unsigned int i = 0; i < length; i++) {
-        if (!isHexChar((char)payload[i])) return 0;
+        char c = (char)payload[i];
+        if (isHexChar(c)) hexDigits++;
+        else if (!isSpaceChar(c) && firstNonHex < 0) firstNonHex = (int)i;
+        if (!isSpaceChar(c) && (payload[i] < 0x20 || payload[i] > 0x7E)) printable = false;
     }
-    for (size_t i = 0; i < outLen; i++) {
-        outBuf[i] = (hexNibble((char)payload[i * 2]) << 4) | hexNibble((char)payload[i * 2 + 1]);
+    bool hexText = firstNonHex < 0;
+    if (hexText && hexDigits == 0) {
+        Serial.println("[ICON] ignored: empty payload");
+        return false;
     }
-    return outLen;
+    if (hexText && hexDigits % 8 != 0) {
+        Serial.printf("[ICON] rejected: %u hex digits, need a multiple of 8 (4 bytes per run)\n", hexDigits);
+        return false;
+    }
+    if (!hexText && printable) {
+        // As raw bytes it could only be black (every color byte <= 0x7E): it is hex with a typo.
+        Serial.printf("[ICON] rejected: '%c' at offset %d is not a hex digit\n",
+                      (char)payload[firstNonHex], firstNonHex);
+        return false;
+    }
+    if (!hexText && length % 4 != 0) {
+        Serial.printf("[ICON] rejected: %u raw bytes, need a multiple of 4 (4 bytes per run)\n", length);
+        return false;
+    }
+
+    memset(pixels, 0, MATRIX_TOTAL_PIXELS * sizeof(uint16_t));
+    uint8_t run[4];
+    uint8_t runBytes = 0;
+    uint8_t value = 0;
+    uint8_t nibbles = 0;
+    unsigned int pixelCount = 0;
+    for (unsigned int i = 0; i < length; i++) {
+        if (hexText) {
+            char c = (char)payload[i];
+            if (isSpaceChar(c)) continue;
+            value = (uint8_t)((value << 4) | hexNibble(c));
+            if (++nibbles < 2) continue;
+            nibbles = 0;
+        } else {
+            value = payload[i];
+        }
+        run[runBytes++] = value;
+        if (runBytes < 4) continue;
+        runBytes = 0;
+        if (pixelCount + run[0] > MATRIX_TOTAL_PIXELS) {
+            Serial.printf("[ICON] rejected: runs cover more than %u pixels (%ux%u)\n",
+                          (unsigned)MATRIX_TOTAL_PIXELS, (unsigned)MATRIX_WIDTH, (unsigned)MATRIX_HEIGHT);
+            return false;
+        }
+        uint16_t color = MatrixPanel_I2S_DMA::color565(run[1], run[2], run[3]); // >127 per channel = on
+        for (uint8_t n = 0; n < run[0]; n++) pixels[pixelCount++] = color;
+    }
+    if (pixelCount == 0) {
+        Serial.println("[ICON] rejected: runs cover no pixels");
+        return false;
+    }
+    Serial.printf("[ICON] %s payload, %u of %u pixels set, showing icon view\n",
+                  hexText ? "hex" : "raw", pixelCount, (unsigned)MATRIX_TOTAL_PIXELS);
+    return true;
+}
+
+// Message text as the panel shows it: upper case, control characters as spaces,
+// surrounding whitespace dropped, and each UTF-8 sequence as one character (drawn as
+// the font's placeholder) instead of one per byte. Returns the length.
+static int prepareMessageText(const byte* payload, unsigned int length, char* out, int outCap) {
+    int len = 0;
+    for (unsigned int i = 0; i < length && len < outCap - 1; i++) {
+        uint8_t c = payload[i];
+        if (c == 0xC2 && i + 1 < length && payload[i + 1] == 0xB0) c = '*'; // UTF-8 degree sign: the font's one
+        if (c >= 0x80 && c < 0xC0) continue; // UTF-8 continuation byte
+        if (c < 0x20 || c == 0x7F) c = ' ';
+        if (c == ' ' && len == 0) continue;
+        out[len++] = (char)toupper(c);
+    }
+    while (len > 0 && out[len - 1] == ' ') len--;
+    out[len] = '\0';
+    return len;
 }
 
 static bool parseColorPayload(const char* payload, uint8_t& r, uint8_t& g, uint8_t& b) {
@@ -63,44 +142,24 @@ static bool parseColorPayload(const char* payload, uint8_t& r, uint8_t& g, uint8
 
 static void onMqttMessageReceived(char* topic, byte* payload, unsigned int length) {
     if (strcasecmp(topic, MQTT_DISPLAY_ICON_TOPIC) == 0) {
-       static uint8_t iconDecodeBuf[MATRIX_TOTAL_PIXELS * 4];
-
-        const byte* iconPayload = payload;
-        unsigned int iconLength = length;
-
-        size_t hexDecodedLen = decodeHexPayload(payload, length, iconDecodeBuf, sizeof(iconDecodeBuf));
-        if (hexDecodedLen > 0) {
-            iconPayload = iconDecodeBuf;
-            iconLength = (unsigned int)hexDecodedLen;
-            Serial.printf("[ICON] received %u hex chars -> %u binary bytes\n", length, iconLength);
-        } else {
-            Serial.printf("[ICON] received %u raw binary bytes\n", length);
+        // Decoded aside and handed over whole: the shown icon never mixes with this one.
+        static uint16_t iconPixels[MATRIX_TOTAL_PIXELS];
+        if (decodeIconPayload(payload, length, iconPixels)) {
+            DisplayManager::showIcon(iconPixels);
         }
-
-        if (iconLength == 0 || iconLength % 4 != 0) {
-            Serial.println("[ICON] rejected: decoded payload length must be a non-zero multiple of 4");
+    }
+    else if (strcasecmp(topic, MQTT_DISPLAY_MSG_TOPIC) == 0) {
+        char text[MQTT_MSG_MAX_LEN];
+        if (prepareMessageText(payload, length, text, sizeof(text)) == 0) {
+            // E.g. a retained message being cleared: keep the current view rather than
+            // blanking the panel for the message's duration.
+            Serial.println("[MQTT] empty message ignored");
             return;
         }
-
-        int currentPixelIndex = 0;
-        for (unsigned int i = 0; i < iconLength; i += 4) {
-            byte runLength = iconPayload[i];
-            byte r          = iconPayload[i + 1];
-            byte g          = iconPayload[i + 2];
-            byte b          = iconPayload[i + 3];
-
-            for (int count = 0; count < runLength; count++) {
-                if (currentPixelIndex >= MATRIX_TOTAL_PIXELS) break;
-
-                int x = currentPixelIndex % MATRIX_WIDTH;
-                int y = currentPixelIndex / MATRIX_WIDTH;
-
-                DisplayManager::drawIconPixel(x, y, r, g, b);
-                currentPixelIndex++;
-            }
-        }
-        Serial.printf("[ICON] decoded %d pixels, showing icon view\n", currentPixelIndex);
-        DisplayManager::showIconView();
+        DisplayManager::setCustomMessage(text);
+    }
+    else if (strcasecmp(topic, MQTT_BEEPER_TOPIC) == 0) {
+        DisplayManager::requestBeep(); // sounded by the display task, the beeper's only driver
     }
     else {
         char payloadBuf[MQTT_MSG_MAX_LEN + 1];
@@ -118,12 +177,6 @@ static void onMqttMessageReceived(char* topic, byte* payload, unsigned int lengt
             } else if (strcasecmp(payloadBuf, "spectrum") == 0) {
                 DisplayManager::selectView(VIEW_SPECTRUM);
             }
-        } 
-        else if (strcasecmp(topic, MQTT_DISPLAY_MSG_TOPIC) == 0) {
-            for (unsigned int i = 0; i < len; i++) {
-                payloadBuf[i] = toupper((unsigned char)payloadBuf[i]);
-            }
-            DisplayManager::setCustomMessage(payloadBuf);
         }
         else if (strcasecmp(topic, MQTT_DISPLAY_POWER_TOPIC) == 0) {
             if (strcmp(payloadBuf, "1") == 0) {
@@ -138,11 +191,6 @@ static void onMqttMessageReceived(char* topic, byte* payload, unsigned int lengt
                 DisplayManager::setClockColor(r, g, b);
             }
         }
-        else if (strcasecmp(topic, MQTT_BEEPER_TOPIC) == 0) {
-            digitalWrite(BEEPER_PIN, HIGH);
-            delay(BEEP_DURATION_MS);
-            digitalWrite(BEEPER_PIN, LOW);
-        }
     }
 }
 
@@ -154,6 +202,7 @@ void mqttTask(void *pvParameters) {
     unsigned long lastRadarPublishTime = 0;
     
     for (;;) {
+        waitWhileOtaPaused();
         mqttManager.update();
 
         if (mqttManager.isConnected()) {
@@ -175,17 +224,15 @@ void mqttTask(void *pvParameters) {
 void initMqttTask() {
     xTaskCreatePinnedToCore(
         mqttTask, "MqttTask", MQTT_TASK_STACK_SIZE, NULL,
-        MQTT_TASK_PRIORITY, &mqttTaskHandle, 1
+        MQTT_TASK_PRIORITY, NULL, 1
     );
 }
 
 void MqttManager::begin() {
-    pinMode(BEEPER_PIN, OUTPUT);
-    digitalWrite(BEEPER_PIN, LOW);
-
     _client.setClient(_espClient);
     _client.setServer(MQTT_HOST, MQTT_PORT);
     _client.setBufferSize(4096); 
+    _client.setSocketTimeout(MQTT_SOCKET_TIMEOUT_S);
 }
 
 void MqttManager::setCallback() {
@@ -207,30 +254,49 @@ void MqttManager::update() {
     }
 
     if (!_client.connected()) {
+        // Back off between attempts: a refused login or a closed broker port used to be
+        // retried every 40 ms, flooding the broker log (and tripping flapping bans).
+        uint32_t nowMs = millis();
+        if (nowMs - _lastConnectAttemptMs < _reconnectDelayMs) {
+            return;
+        }
+        _lastConnectAttemptMs = nowMs;
+
         Serial.print("Attempting MQTT connection...");
         
         if (_client.connect(MQTT_CLIENT_ID, MQTT_USER, MQTT_PASS, 
                             MQTT_STATUS_TOPIC, 1, true, "offline")) {
             Serial.println("MQTT connected");
+            // Not 0: a broker that drops the session right away (e.g. a duplicate
+            // client ID) still gets a gap between reconnects.
+            _reconnectDelayMs = MQTT_RECONNECT_MIN_MS;
             
             sendDiscovery();
             subscribeTopics();
             
             _client.publish(MQTT_STATUS_TOPIC, "online", true);
         } else {
-            Serial.print("MQTT failed, rc=");
-            Serial.print(_client.state());
-            Serial.println(" try again in next cycle");
+            _reconnectDelayMs = constrain(_reconnectDelayMs * 2, MQTT_RECONNECT_MIN_MS, MQTT_RECONNECT_MAX_MS);
+            Serial.printf("MQTT failed, rc=%d, retrying in %lu s\n",
+                          _client.state(), (unsigned long)(_reconnectDelayMs / 1000));
         }
     }
     _client.loop();
 }
 
+// A field is left out of the state JSON while its sensor has no fresh value. The
+// templates turn a missing field into "None", which Home Assistant shows as unknown;
+// a plain {{value_json.co2}} would render "", which HA ignores, keeping the old value
+// (and every state message restarts expire_after, so that wouldn't catch it either).
 void MqttManager::sendDiscovery() {
-    publishConfig("co2", "CO2", "ppm", "carbon_dioxide", "{{value_json.co2}}");
-    publishConfig("temp", "Temperature", "°C",  "temperature",  "{{value_json.temp}}");
-    publishConfig("hum", "Humidity", "%", "humidity", "{{value_json.hum}}");
-    publishConfig("lux", "Illuminance", "lx", "illuminance", "{{value_json.lux}}");
+    publishConfig("co2", "CO2", "ppm", "carbon_dioxide",
+                  "{{ value_json.co2 if 'co2' in value_json else None }}");
+    publishConfig("temp", "Temperature", "°C",  "temperature",
+                  "{{ value_json.temp if 'temp' in value_json else None }}");
+    publishConfig("hum", "Humidity", "%", "humidity",
+                  "{{ value_json.hum if 'hum' in value_json else None }}");
+    publishConfig("lux", "Illuminance", "lx", "illuminance",
+                  "{{ value_json.lux if 'lux' in value_json else None }}");
 }
 
 void MqttManager::publishConfig(const char* id, const char* name, const char* unit, const char* devClass, const char* valTpl) {
@@ -245,6 +311,8 @@ void MqttManager::publishConfig(const char* id, const char* name, const char* un
     doc["avty_t"] = MQTT_STATUS_TOPIC;
     doc["unit_of_meas"] = unit;
     doc["dev_cla"] = devClass;
+    doc["stat_cla"] = "measurement"; // HA keeps long-term statistics only for sensors with a state class
+    doc["exp_aft"] = MQTT_EXPIRE_AFTER_S; // no state for this long (node hung or gone) -> unavailable
     doc["val_tpl"] = valTpl;
     doc["uniq_id"] = String(MQTT_CLIENT_ID) + "_" + id;
     
@@ -260,16 +328,24 @@ void MqttManager::publishConfig(const char* id, const char* name, const char* un
 }
 
 void MqttManager::publishSensorData() {
-    if (co2Sensor.getCo2() == 0) {
-        return;
-    }
-
+    // Each field only while its own sensor has a fresh, valid value, so a dead SCD4x no
+    // longer silences the other sensors and a failed one isn't reported as a live value.
+    // Sent even when empty ("{}"), so HA shows all four as unknown rather than stale.
     JsonDocument doc;
+    JsonObject state = doc.to<JsonObject>();
 
-    doc["co2"] = co2Sensor.getCo2();
-    doc["temp"] = round(tempHumSensor.getTemp() * 100.0f) / 100.0f;
-    doc["hum"] = round(tempHumSensor.getHum() * 100.0f) / 100.0f;
-    doc["lux"] = round(lightSensor.getCurrentLux() * 100.0f) / 100.0f;
+    if (co2Sensor.hasFreshData()) {
+        state["co2"] = co2Sensor.getCo2();
+    }
+    if (tempHumSensor.hasFreshTemp()) {
+        state["temp"] = round(tempHumSensor.getTemp() * 100.0f) / 100.0f;
+    }
+    if (tempHumSensor.hasFreshHum()) {
+        state["hum"] = round(tempHumSensor.getHum() * 100.0f) / 100.0f;
+    }
+    if (lightSensor.hasFreshData()) {
+        state["lux"] = round(lightSensor.getCurrentLux() * 100.0f) / 100.0f;
+    }
 
     char buffer[256];
     serializeJson(doc, buffer, sizeof(buffer));
@@ -284,11 +360,11 @@ void MqttManager::publishRadarData() {
     // LD2412: simple presence state on its own topic.
     _client.publish(MQTT_LD2412_TOPIC, ld2412Sensor.isPresent() ? "1" : "0", true);
 
-    // LD2450: up to 3 tracked targets as JSON on its own topic.
+    // LD2454: up to 3 tracked targets as JSON on its own topic.
     JsonDocument doc;
     JsonArray targets = doc["targets"].to<JsonArray>();
-    for (uint8_t i = 0; i < ld2450Sensor.getTargetCount(); i++) {
-        Ld2450TargetData t = ld2450Sensor.getTarget(i);
+    for (uint8_t i = 0; i < ld2454Sensor.getTargetCount(); i++) {
+        Ld2454TargetData t = ld2454Sensor.getTarget(i);
         if (!t.valid) continue;
         JsonObject to = targets.add<JsonObject>();
         to["id"] = i;
@@ -298,8 +374,9 @@ void MqttManager::publishRadarData() {
         to["distance"] = t.distance;
     }
     doc["count"] = targets.size();
+    doc["multi_target"] = ld2454Sensor.isMultiTargetEnabled();
 
-    char buffer[256];
+    char buffer[384]; // 3 targets with worst-case coordinates need ~250 bytes
     serializeJson(doc, buffer, sizeof(buffer));
-    _client.publish(MQTT_LD2450_TOPIC, buffer);
+    _client.publish(MQTT_LD2454_TOPIC, buffer);
 }

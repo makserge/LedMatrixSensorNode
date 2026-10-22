@@ -27,7 +27,7 @@
 
 #define RADAR_PRESENCE_PIN   D1
 
-// LD2450 Radar (Hardware Serial 1)
+// LD2454 Radar (Hardware Serial 1)
 #define RADAR_RX_PIN 11
 #define RADAR_TX_PIN D7
 #define RADAR_BAUD   256000
