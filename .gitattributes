@@ -1,0 +1,15 @@
+# Text files are stored with LF in the repository and checked out with the platform's
+# native line ending, so a checkout on macOS, Linux or Windows shows no changes.
+* text=auto
+
+# Always LF, also on Windows: these run on Linux (Home Assistant add-on container) or in a shell.
+ha-addon/** text eol=lf
+*.sh text eol=lf
+Dockerfile text eol=lf
+
+# Binary files: never converted.
+*.pdf binary
+*.zip binary
+*.png binary
+*.jpg binary
+*.bin binary
