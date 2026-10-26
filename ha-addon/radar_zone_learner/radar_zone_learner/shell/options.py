@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import re
 from dataclasses import dataclass, field
@@ -21,10 +22,13 @@ DEFAULTS = {
     "node_prefix": "led_matrix_node",
     "discovery_prefix": "homeassistant",
     "debug_map": True,
+    "night_lux": 5.0,
 }
 DEFAULT_MQTT_HOST = "core-mosquitto"
 DEFAULT_MQTT_PORT = 1883
 ENV_PREFIX = "RZL_MQTT_"
+NIGHT_LUX_MIN = 0.1
+NIGHT_LUX_MAX = 500.0
 NODE_PREFIX_RE = re.compile(r"^[A-Za-z0-9_/-]{1,64}$")
 DISCOVERY_PREFIX_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 _TRUE = ("1", "true", "yes", "on")
@@ -49,6 +53,7 @@ class Settings:
     mqtt_password: Optional[str] = field(repr=False)
     mqtt_ssl: bool
     data_dir: Path
+    night_lux: float = DEFAULTS["night_lux"]
 
 
 def _port(value, what: str) -> int:
@@ -122,6 +127,10 @@ def load_settings(options_path: Path = Path("/data/options.json"), environ: Opti
     debug_map = opts.get("debug_map", DEFAULTS["debug_map"])
     if not isinstance(debug_map, bool):
         raise SettingsError("debug_map must be true or false")
+    night_lux = opts.get("night_lux", DEFAULTS["night_lux"])
+    if (isinstance(night_lux, bool) or not isinstance(night_lux, (int, float)) or not math.isfinite(night_lux)
+            or not NIGHT_LUX_MIN <= night_lux <= NIGHT_LUX_MAX):
+        raise SettingsError(f"night_lux must be a number from {NIGHT_LUX_MIN:g} to {NIGHT_LUX_MAX:g}")
 
     if ENV_PREFIX + "HOST" in mqtt_env:
         # run.sh decided between the option override and the Supervisor service.
@@ -141,7 +150,8 @@ def load_settings(options_path: Path = Path("/data/options.json"), environ: Opti
 
     return Settings(log_level=log_level.lower(), node_prefix=node_prefix, discovery_prefix=discovery_prefix,
                     debug_map=debug_map, mqtt_host=host, mqtt_port=port, mqtt_username=username,
-                    mqtt_password=password, mqtt_ssl=ssl, data_dir=options_path.parent)
+                    mqtt_password=password, mqtt_ssl=ssl, data_dir=options_path.parent,
+                    night_lux=float(night_lux))
 
 
 def configure_logging(level: str) -> None:

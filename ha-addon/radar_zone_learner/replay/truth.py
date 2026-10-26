@@ -225,3 +225,41 @@ class Truth:
     def label(self, x: float, y: float, night: int) -> str:
         """The simulator's truth label at the suggestion's night (``label(cx, cy, d, cfg)``, d = night - 1)."""
         return W.label(x, y, max(0, night - 1), self.cfg)
+
+
+class NightTruth:
+    """The true sleep onsets and wakes of the run (P4, OA 7.5), per night = the evening's day index ``n``.
+
+    The onset of night n is the start of P1's bed sleep of the evening of day n (also when it falls after 00:00,
+    which the simulator drops: ``WorldDay.late``); the wake of night n is the end of P1's bed sleep on day n + 1.
+    Night -1 has a wake only (day 0 starts with the sleeper in bed). Values in sim seconds; ``nm`` is the learner's
+    night axis: minutes after 12:00 of the evening's date.
+    """
+
+    def __init__(self):
+        self.onset_s = {}
+        self.wake_s = {}
+        self.late = []
+
+    def add_day(self, rec) -> None:
+        d = rec.d
+        for ag, place, mode, t0, t1, x, y in rec.sessions:
+            if ag == "P1" and place == "bed" and mode == "sleep":
+                if t0 == d * W.DAY:
+                    self.wake_s[d - 1] = t1
+                else:
+                    self.onset_s[d] = t0
+        for ag, s0 in rec.late:
+            if ag == "P1":
+                self.onset_s[d] = s0
+                self.late.append(d)
+
+    @staticmethod
+    def nm(night: int, t_s: int) -> int:
+        return (t_s - night * W.DAY - 12 * 3600) // 60
+
+    def onsets_nm(self, nights) -> dict:
+        return {n: self.nm(n, self.onset_s[n]) for n in nights if n in self.onset_s}
+
+    def wakes_nm(self, nights) -> dict:
+        return {n: self.nm(n, self.wake_s[n]) for n in nights if n in self.wake_s}

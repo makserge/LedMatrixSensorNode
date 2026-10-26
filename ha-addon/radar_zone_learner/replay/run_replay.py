@@ -1,10 +1,16 @@
 """Replay CLI: run jobs in parallel (at most 3 workers), evaluate, write the report (P3 spec 11.9).
 
-    python -I -B replay/run_replay.py --out DIR [--profile smoke|quick|p3] [--jobs NAME,...] [--seeds 1-5]
+    python -I -B replay/run_replay.py --out DIR [--profile smoke|quick|p3|p4smoke|p4] [--jobs NAME,...] [--seeds 1-5]
                                       [--nights N] [--workers N] [--cpu-budget-per-day S] [--params-json FILE]
 
 Output (nothing is written outside ``--out``): ``DIR/runs/<job>_s<seed>.json``, ``DIR/report.json``,
 ``DIR/report.md``, ``DIR/timing.json``, ``DIR/log.txt``.
+
+Profiles: ``p3`` is the P3 gate (G1-G6: both worlds, every window, ghost, dropout and fault variants, about 1,333
+simulated days, about 22 min on 3 workers); ``p4`` is the P4 gate (P4-1 to P4-7, bedroom only: 47 runs, 707 simulated
+days, about 12 min) and has NO run of the G1-G6 jobs, so a p4 invocation reports G1-G6 as not run; the two together
+(2,040 days) exceed the 1,500-day limit of one invocation and are run one after the other. The report lists the
+jobs, seeds and night counts a run really used.
 
 Bounds: ``--workers`` is clamped to ``min(3, cpu_count - 1)``; ``--nights`` <= 28; seeds within 1..5; more than
 1,500 simulated days in one invocation is refused; each run stops when its CPU exceeds
@@ -210,8 +216,10 @@ def main(argv=None) -> int:
     log("")
     for c in report["criteria"]:
         log("%-4s %-10s %s" % (c["id"], c["status"], c["title"]))
-    log("gate: %s%s; CPU %.0f s for %.1f simulated days (%.2f s/day); wall %.0f s" % (
-        report["gate"], (" (failed %s)" % ",".join(report["failed"])) if report["failed"] else "",
+    for c in (report.get("p4") or {}).get("criteria", []):       # the P4 checks of OA 12 P4 (replay.evaluate_p4)
+        log("%-4s %-10s %s" % (c["id"], c["status"], c["title"]))
+    log("gate (%s): %s%s; CPU %.0f s for %.1f simulated days (%.2f s/day); wall %.0f s" % (
+        report["scope"], report["gate"], (" (failed %s)" % ",".join(report["failed"])) if report["failed"] else "",
         cpu_total, sim_total, timing["cpu_s_per_day"] or 0, wall))
     if report["bad_runs"]:
         log("runs not ok: %s" % ", ".join("%s s%s %s" % (b["job"], b["seed"], b["status"]) for b in report["bad_runs"]))

@@ -1,0 +1,157 @@
+# Radar Zone Learner: home context (design 6.3 'HA context', 7.5).
+#
+# Copy this file to  <config>/blueprints/automation/radar_zone_learner/radar_zone_context.yaml  in Home
+# Assistant (Samba share or Terminal & SSH app), then Settings > Automations & scenes > Blueprints > Create
+# automation. It is not an entity and not part of the app: it only feeds the app four retained MQTT topics.
+#
+#   radar_zones/context/home_empty   on while nobody is home. Clutter learning (ignore zones) uses it.
+#   radar_zones/context/guests       on while guests are staying. Learning is paused for them.
+#   radar_zones/context/lights_off   optional: on while the bedroom lights are off (night-onset evidence).
+#   radar_zones/context/sleep_hint   optional: on while the household is probably asleep (onset evidence).
+#
+# A context with no entity chosen is never published, so the app simply goes without it. In this
+# installation the node's own illuminance sensor is the expected night-onset input; leave lights_off and
+# sleep_hint empty unless you have something real to feed them.
+#
+# An empty message (a cleared context) is published when a chosen entity is unavailable or unknown, so a
+# broken sensor never counts as 'home is empty'.
+blueprint:
+  name: Radar zone learner - home context
+  description: >-
+    Tells the Radar Zone Learner app when the home is empty and when guests are present, and optionally when
+    the lights went off and when the household is probably asleep. Each context is published as a retained
+    MQTT message on radar_zones/context/<name>; a context with no entity chosen is left unpublished.
+  domain: automation
+  homeassistant:
+    min_version: 2024.10.0
+  input:
+    home_empty_entities:
+      name: Home is empty
+      description: >-
+        Entities that are on, not_home or away while nobody is home, for example a template binary sensor or the
+        person entities. The home counts as empty when every chosen entity is in one of those states. Leave
+        empty to publish nothing.
+      default: []
+      selector:
+        entity:
+          multiple: true
+    guests_entities:
+      name: Guests are present
+      description: >-
+        Entities that are on while guests are staying, for example an input_boolean you switch by hand.
+        Guests are present when any chosen entity is on. Leave empty to publish nothing.
+      default: []
+      selector:
+        entity:
+          multiple: true
+    lights_off_entities:
+      name: Lights are off (optional)
+      description: >-
+        The lights of the room with the radar. They count as off when every chosen entity is off. Leave empty
+        to publish nothing.
+      default: []
+      selector:
+        entity:
+          multiple: true
+    sleep_hint_entities:
+      name: Household is asleep (optional)
+      description: >-
+        Entities that are on while the household is probably asleep (a sleep mode, a bed sensor in another
+        room). Leave empty to publish nothing.
+      default: []
+      selector:
+        entity:
+          multiple: true
+
+mode: queued
+max: 10
+max_exceeded: silent
+
+variables:
+  home_empty_entities: !input home_empty_entities
+  guests_entities: !input guests_entities
+  lights_off_entities: !input lights_off_entities
+  sleep_hint_entities: !input sleep_hint_entities
+
+# An empty entity list never fires its trigger; the start trigger publishes the current state once.
+triggers:
+  - trigger: homeassistant
+    event: start
+  - trigger: state
+    entity_id: !input home_empty_entities
+  - trigger: state
+    entity_id: !input guests_entities
+  - trigger: state
+    entity_id: !input lights_off_entities
+  - trigger: state
+    entity_id: !input sleep_hint_entities
+
+actions:
+  - if:
+      - condition: template
+        value_template: "{{ home_empty_entities | length > 0 }}"
+    then:
+      - action: mqtt.publish
+        data:
+          topic: radar_zones/context/home_empty
+          qos: 1
+          retain: true
+          payload: >-
+            {%- set ns = namespace(unknown=false, empty=true) -%}
+            {%- for e in home_empty_entities -%}
+              {%- set s = states(e) -%}
+              {%- if s in ['unavailable', 'unknown'] -%}{%- set ns.unknown = true -%}{%- endif -%}
+              {%- if s not in ['on', 'not_home', 'away'] -%}{%- set ns.empty = false -%}{%- endif -%}
+            {%- endfor -%}
+            {{ '' if ns.unknown else ('on' if ns.empty else 'off') }}
+  - if:
+      - condition: template
+        value_template: "{{ guests_entities | length > 0 }}"
+    then:
+      - action: mqtt.publish
+        data:
+          topic: radar_zones/context/guests
+          qos: 1
+          retain: true
+          payload: >-
+            {%- set ns = namespace(unknown=false, any=false) -%}
+            {%- for e in guests_entities -%}
+              {%- set s = states(e) -%}
+              {%- if s in ['unavailable', 'unknown'] -%}{%- set ns.unknown = true -%}{%- endif -%}
+              {%- if s == 'on' -%}{%- set ns.any = true -%}{%- endif -%}
+            {%- endfor -%}
+            {{ 'on' if ns.any else ('' if ns.unknown else 'off') }}
+  - if:
+      - condition: template
+        value_template: "{{ lights_off_entities | length > 0 }}"
+    then:
+      - action: mqtt.publish
+        data:
+          topic: radar_zones/context/lights_off
+          qos: 1
+          retain: true
+          payload: >-
+            {%- set ns = namespace(unknown=false, all_off=true) -%}
+            {%- for e in lights_off_entities -%}
+              {%- set s = states(e) -%}
+              {%- if s in ['unavailable', 'unknown'] -%}{%- set ns.unknown = true -%}{%- endif -%}
+              {%- if s != 'off' -%}{%- set ns.all_off = false -%}{%- endif -%}
+            {%- endfor -%}
+            {{ '' if ns.unknown else ('on' if ns.all_off else 'off') }}
+  - if:
+      - condition: template
+        value_template: "{{ sleep_hint_entities | length > 0 }}"
+    then:
+      - action: mqtt.publish
+        data:
+          topic: radar_zones/context/sleep_hint
+          qos: 1
+          retain: true
+          payload: >-
+            {%- set ns = namespace(unknown=false, any=false) -%}
+            {%- for e in sleep_hint_entities -%}
+              {%- set s = states(e) -%}
+              {%- if s in ['unavailable', 'unknown'] -%}{%- set ns.unknown = true -%}{%- endif -%}
+              {%- if s == 'on' -%}{%- set ns.any = true -%}{%- endif -%}
+            {%- endfor -%}
+            {{ 'on' if ns.any else ('' if ns.unknown else 'off') }}

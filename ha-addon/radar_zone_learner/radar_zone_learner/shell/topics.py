@@ -42,6 +42,9 @@ class Topics:
     def discovery(self, component: str, object_id: str) -> str:
         return f"{self.discovery_prefix}/{component}/{object_id}/config"
 
+    def make_mapper(self) -> "TopicMapper":
+        return TopicMapper(self)
+
     def subscriptions(self) -> list:
         """(topic, qos) pairs exactly as spec 6.1."""
         return [

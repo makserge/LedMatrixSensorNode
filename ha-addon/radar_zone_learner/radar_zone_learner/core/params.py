@@ -146,6 +146,40 @@ class Params:
     # 7.11 status (D24)
     status_period_ms: int = 300000
 
+    # P4 night evidence and the night-window proposal (OA 7.5, 7.8). Times of day are minutes of the local day.
+    night_lux: float = 5.0               # lux below this is 'lights off' (a P0 measurement replaces it)
+    lux_dark_min_s: int = 900            # the lux proxy: lux stays below night_lux for 15 min (OA 7.5)
+    evening_start_min: int = 1200        # lights-off times and radar onsets count from 20:00 ...
+    night_onset_end_min: int = 240       # ... until 04:00
+    onset_quiet_s: int = 900             # radar onset: no moving target for 15 min (OA 7.5)
+    onset_replace_max_min: int = 60      # a later quiet start replaces the night's first radar onset only within 60 min
+    onset_dark_s: int = 600              # radar onset: lux dark for this long (or the lights_off context)
+    onset_ld_min: float = 0.9            # radar onset: LD2412 present for this share of the 15 min
+    wake_run_s: int = 600                # wake: the first activity, followed by more than 10 min of activity
+    wake_rest_s: int = 1800              # ... a first activity follows 30 min without a moving sample (or unobserved)
+    wake_earliest_min: int = 180         # a wake is the first run of the morning that starts 03:00 ...
+    wake_latest_min: int = 720           # ... to 12:00
+    night_keep_nights: int = 28          # onsets, wakes and activity are kept for 28 nights
+    night_res_min: int = 5               # ... at 5 min resolution
+    nw_min_nights: int = 7               # night_window: >= 7 nights with each edge observed
+    nw_iqr_max_min: int = 90             # ... and an IQR < 90 min
+    nw_round_min: int = 15               # start = P90(onset) rounded up, end = P10(wake) rounded down, to 15 min
+    nw_min_len_min: int = 60             # a proposed window shorter than 1 h or longer than 16 h is no proposal
+    nw_max_len_min: int = 960
+    nw_same_min: int = 15                # a proposal within 15 min of both current edges is already applied
+    nw_deny_days: int = 30               # 'Deny' suppresses the night_window item for 30 days
+    nw_late_min: int = 30                # 'activity was still seen in the 30 min before your current start'
+    nw_late_nights: int = 14             # ... on N of the last 14 nights
+
+    # P4 review items and Night learning (OA 7.6, 7.9, 4.2)
+    review_min_nights: int = 7           # the setup review (and with it the item list) exists after >= 7 nights
+    nl_nights: int = 7                   # Night learning keeps the schedule OFF for 7 nights
+    nl_retry_s: int = 600                # a restore that was not confirmed is sent again after 10 min ...
+    nl_restore_tries: int = 12           # ... at most 12 times (a refusal such as node_offline is no try: it waits)
+    nl_result_timeout_s: int = 300       # no CommandResult within 5 min counts as 'no_echo'
+    nl_unconfirmed_wait_s: int = 900     # an OFF the node did not confirm may still take effect: watched this long
+    nl_restore_late_s: int = 86400       # a restore more than 24 h overdue is not sent (the user is told instead)
+
     # 7.13 diagnostic switches (default = the design)
     envelope_hard_filter: bool = False
     conf_includes_covis: bool = True

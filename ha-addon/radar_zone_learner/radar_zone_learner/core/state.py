@@ -1,4 +1,7 @@
-"""State dict codec, schema v3 (P3 spec 8.1; OA 7.7, 10).
+"""State dict codec, schema v4 (P3 spec 8.1 and the P4 additions; OA 7.7, 10).
+
+Schema 4 adds the top-level sections ``zones``, ``suppressions`` and ``review`` and fills ``night`` (night_lux,
+onsets, wakes, activity bins, proposal_rev, night_learning). A v3 file loads through ``migrate_3_to_4``.
 
 export_state() builds a fresh JSON-serialisable dict (it never shares mutable objects with the
 learner); load_state() validates a dict and loads it into a fresh learner, raising StateError.
@@ -10,17 +13,20 @@ import copy
 import math
 from datetime import date
 
+from . import nightlearn as nightlearn_mod
+from . import night as night_mod
+from . import review as review_mod
 from .covis import Covis
 from .extraction import NightState
 from .grids import GRID_NAMES, decode_array, encode_array, rle_decode, rle_encode
-from .params import params_digest
-from .types import APP_VERSION, SCHEMA_VERSION, StateError
+from .params import DEFAULT_PARAMS, params_digest
+from .types import APP_VERSION, MIN_SCHEMA_VERSION, SCHEMA_VERSION, StateError
 
 TOP_KEYS = (("schema", int), ("writer", str), ("phase", str), ("params", str), ("meta", dict),
             ("clock", dict), ("grids", dict), ("days_bits", dict), ("covis", dict), ("coverage", dict),
             ("stays", list), ("door_events", list), ("ghost_events", list), ("candidates", list),
             ("doors_prev", list), ("outline", dict), ("suggestions", list), ("labels", list),
-            ("night", dict), ("settings", dict))
+            ("zones", list), ("suppressions", list), ("review", dict), ("night", dict), ("settings", dict))
 TOP_NAMES = tuple(k for k, _ in TOP_KEYS)
 
 STAY_KEYS = (("t0", int), ("t1", int), ("dur", int), ("x", int), ("y", int), ("sd", int), ("nf", int),
@@ -53,14 +59,51 @@ def _iso(d) -> str:
     return date.fromordinal(d).isoformat() if d is not None else None
 
 
+def migrate_3_to_4(d: dict) -> dict:
+    """A schema 3 state as a schema 4 state: the new sections start empty, ``night`` gets its P4 defaults.
+    Pure: the argument is not changed. Anything the v3 file holds is kept, unknown keys included."""
+    if not isinstance(d, dict) or d.get("schema") != 3 or isinstance(d.get("schema"), bool):
+        raise StateError("not a schema 3 state")
+    out = {}
+    for k, v in d.items():
+        if k == "schema":
+            out[k] = 4
+        elif k == "phase":
+            out[k] = "p4"
+        else:
+            out[k] = copy.deepcopy(v)
+        if k == "labels":
+            out["zones"] = []
+            out["suppressions"] = []
+            out["review"] = {"later": {"night_window": None, "bed_needs_data": None}, "bed_rev": 0,
+                             "next_zone_n": 1}
+    night = out.get("night")
+    if isinstance(night, dict):
+        aw = night.get("active_window")
+        out["night"] = {"active_window": aw, "night_lux": DEFAULT_PARAMS.night_lux, "onsets": [], "wakes": [],
+                        "act": {}, "proposal_rev": 0,
+                        "night_learning": {"active": False, "until": None, "set_by_learner": None}}
+        for k, v in night.items():                      # a v3 'night' with more keys keeps them
+            if k not in out["night"]:
+                out["night"][k] = copy.deepcopy(v)
+    for k in ("zones", "suppressions", "review"):
+        out.setdefault(k, [] if k != "review" else
+                       {"later": {"night_window": None, "bed_needs_data": None}, "bed_rev": 0, "next_zone_n": 1})
+    return out
+
+
 # ---------------------------------------------------------------- export
 def export_state(L) -> dict:
     G = L.grids
     ns = L.ns
+    zones, supp, review = L.review.export_sections()
+    night = {"active_window": {"start": L.window["start"], "end": L.window["end"], "sched": L.window["sched"]}}
+    night.update(L.night_m.export())
+    night["night_learning"] = L.nl.export()
     out = {
         "schema": SCHEMA_VERSION,
         "writer": "radar_zone_learner " + APP_VERSION,
-        "phase": "p3",
+        "phase": "p4",
         "params": params_digest(L.p),
         "meta": {"created_date": _iso(L.created_ord), "created_ms": L.created_ms,
                  "last_extraction_date": _iso(L.last_run_ord), "night": L.night,
@@ -84,8 +127,10 @@ def export_state(L) -> dict:
                     "done": ns.outline["done"]},
         "suggestions": [_sugg_out(s) for s in ns.suggestions],
         "labels": [dict(lb, cells=rle_encode(lb["cells"])) for lb in L.label_list],
-        "night": {"active_window": {"start": L.window["start"], "end": L.window["end"],
-                                    "sched": L.window["sched"]}},
+        "zones": zones,
+        "suppressions": supp,
+        "review": review,
+        "night": night,
         "settings": {"spot_name": L.spot_name},
     }
     for k, v in L.extra.items():
@@ -173,8 +218,11 @@ def load_state(L, d: dict) -> None:
     """Validate d and load it into the (fresh) learner L. Raises StateError."""
     if not isinstance(d, dict):
         _fail("state is not an object")
-    if d.get("schema") != SCHEMA_VERSION or isinstance(d.get("schema"), bool):
+    sch = d.get("schema")
+    if isinstance(sch, bool) or not isinstance(sch, int) or not MIN_SCHEMA_VERSION <= sch <= SCHEMA_VERSION:
         _fail("unsupported schema")
+    if sch == 3:
+        d = migrate_3_to_4(d)
     for k, t in TOP_KEYS:
         if k not in d:
             _fail("missing " + k)
@@ -335,7 +383,8 @@ def load_state(L, d: dict) -> None:
         labels.append({"id": lbl["id"], "created_s": lbl["created_s"], "x": lbl["x"], "y": lbl["y"],
                        "name": lbl["name"], "kind": lbl["kind"], "cells": _cells(lbl["cells"], nc, "label")})
 
-    aw = d["night"].get("active_window")
+    night = d["night"]
+    aw = night.get("active_window")
     if not isinstance(aw, dict):
         _fail("bad night.active_window")
     for k in ("start", "end"):
@@ -347,6 +396,14 @@ def load_state(L, d: dict) -> None:
     settings = d["settings"]
     if not isinstance(settings.get("spot_name"), str):
         _fail("bad settings.spot_name")
+    night_mod.validate(night, L.p)
+    nightlearn_mod.validate(night.get("night_learning"), L.p)
+    review_mod.validate_sections(d["zones"], d["suppressions"], d["review"], nc, T_MIN_S, T_MAX_S)
+    zones = []
+    for z in d["zones"]:
+        rec = dict(z)
+        rec["cells"] = _cells(z["cells"], nc, "zone")
+        zones.append(rec)
 
     # all checks passed: load
     L.created_ord = created_ord
@@ -381,4 +438,7 @@ def load_state(L, d: dict) -> None:
     L.label_list = labels
     L.window = {"start": aw["start"], "end": aw["end"], "sched": aw.get("sched")}
     L.spot_name = settings["spot_name"]
+    L.night_m.load(night)
+    L.nl.load(night["night_learning"])
+    L.review.load(zones, d["suppressions"], d["review"])
     L.extra = {k: copy.deepcopy(v) for k, v in d.items() if k not in TOP_NAMES}

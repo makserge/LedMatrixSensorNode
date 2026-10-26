@@ -8,9 +8,9 @@ ADDON = Path(__file__).resolve().parents[1]
 
 CONFIG_LINES = [
     'name: "Radar Zone Learner"',
-    'version: "0.3.0"',
+    'version: "0.4.0"',
     'slug: "radar_zone_learner"',
-    "description: \"Learns places from the LED matrix node's LD2454 radar frames (P3: shadow mode, "
+    "description: \"Learns places from the LED matrix node's LD2454 radar frames (P4: shadow mode, "
     "suggestions only).\"",
     "arch:",
     "  - aarch64",
@@ -28,11 +28,13 @@ CONFIG_LINES = [
     "  node_prefix: led_matrix_node",
     "  discovery_prefix: homeassistant",
     "  debug_map: true",
+    "  night_lux: 5.0",
     "schema:",
     '  log_level: "list(debug|info|warning|error)"',
     "  node_prefix: 'match(^[A-Za-z0-9_/-]{1,64}$)'",
     "  discovery_prefix: 'match(^[A-Za-z0-9_-]{1,64}$)'",
     "  debug_map: bool",
+    '  night_lux: "float(0.1,500)"',
     '  mqtt_host: "str?"',
     '  mqtt_port: "port?"',
     '  mqtt_username: "str?"',
@@ -59,10 +61,10 @@ class ManifestTest(unittest.TestCase):
     def test_options_match_translations(self):
         text = (ADDON / "translations" / "en.yaml").read_text(encoding="utf-8")
         keys = re.findall(r"^  ([a-z_]+):$", text, re.M)
-        self.assertEqual(keys, ["log_level", "node_prefix", "discovery_prefix", "debug_map", "mqtt_host",
-                                "mqtt_port", "mqtt_username", "mqtt_password"])
-        self.assertEqual(text.count("    name: "), 8)
-        self.assertEqual(text.count("    description: "), 8)
+        self.assertEqual(keys, ["log_level", "node_prefix", "discovery_prefix", "debug_map", "night_lux",
+                                "mqtt_host", "mqtt_port", "mqtt_username", "mqtt_password"])
+        self.assertEqual(text.count("    name: "), 9)
+        self.assertEqual(text.count("    description: "), 9)
 
     def test_dockerfile(self):
         lines = (ADDON / "Dockerfile").read_text(encoding="utf-8").splitlines()
@@ -116,6 +118,7 @@ class ManifestTest(unittest.TestCase):
         self.assertIn("paho-mqtt 2.1.0", notices)
         self.assertIn("No code from these projects is included.", notices)
         self.assertIn("0.3.0 - P3 shadow mode", (ADDON / "CHANGELOG.md").read_text(encoding="utf-8"))
+        self.assertIn("0.4.0 - P4 night window", (ADDON / "CHANGELOG.md").read_text(encoding="utf-8"))
 
     def test_version_consistent(self):
         from radar_zone_learner.core.types import APP_VERSION

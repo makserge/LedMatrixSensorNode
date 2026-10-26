@@ -54,7 +54,8 @@ class MqttIO:
         self.clock_ms = clock_ms
         self.monotonic = monotonic
         self._refused_since: Optional[float] = None
-        self.mapper = TopicMapper(topics)
+        make_mapper = getattr(topics, "make_mapper", None)
+        self.mapper = make_mapper() if make_mapper is not None else TopicMapper(topics)
         self.client = None
         self.client_id = make_client_id()
         self.connected = False

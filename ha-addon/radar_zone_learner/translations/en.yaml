@@ -11,6 +11,9 @@ configuration:
   debug_map:
     name: "Debug map"
     description: "Publish the learner's debug map image"
+  night_lux:
+    name: "Lights-off threshold (lux)"
+    description: "Light level below which the room counts as dark at night, for the night-window proposal. Default 5 lux; set it to a value between the panel's own glow and a lit room as measured by the node."
   mqtt_host:
     name: "MQTT host"
     description: "Optional: own MQTT broker login instead of the Mosquitto app service. Used only when an MQTT user name is set; default core-mosquitto."

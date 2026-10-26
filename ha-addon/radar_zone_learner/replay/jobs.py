@@ -5,6 +5,23 @@ Job name: ``<world>_<window>[_<variant>]`` with world ``bed`` (bedroom/office, t
 variants ``ghost`` (moderate seated-person ghosts, KJOBS ``k_ghost``: gs 0.15, gi 0.1), ``h300``, ``h900``,
 ``v3h300`` (dropout sweep, KJOBS ``k_H300``, ``k_H900``, ``c_V3H300``) and ``faults`` (11.3.4).
 Night learning is always off in P3 (``nl`` 0).
+
+P4 variants (OA 12 P4; ``replay.p4_scenarios``): ``p4`` (nothing is done for the bed: Night learning off, no
+'Mark spot here'), ``p4nl`` (the user starts Night learning at the first minute; ``nl`` 7 makes the radar timeline
+the one the learner's commands give), ``p4mark`` (scripted presses: failures, another item selected, then the bed
+item), ``p4app`` (the learner's place at the bed is approved as 'Bed'), ``p4rej`` (the place the learner names
+'bed' is rejected), ``p4names`` (names on approval) and ``p4nop2`` (Night learning started on a node without the
+P2 firmware). All of them carry the BH1750 lux samples and none uses the P3 desk and bed labels.
+
+Profiles. ``p3`` (G1-G6, 1,333 simulated days): bed and liv x the 5 windows, 21 nights, 5 seeds; ``bed_w0000_0600_ghost``
+21 nights, 5 seeds; the dropout sweep ``h300``, ``h900``, ``v3h300`` and ``faults``, 14 nights, seeds 1-3.
+``p4`` (P4-1 to P4-7, bedroom only, 47 runs, 707 simulated days) has NO run of the P3 jobs and no living-room job (the
+P4 design is about the bedroom case): ``bed_w0000_0600_p4`` 21 nights x 5 seeds (P4-1, P4-7, P4-R1, P4-R2);
+``bed_w2200_0600_p4`` and ``bed_w2300_0700_p4`` 14 nights x 5 seeds (P4-2); ``bed_<window>_p4nl`` for the 4 windows
+14 nights x 5 seeds (P4-6); ``bed_w0000_0600_p4mark``, ``_p4app`` and ``_p4rej`` 16 nights x seeds 1-3 (P4-3, P4-4,
+P4-7); ``bed_w0000_0600_p4names`` 14 nights x seeds 1-2 (P4-4); ``bed_none_p4nop2`` 3 nights x seed 1 (P4-5). The two
+profiles together exceed the 1,500-day limit of one invocation, so G1-G6 and P4-1 to P4-7 are separate runs and a
+p4 report says that G1-G6 were not run.
 """
 from __future__ import annotations
 
@@ -23,7 +40,15 @@ VARIANTS = {
     "h900": dict(hm=900),
     "v3h300": dict(vm=3, hm=300),
     "faults": dict(faults=True),
+    "p4": dict(lux=True, script="base", labels=False),
+    "p4nl": dict(lux=True, script="nl", labels=False, nl=7),
+    "p4mark": dict(lux=True, script="mark", labels=False),
+    "p4app": dict(lux=True, script="app", labels=False),
+    "p4rej": dict(lux=True, script="rej", labels=False),
+    "p4names": dict(lux=True, script="names", labels=False),
+    "p4nop2": dict(lux=True, script="nop2", labels=False, p2=False),
 }
+P4_VARIANTS = ("p4", "p4nl", "p4mark", "p4app", "p4rej", "p4names", "p4nop2")
 ALL_SEEDS = (1, 2, 3, 4, 5)
 MAX_NIGHTS = 28
 NIGHTLY_DAY_FRACTION = 3.5 / 24.0          # the night-N run happens at 03:30 of day N
@@ -44,11 +69,28 @@ class JobSpec:
     nights: int = 21
     gated: bool = True         # False: reported only
     seeds: tuple = field(default=ALL_SEEDS)     # the profile's seeds for this job (P3 spec 11.8)
+    lux: bool = False          # P4: the stream carries the BH1750 lux samples (OA 7.5)
+    script: str = ""           # P4 scenario (replay.p4_scenarios): base nl mark app rej names nop2
+    labels: bool = True        # False: no P3 'Mark spot here' labels (desk, bed)
+    p2: bool = True            # False: a node without the P2 firmware (no schedule topics)
 
     def cfg(self) -> dict:
         """The simulator world config of this job."""
         return W.make_cfg(bed=1 if self.world == "bed" else 0, Vm=self.vm, Hm=self.hm, gw=self.gw, gs=self.gs,
                           gi=self.gi, nw=self.window or "", nl=self.nl)
+
+    def extras(self) -> list:
+        """Scripted extra people ``(agent, x, y, t0_s, t1_s)`` for the stream (the 'mark' scenario's two people in
+        bed, OA 12 P4): at 21:00-21:25 of day 8, before the 00:00 window start."""
+        if self.script != "mark":
+            return []
+        t0 = 8 * W.DAY + 21 * 3600
+        bx, by = W.SPOT["bed"]
+        return [("X1", bx, by, t0, t0 + 1500), ("X2", round(bx + 0.8, 3), by, t0, t0 + 1500)]
+
+    @property
+    def is_p4(self) -> bool:
+        return bool(self.script)
 
     @property
     def window_key(self) -> str:
@@ -89,7 +131,7 @@ def parse_job(name: str, nights: Optional[int] = None, seeds: Optional[tuple] = 
         kw.update(VARIANTS[variant])
     job = JobSpec(**kw)
     # reported-only jobs: the no-window baseline (R1), the dropout sweep (R4) and the fault run (R6)
-    gated = wkey != "none" and variant in (None, "ghost")
+    gated = wkey != "none" and variant in (None, "ghost")          # P4 variants: see replay.evaluate_p4
     job = replace(job, gated=gated)
     if nights is not None:
         job = replace(job, nights=nights)
@@ -105,6 +147,14 @@ def _jobs(names, nights, seeds) -> list:
 PROFILES: dict = {
     "smoke": _jobs(["bed_w0000_0600"], 8, (1,)),
     "quick": _jobs(["bed_w0000_0600", "liv_w0000_0600"], 14, (1, 2, 3)),
+    "p4smoke": _jobs(["bed_w0000_0600_p4"], 9, (1,)),
+    "p4": (_jobs(["bed_w0000_0600_p4"], 21, ALL_SEEDS)
+           + _jobs(["bed_w2200_0600_p4", "bed_w2300_0700_p4"], 14, ALL_SEEDS)
+           + _jobs(["bed_%s_p4nl" % k for k in ("w0000_0600", "w2200_0600", "w2300_0700", "w0000_0700")],
+                   14, ALL_SEEDS)
+           + _jobs(["bed_w0000_0600_p4mark", "bed_w0000_0600_p4app", "bed_w0000_0600_p4rej"], 16, (1, 2, 3))
+           + _jobs(["bed_w0000_0600_p4names"], 14, (1, 2))
+           + _jobs(["bed_none_p4nop2"], 3, (1,))),
     "p3": (_jobs(["%s_%s" % (w, k) for w in ("bed", "liv") for k in MAIN_WINDOWS], 21, ALL_SEEDS)
            + _jobs(["bed_w0000_0600_ghost"], 21, ALL_SEEDS)
            + _jobs(["bed_w0000_0600_h300", "bed_w0000_0600_h900", "bed_w0000_0600_v3h300"], 14, (1, 2, 3))

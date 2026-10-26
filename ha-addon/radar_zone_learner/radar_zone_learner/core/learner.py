@@ -11,20 +11,26 @@ from typing import Optional
 from . import labels as labels_mod
 from .behaviours import Behaviours
 from .covis import Covis
-from .extraction import PLACE_TYPES, NightState, cid_key, run_nightly
+from .extraction import PLACE_TYPES, NightState, cid_key, refresh_places_now, run_nightly
 from .frames import parse_frames
 from .grids import GridGeom, Grids, rate
+from .night import NightModel
+from .nightlearn import NightLearning
 from .observation import MIN_BOOT_WALL_MS, Censor, Observation
 from .params import DEFAULT_PARAMS, Params
+from .review import ReviewModel, hhmm
 from .state import export_state, load_state
 from .tracker import Tracker
-from .types import (APP_VERSION, SCHEMA_VERSION, CandidateView, ContextState, DebugMapChanged, DebugMapData,
-                    FixedOffsetTime, FramesMessage, Label, MarkPress, MarkResult, NameEcho, NightlyDone,
-                    NightlyFailed, NodeStatus, PayloadError, SaveRequested, ScheduleState, SpotName,
-                    StatusChanged, StayView, Suggestion, TimeModel)
+from .types import (APP_VERSION, SCHEMA_VERSION, CandidateView, CommandResult, ContextState, DebugMapChanged,
+                    DebugMapData, FixedOffsetTime, FramesMessage, Label, LuxSample, MarkPress, MarkResult,
+                    NameEcho, NightLearningChanged, NightLearningSwitch, NightlyDone, NightlyFailed, NodeCommand,
+                    NodeStatus, PayloadError, ReviewAnswer, ReviewChanged, ReviewSelect, SaveRequested,
+                    ScheduleState, SpotName, StatusChanged, StayView, Suggestion, TimeModel)
 
-_OUTPUT_ORDER = (MarkResult, NameEcho, NightlyDone, NightlyFailed, StatusChanged, DebugMapChanged, SaveRequested)
-_REASON_PRIORITY = {"nightly": 0, "label": 1, "name": 2, "start": 3}
+_OUTPUT_ORDER = (MarkResult, NameEcho, NightlyDone, NightlyFailed, NodeCommand, NightLearningChanged,
+                 ReviewChanged, StatusChanged, DebugMapChanged, SaveRequested)
+_REASON_PRIORITY = {"nightly": 0, "label": 1, "name": 2, "review": 3, "night_learning": 4, "start": 5}
+P4_STEP_MS = 1000                # night evidence, Night learning timers and the review are looked at this often
 MARK_MIN_INTERVAL_MS = 10000     # a second accepted press within this time is refused ('too_soon')
 
 
@@ -59,6 +65,14 @@ class Learner:
         self.ns = NightState()
         self.label_list: list = []
         self.window = {"start": p.default_window_min[0], "end": p.default_window_min[1], "sched": None}
+        self.night_m = NightModel(p, time_model)           # P4: onsets, wakes, the night-window proposal
+        self.review = ReviewModel(p, time_model)           # P4: review items, suppressions, zones
+        self.nl = NightLearning(p, time_model)             # P4: Night learning (off by default)
+        self.bh.on_walk = self._on_walk
+        self.bh.on_death = self.night_m.note_death
+        self.rv_dirty = True
+        self.cmd_seq = 0
+        self._p4_ms: Optional[int] = None
         self.spot_name = ""
         self.extra: dict = {}
         self.created_ord: Optional[int] = None
@@ -93,9 +107,18 @@ class Learner:
     def link_labels_one(self, s: dict) -> None:
         labels_mod.link_one(s, self.label_list, self.geom)
 
+    def _on_walk(self, t_s: float) -> None:
+        self.night_m.note_walk(t_s, self.obs)
+
+    def next_token(self, prefix: str) -> str:
+        """A token for a NodeCommand, unique within this run."""
+        self.cmd_seq += 1
+        return "%s%d" % (prefix, self.cmd_seq)
+
     # ------------------------------------------------------------ public API
     def handle(self, event) -> list:
         outs: list = []
+        p4_now = False
         now = self._advance(event.recv_ms)
         if self.first_event_ms is None:
             self.first_event_ms = now
@@ -115,15 +138,44 @@ class Learner:
                 self._run(self.obs.ingest(batch, event.recv_ms, now))
         elif isinstance(event, NodeStatus):
             self._run(self.obs.node_status(bool(event.online)))
+            if event.online:
+                self.nl.on_node_online(self, now, outs)     # a restore that waited for the node goes again
         elif isinstance(event, ScheduleState):
             if event.sched is not None:
                 self.window["sched"] = bool(event.sched)
             for key, v in (("start", event.start_min), ("end", event.end_min)):
                 if type(v) is int and 0 <= v < 1440:
                     self.window[key] = v
+            self.nl.on_schedule(self, now, outs, event.sched is not None)
+            p4_now = True
         elif isinstance(event, ContextState):
             if event.name == "home_empty":
                 self.obs.set_context(None if event.value is None else bool(event.value), now)
+            elif event.name in ("lights_off", "sleep_hint", "guests"):
+                self.night_m.on_context(event.name, None if event.value is None else bool(event.value), now)
+        elif isinstance(event, LuxSample):
+            self.night_m.on_lux(event.lux, now)
+        elif isinstance(event, ReviewSelect):
+            if event.item in (None, "night_window", "bed_needs_data"):
+                if (event.item, True) != (self.review.select, self.review.select_chosen):
+                    self.review.select = event.item
+                    self.review.select_chosen = True
+                    self.rv_dirty = True
+            p4_now = True
+        elif isinstance(event, ReviewAnswer):
+            if self.review.answer(self, event, outs, now):
+                refresh_places_now(self)
+                self.rv_dirty = True
+                outs.append(SaveRequested("review"))
+            force = p4_now = True
+        elif isinstance(event, NightLearningSwitch):
+            self.nl.switch(self, bool(event.on), now, outs)
+            force = p4_now = True
+        elif isinstance(event, CommandResult):
+            if not self.nl.on_result(self, event, now, outs):
+                if self.review.window_result(event):
+                    self.rv_dirty = True
+            force = p4_now = True
         elif isinstance(event, MarkPress):
             self._mark(outs)
             force = True
@@ -133,6 +185,7 @@ class Learner:
                 self.spot_name = text
                 outs.append(NameEcho(text))
                 outs.append(SaveRequested("name"))
+        force = self._p4_step(outs, now, p4_now or force) or force
         self._status(outs, force, periodic=False)
         return self._order(outs)
 
@@ -143,8 +196,19 @@ class Learner:
         outs: list = []
         force = self._maybe_nightly(outs)
         self._run(self.obs.tick(now))
+        force = self._p4_step(outs, now, False) or force
         self._status(outs, force, periodic=True)
         return self._order(outs)
+
+    def _p4_step(self, outs: list, now: int, immediate: bool) -> bool:
+        """Night evidence, Night learning timers and the review item list. True when the review changed."""
+        if not immediate and self._p4_ms is not None and 0 <= now - self._p4_ms < P4_STEP_MS and not self.rv_dirty:
+            return False
+        self._p4_ms = now
+        self.night_m.step(self, now)
+        self.nl.tick(self, now, outs)
+        self.rv_dirty = False
+        return self.review.check(self, outs)
 
     def export_state(self) -> dict:
         return export_state(self)
@@ -258,6 +322,11 @@ class Learner:
         try:
             self.bh.flush(now / 1000.0, ignore_holds=True)     # a hold never outlives the night
             n_cands, n_new = run_nightly(self, lt.date_ord, night)
+            self.last_run_ord = lt.date_ord                    # (set again below) the P4 hooks read it
+            self.night = night
+            self.night_m.prune(now)
+            self.review.on_nightly(self)
+            self.rv_dirty = True
         except Exception as exc:
             # contained: the event that triggered the run is processed, the run is not retried every
             # minute, and the next night tries again; the shell logs where it failed
@@ -291,14 +360,19 @@ class Learner:
             elif len(ips) > 1:
                 reason = "several_stays"
             else:
-                lb = labels_mod.find_same(self.label_list, ips[0][2], ips[0][3], self.spot_name,
-                                          self.p.label_radius_m)
+                # the review's bed item is selected: kind bed, named 'Bed' or the name text (OA 7.6)
+                bound = self.review.bound_to_bed(self)
+                name = (self.spot_name or "Bed") if bound else self.spot_name
+                lb = labels_mod.find_same(self.label_list, ips[0][2], ips[0][3], name, self.p.label_radius_m)
                 if lb is None:
-                    lb = labels_mod.make_label(self, ips[0], now)
+                    lb = labels_mod.make_label(self, ips[0], now, name=name, kind="bed" if bound else None)
                     labels_mod.add_label(self, lb)
                     new = True
                     for s in self.ns.suggestions:
                         labels_mod.link_one(s, self.label_list, self.geom)
+                    if lb["kind"] == "bed":
+                        refresh_places_now(self)               # the OA 7.4 freeze applies at once
+                    self.rv_dirty = True
                 # else the spot is marked already: the press changes nothing
                 self.last_mark_ms = now
                 lid = lb["id"]
@@ -373,7 +447,27 @@ class Learner:
             "labels": len(self.label_list), "label_recall": recall, "label_precision": precision,
             "last_mark": dict(self.last_mark) if self.last_mark else None,
             "nightly_errors": self.nightly_errors,
+            "radar_valid": self._state_now() == "learning",
+            "night": self._night_attributes(),
+            "review": self.review.attributes(self),
+            "night_learning": {"active": self.nl.active, "set_by_learner": self.nl.set_by,
+                               "until": date.fromordinal(self.nl.until_ord).isoformat()
+                               if self.nl.until_ord is not None else None,
+                               "phase": self.nl.phase, "last_event": self.nl.last_event},
         }
+
+    def _night_attributes(self) -> dict:
+        nm = self.night_m
+        raw = nm.raw
+        prop = None
+        if raw is not None:
+            prop = dict(raw)
+            d = self.review.nw_data(self)
+            prop.update({"start": hhmm(raw["start_min"]), "end": hhmm(raw["end_min"]),
+                         "current_saving_pct": d["current_saving_pct"], "late_nights": d["late_nights"],
+                         "late_of": d["late_of"]})
+        return {"onsets": {k: len(v) for k, v in nm.onsets.items()}, "wakes": len(nm.wakes),
+                "night_lux": nm.night_lux, "proposal_rev": nm.proposal_rev, "proposal": prop}
 
     # ------------------------------------------------------------ output order (spec 5.3)
     @staticmethod

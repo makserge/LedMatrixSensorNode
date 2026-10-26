@@ -78,6 +78,10 @@ SIM_CUT = {
 }
 
 PASS, FAIL, INCOMPLETE, REPORTED = "PASS", "FAIL", "INCOMPLETE", "REPORTED"
+# what the report's gate covers: a P4-only invocation has no run of the G1-G6 jobs, so its PASS says nothing about them
+SCOPE_P3 = "G1-G6"
+SCOPE_BOTH = "G1-G6 and P4-1 to P4-7"
+SCOPE_P4_ONLY = "P4-1 to P4-7 only; G1-G6 not run (use --profile p3)"
 
 
 # ---------------------------------------------------------------- per run
@@ -503,12 +507,36 @@ def evaluate(results: list, unit_g5b: Optional[bool] = None) -> dict:
                  "first_error": r["first_error"]} for r in runs if r["status"] != "ok" or r["core_errors"]]
     gate = _combine([c["status"] for c in criteria])
     failed = [c["id"] for c in criteria if c["status"] == FAIL]
+    from . import evaluate_p4 as E4          # here: evaluate_p4 imports this module
+    p4 = E4.evaluate_p4(results)             # None without P4 runs: the P3 report is then unchanged
+    scope = SCOPE_P3
+    if p4 is not None:
+        failed = failed + p4["failed"]
+        if all((r["variant"] or "").startswith("p4") for r in runs):
+            gate = p4["gate"]                # a P4-only invocation: the P3 criteria have no runs
+            scope = SCOPE_P4_ONLY
+        else:
+            gate = _combine([gate, p4["gate"]])
+            scope = SCOPE_BOTH
     exit_code = 1 if failed or any(b["status"] != "ok" for b in bad_runs) else 0
     params = sorted({r.get("params") for r in results if r.get("params")})
-    return {"schema": 1, "runs": len(runs), "params_digests": params, "gate": gate, "failed": failed,
-            "exit_code": exit_code, "bad_runs": bad_runs, "criteria": criteria, "reported": reported,
-            "run_summaries": [{k: r[k] for k in ("job", "seed", "status", "nights", "found", "label_first",
-                                                  "false_places", "capture", "cpu_s_per_day")} for r in runs]}
+    report = {"schema": 1, "runs": len(runs), "params_digests": params, "gate": gate, "failed": failed,
+              "scope": scope, "job_matrix": job_matrix(runs),
+              "exit_code": exit_code, "bad_runs": bad_runs, "criteria": criteria, "reported": reported,
+              "run_summaries": [{k: r[k] for k in ("job", "seed", "status", "nights", "found", "label_first",
+                                                    "false_places", "capture", "cpu_s_per_day")} for r in runs]}
+    if p4 is not None:
+        report["p4"] = p4
+    return report
+
+
+def job_matrix(runs: list) -> list:
+    """Which jobs, seeds and night counts the invocation really ran (from the run summaries)."""
+    by_job: dict = {}
+    for r in runs:
+        by_job.setdefault(r["job"], []).append(r)
+    return [{"job": job, "seeds": sorted(x["seed"] for x in rs), "nights": sorted({x["nights"] for x in rs}),
+             "sim_days": round(sum((x.get("sim_days") or 0) for x in rs), 1)} for job, rs in sorted(by_job.items())]
 
 
 # ---------------------------------------------------------------- report files
@@ -533,10 +561,22 @@ def write_report(report: dict, out_dir: Path) -> None:
 
 
 def render_markdown(report: dict) -> str:
-    L = ["# P3 replay report", ""]
-    L.append("Gate (G1-G6): **%s**%s. Runs: %d. Params digest: %s." % (
-        report["gate"], (" (failed: %s)" % ", ".join(report["failed"])) if report["failed"] else "",
+    scope = report.get("scope") or (SCOPE_BOTH if "p4" in report else SCOPE_P3)
+    L = ["# P3 replay report" if "p4" not in report else
+         ("# P4 replay report (G1-G6 not run)" if scope == SCOPE_P4_ONLY else "# P3 and P4 replay report"), ""]
+    L.append("Gate (%s): **%s**%s. Runs: %d. Params digest: %s." % (
+        scope, report["gate"], (" (failed: %s)" % ", ".join(report["failed"])) if report["failed"] else "",
         report["runs"], ", ".join(report["params_digests"]) or "–"))
+    if scope == SCOPE_P4_ONLY:
+        L += ["", "**G1-G6 were not run in this invocation**: it has no run of the P3 jobs, so the G1-G6 sections "
+              "below read INCOMPLETE with 0 runs, and the gate above says nothing about the P3 criteria. "
+              "Run `--profile p3` for them."]
+    if report.get("job_matrix"):
+        L += ["", "Jobs run (job, seeds, nights, simulated days):", "",
+              "| Job | Seeds | Nights | Sim. days |", "|---|---|---|---|"]
+        for m in report["job_matrix"]:
+            L.append("| %s | %s | %s | %s |" % (m["job"], ",".join(map(str, m["seeds"])),
+                                               ",".join(map(str, m["nights"])), m["sim_days"]))
     if report["gate"] == INCOMPLETE:
         L.append("")
         L.append("INCOMPLETE: the results do not contain every run a criterion needs (use `--profile p3`). "
@@ -625,4 +665,7 @@ def render_markdown(report: dict) -> str:
             L.append(json.dumps(c["details"], indent=1, sort_keys=True))
             L.append("```")
         L.append("")
+    if "p4" in report:
+        from . import evaluate_p4 as E4
+        L += E4.render_p4(report["p4"])
     return "\n".join(L) + "\n"

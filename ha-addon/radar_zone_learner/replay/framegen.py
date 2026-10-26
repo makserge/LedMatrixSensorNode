@@ -12,6 +12,9 @@ the learner core, in reception order:
 * LD2412 OUT (11.3.3): 1 while the room is occupied, except dropout runs (on-runs mean 980 s, misses mean
   20 s, so 2% of occupied time), no false positives; ``p2`` = OUT at publish time while ``pw`` = 3;
 * ``home_empty`` edges and the node status; the optional faults of 11.3.4;
+* P4 (OA 7.5): the BH1750 lux samples every 10 s (``LuxModel``; off by default, ``lux=True``), the sleep onsets
+  after 00:00 that the simulator drops (``late_overlay``: the sleeper walks in at the true onset), and optional
+  scripted extra people (``extras``, for the 'two people in bed' check of OA 12 P4);
 * the MqttTask loop and the P1 batcher of ``replay.batcher``; latency 5-30 ms per message.
 
 All random numbers come from separate ``random.Random`` streams per run, seeded from the run's seed; the
@@ -26,7 +29,7 @@ import random
 from collections import deque
 from typing import Iterator, Optional
 
-from radar_zone_learner.core.types import ContextState, FramesMessage, NodeStatus
+from radar_zone_learner.core.types import ContextState, FramesMessage, LuxSample, NodeStatus
 
 from . import world as W
 from .batcher import FRAME_PHASES, OFF, ON, POWERING, WARMUP, MqttLoop, Segment
@@ -47,6 +50,14 @@ DAY_MS = W.DAY * 1000
 PRIO = {"human": 0, "pet": 0, "mirror": 1, "inghost": 1, "refl": 2}
 NOISED = frozenset(("human", "pet", "mirror", "inghost"))
 INF = 1 << 62
+
+# P4: lux proxy (OA 7.5) and scripted extras
+LUX_PERIOD_MS = 10_000           # <node>/sensors/state every MQTT_PUBLISH_INTERVAL (include/constants.h)
+LUX_BRIGHT = 150.0               # lights on, a lit room (lux)
+LUX_DARK = (0.5, 2.5)            # lights off: the panel's own glow, below night_lux (5 lx)
+LUX_OFF_LEAD_S = (0, 240)        # the lights go off 0-4 min after the sleeper reaches the bed ...
+LUX_ON_LEAD_S = (0, 300)         # ... and on again 0-5 min after the wake
+EXTRA_SIGMA_M = 0.07
 
 # faults (11.3.4)
 FAULT_LOSS_P = 0.001
@@ -434,6 +445,124 @@ class Ld2412Out:
         return 1 if self.occupied(s) else 0
 
 
+# ---------------------------------------------------------------- BH1750 lux (P4, OA 7.5)
+class LuxModel:
+    """The room's lux: lit (``LUX_BRIGHT``) except while the sleeper's lights are off.
+
+    Dark runs from the true sleep onset (+ 0-4 min) to the next morning's wake (+ 0-5 min), also for onsets after
+    00:00. Nothing is known before the first wake of day 0 (the run starts at 00:00 with the sleeper in bed), so
+    no sample is made before it. Days are added in order (``add_day``); ``value`` is asked with growing times.
+
+    An IDEAL model: the signal is derived from the truth (dark 0.5-2.5 lx exactly in those runs, 150 lx otherwise;
+    no daytime dimming, no panel glow, no other light source), so what the replay measures with it (the lux onset
+    errors of P4-R1, the start accuracy of P4-2) holds for an ideal sensor and says nothing about how the real
+    BH1750 proxy tracks sleep: that is the P0 measurement (design 7.5), still open.
+    """
+
+    def __init__(self, seed: int):
+        self.rng = _rng(seed, 31)
+        self.val_rng = _rng(seed, 37)
+        self.known_from = None          # sim ms of the first lights-on
+        self.open_off = None
+        self.intervals = deque()        # (off_ms, on_ms) of finished dark runs
+        self.onsets = {}                # night (evening day) -> true onset, sim s (late ones included)
+        self.wakes = {}                 # night -> true wake, sim s
+
+    def add_day(self, rec) -> None:
+        d = rec.d
+        wake = onset = None
+        for ag, place, mode, t0, t1, x, y in rec.sessions:
+            if ag == "P1" and place == "bed" and mode == "sleep":
+                if t0 == d * W.DAY:
+                    wake = t1
+                else:
+                    onset = t0
+        for ag, s0 in rec.late:
+            if ag == "P1":
+                onset = s0
+        if wake is not None:
+            self.wakes[d - 1] = wake
+            on_ms = (wake + self.rng.randint(*LUX_ON_LEAD_S)) * 1000
+            if self.open_off is not None:
+                self.intervals.append((self.open_off, on_ms))
+                self.open_off = None
+            elif self.known_from is None:
+                self.known_from = on_ms
+        if onset is not None:
+            self.onsets[d] = onset
+            self.open_off = (onset + self.rng.randint(*LUX_OFF_LEAD_S)) * 1000
+
+    def value(self, t_ms: int):
+        """Lux at sim ms ``t_ms``, or None before the first known time."""
+        if self.known_from is None or t_ms < self.known_from:
+            return None
+        iv = self.intervals
+        while iv and iv[0][1] <= t_ms:
+            iv.popleft()
+        dark = (iv and iv[0][0] <= t_ms) or (not iv and self.open_off is not None and t_ms >= self.open_off)
+        if dark:
+            return round(self.val_rng.uniform(*LUX_DARK), 1)
+        return round(LUX_BRIGHT * self.val_rng.uniform(0.9, 1.1), 1)
+
+
+def _walk_points(rng: random.Random, p0, p1, t0: int) -> list:
+    """The world's ``World.walk`` with an own random stream (the world's is not touched)."""
+    v = rng.uniform(0.7, 1.2)
+    d = math.dist(p0, p1)
+    n = max(1, int(d / v))
+    off = rng.uniform(-0.3, 0.3)
+    nx, ny = (-(p1[1] - p0[1]) / (d or 1), (p1[0] - p0[0]) / (d or 1))
+    pts = []
+    for k in range(n + 1):
+        f = k / n
+        b = math.sin(math.pi * f) * off
+        pts.append((t0 + k, p0[0] + (p1[0] - p0[0]) * f + nx * b + rng.gauss(0, 0.08),
+                    p0[1] + (p1[1] - p0[1]) * f + ny * b + rng.gauss(0, 0.08)))
+    return pts
+
+
+def late_overlay(rec, onset_s: int, rng: random.Random) -> tuple:
+    """Day ``rec`` after a night whose sleep onset ``onset_s`` (sim s) fell after 00:00 (the simulator dropped it):
+    the sleeper is not in bed from 00:00 but walks in at the onset. Returns (tracks, occ): the day's tracks
+    without the sleeper's points before the onset, plus the arrival walk and the settling points; the occupancy
+    of the sleeper starts with the walk. ``rec`` is not changed. No random numbers of the world are used."""
+    wake = pos = None
+    for ag, place, mode, t0, t1, x, y in rec.sessions:
+        if ag == "P1" and place == "bed" and mode == "sleep" and t0 == rec.d * W.DAY:
+            wake, pos = t1, (x, y)
+    if wake is None or onset_s >= wake:
+        return rec.tracks, rec.occ
+    tracks = []
+    for tr in rec.tracks:
+        if tr["agent"] == "P1" and tr["pts"] and tr["pts"][0][0] < onset_s:
+            pts = [pt for pt in tr["pts"] if pt[0] >= onset_s]
+            if pts:
+                tracks.append(dict(tr, pts=pts))
+        else:
+            tracks.append(tr)
+    src = rng.choice(list(W.DOORS.values()))
+    start = onset_s - max(1, int(math.dist(src, pos) / 0.9))
+    pts = _walk_points(rng, src, pos, start)
+    settle = rng.randint(5, 20)
+    pts += [(onset_s + j, pos[0] + rng.gauss(0, 0.07), pos[1] + rng.gauss(0, 0.07)) for j in range(1, settle)]
+    tracks.append({"pts": sorted(pts), "kind": "human", "agent": "P1"})
+    occ = []
+    for a, b, ag in rec.occ:
+        if ag == "P1" and a == rec.d * W.DAY:
+            a = start
+        occ.append((a, b, ag))
+    return tracks, occ
+
+
+def extra_tracks(rng: random.Random, extras) -> list:
+    """Scripted people ``(agent, x, y, t0_s, t1_s)``: one point a second, 7 cm noise, always visible."""
+    out = []
+    for ag, x, y, t0, t1 in extras:
+        out.append({"pts": [(t, x + rng.gauss(0, EXTRA_SIGMA_M), y + rng.gauss(0, EXTRA_SIGMA_M))
+                            for t in range(int(t0), int(t1))], "kind": "human", "agent": ag})
+    return out
+
+
 # ---------------------------------------------------------------- the run's event stream
 class RunStream:
     """All non-interactive input events of one run, in reception order (frames, home_empty, node status).
@@ -443,7 +572,7 @@ class RunStream:
     """
 
     def __init__(self, cfg: dict, seed: int, horizon_days: int, faults: bool = False,
-                 noise_m: float = NOISE_M, p_miss: float = P_MISS):
+                 noise_m: float = NOISE_M, p_miss: float = P_MISS, lux: bool = False, extras=()):
         self.cfg = cfg
         self.seed = seed
         self.world = W.RunWorld(seed, cfg)
@@ -464,11 +593,35 @@ class RunStream:
         self.stats = {"messages": 0, "delivered": 0, "lost_fault": 0, "duplicated": 0, "lost_window": 0,
                       "pre_base": 0}
         self.node_events = []          # (recv_ms, NodeStatus) from faults
+        # P4: lux samples, the sleep onset after 00:00 that the simulator drops, scripted extra people
+        self.lux = LuxModel(seed) if lux else None
+        self.rng_lux = _rng(seed, 29)
+        self.lux_phase = _rng(seed, 41).randrange(LUX_PERIOD_MS)
+        self.rng_late = _rng(seed, 43)
+        self.late_pending = None
+        self.late_nights = []          # nights (evening day) whose onset was after 00:00
+        self.extras = list(extras)
+        self.rng_extra = _rng(seed, 47)
+        self._extras_done = False
 
     # day consumer: targets, LD2412 occupancy, home_empty edges
     def _on_day(self, rec) -> None:
-        self.targets.add_tracks(rec.d, rec.tracks)
-        self.ld.add_occupancy([(a, b) for a, b, _ in rec.occ])
+        tracks, occ = rec.tracks, rec.occ
+        if self.late_pending is not None:
+            tracks, occ = late_overlay(rec, self.late_pending, self.rng_late)
+            self.late_pending = None
+        for ag, s0 in rec.late:
+            if ag == "P1":
+                self.late_pending = s0
+                self.late_nights.append(rec.d)
+        if self.lux is not None:
+            self.lux.add_day(rec)
+        if self.extras and not self._extras_done:
+            self._extras_done = True
+            self.targets.add_tracks(rec.d, extra_tracks(self.rng_extra, self.extras))
+            self.ld.add_occupancy([(t0, t1) for _, _, _, t0, t1 in self.extras])
+        self.targets.add_tracks(rec.d, tracks)
+        self.ld.add_occupancy([(a, b) for a, b, _ in occ])
         for a, b in W.union([tuple(x) for x in rec.he]):
             self.ctx_pending.append((BASE_MS + a * 1000, ContextState("home_empty", True, BASE_MS + a * 1000)))
             self.ctx_pending.append((BASE_MS + b * 1000, ContextState("home_empty", False, BASE_MS + b * 1000)))
@@ -512,6 +665,21 @@ class RunStream:
                 out.append((recv + 1, 1, FramesMessage(data, recv + 1)))
                 self.stats["duplicated"] += 1
 
+    def _lux_events(self, a: int, b: int) -> list:
+        """LuxSample events for the sim ms range [a, b) (the sensors/state publishes every 10 s)."""
+        out = []
+        per = LUX_PERIOD_MS
+        k = max(0, -((self.lux_phase - a) // per))            # first k with phase + k * per >= a
+        t = self.lux_phase + k * per
+        while t < b:
+            if t >= 0 and not (self.faults and self.timeline.phase_at(t) is None):
+                v = self.lux.value(t)
+                if v is not None:
+                    recv = BASE_MS + t + self.rng_lux.randint(LAT_MIN_MS, LAT_MAX_MS)
+                    out.append((recv, 0, LuxSample(v, recv)))
+            t += per
+        return out
+
     def events(self) -> Iterator[tuple]:
         carry = []
         chunk = BOOT_SIM_MS
@@ -540,6 +708,8 @@ class RunStream:
             ctx, self.ctx_pending = self.ctx_pending, []
             for e in ctx:
                 out.append((e[0], 0, e[1]))
+            if self.lux is not None:
+                out.extend(self._lux_events(chunk, c1))
             for e in self.node_events:
                 out.append((e[0], 0, e[1]))
             self.node_events = []

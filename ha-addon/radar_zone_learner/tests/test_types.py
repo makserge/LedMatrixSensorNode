@@ -9,8 +9,8 @@ BASE_MS = 1767571200000      # 2026-01-05 00:00 UTC, a Monday (spec 4.4)
 
 class TypesTest(unittest.TestCase):
     def test_constants(self):
-        self.assertEqual(T.SCHEMA_VERSION, 3)
-        self.assertEqual(T.APP_VERSION, "0.3.0")
+        self.assertEqual((T.SCHEMA_VERSION, T.MIN_SCHEMA_VERSION), (4, 3))
+        self.assertEqual(T.APP_VERSION, "0.4.0")
         self.assertEqual(T.STATUS_STATES, ("starting", "learning", "not_observing", "no_data"))
         self.assertEqual(T.MARK_FAIL_REASONS, ("not_observing", "no_stay", "several_stays", "too_soon"))
         self.assertEqual(len(T.SUGGESTION_TYPES), 6)
@@ -22,7 +22,11 @@ class TypesTest(unittest.TestCase):
                 T.Target(0, 1, 2, 3), T.ListedFrame(0, 0, ()), T.MarkResult(True, None, "l0001", "bed"),
                 T.NameEcho("x"), T.NightlyDone(1, "2026-01-05", 0, 0), T.SaveRequested("name"),
                 T.DebugMapChanged("start"), T.StatusChanged("starting", {}), T.LocalTime(1, 0, 0),
-                T.FixedOffsetTime(0)]
+                T.FixedOffsetTime(0), T.LuxSample(1.0, 1), T.ReviewSelect(None, 1),
+                T.ReviewAnswer("bed_needs_data", "later", None, False, 1), T.NightLearningSwitch(True, 1),
+                T.CommandResult("t1", "schedule", True, None, 1), T.NodeCommand("t1", "schedule", False),
+                T.ReviewItem("bed_needs_data", 0, "bed_needs_data", {}), T.ReviewChanged((), None),
+                T.NightLearningChanged(False)]
         for o in objs:
             f = dataclasses.fields(o)[0].name
             with self.assertRaises(dataclasses.FrozenInstanceError):

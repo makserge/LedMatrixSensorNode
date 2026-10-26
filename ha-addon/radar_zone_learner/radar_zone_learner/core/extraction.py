@@ -323,37 +323,7 @@ def run_nightly(L, run_ord: int, night: int) -> tuple:
             s["state"] = "stale"
 
     # 11. profiles, bed naming, label kinds, freeze, variants (7.9, 7.10)
-    win = profiles.window_hours(L.window["start"], L.window["end"])
-    for s in sugg:
-        if s["type"] not in PLACE_TYPES or s["state"] != "shadow":
-            continue
-        mine = [m[0] for m in stays14 if m[1] in s["cells"]]
-        wd, we = profiles.build_profiles(mine, tm)
-        ev = s["evidence"]
-        ev["hours_wd"] = [round(v, 1) for v in wd.minutes]
-        ev["hours_we"] = [round(v, 1) for v in we.minutes]
-        if ev.get("hours_at_suggestion") is None:
-            ev["hours_at_suggestion"] = [round(a + b, 1) for a, b in zip(wd.minutes, we.minutes)]
-        if s["type"] == "dwell_zone" and s["kind"] != "bed" and \
-                profiles.bed_named(wd.minutes, we.minutes, float(ev.get("median_s", 0.0)), p):
-            s["kind"] = "bed"
-            if s["name_hint"] is None:
-                s["name_hint"] = "bed"
-        L.link_labels_one(s)
-        is_frozen = profiles.frozen(L.window["sched"], s["kind"], ev["hours_at_suggestion"], win, p)
-        s["frozen"] = is_frozen
-        if s["type"] == "dwell_zone":
-            vr = profiles.variants_for(wd, we, len(d14) >= p.retention_covered_days, L.window["sched"],
-                                       is_frozen, win, p)
-            s["variants"] = vr["variants"]
-            s["variant_evidence_split"] = vr["evidence_split"]
-            s["variant_share_split"] = vr["share_split"]
-            s["variant_suppressed"] = vr["suppressed"]
-        else:
-            s["variants"] = []
-            s["variant_evidence_split"] = False
-            s["variant_share_split"] = False
-            s["variant_suppressed"] = False
+    refresh_places(L, stays14, len(d14))
 
     # 12. geometry (7.8.8)
     for s in sugg:
@@ -369,6 +339,47 @@ def run_nightly(L, run_ord: int, night: int) -> tuple:
     # 13. store the candidates
     ns.candidates = [_cand_record(c) for c in cands]
     return len(cands), len(created)
+
+
+
+def refresh_places(L, stays14: list, n_covered: int, naming: bool = True) -> None:
+    """Step 11 of the nightly run, also run at once when a bed zone appears ('Mark spot here' from the bed item,
+    approving a place as 'Bed': the OA 7.4 freeze and the OA 7.8 rule apply immediately). ``stays14`` is
+    [(stay, cell, date ordinal)] of the 14 covered dates; ``n_covered`` their number. With ``naming`` False the
+    learner's own 'bed' naming is skipped (it belongs to the nightly run)."""
+    p, tm = L.p, L.tm
+    sugg = L.ns.suggestions
+    win = profiles.window_hours(L.window["start"], L.window["end"])
+    for s in sugg:
+        if s["type"] not in PLACE_TYPES or s["state"] != "shadow":
+            continue
+        mine = [m[0] for m in stays14 if m[1] in s["cells"]]
+        wd, we = profiles.build_profiles(mine, tm)
+        ev = s["evidence"]
+        ev["hours_wd"] = [round(v, 1) for v in wd.minutes]
+        ev["hours_we"] = [round(v, 1) for v in we.minutes]
+        if ev.get("hours_at_suggestion") is None:
+            ev["hours_at_suggestion"] = [round(a + b, 1) for a, b in zip(wd.minutes, we.minutes)]
+        if naming and s["type"] == "dwell_zone" and s["kind"] != "bed" and \
+                profiles.bed_named(wd.minutes, we.minutes, float(ev.get("median_s", 0.0)), p):
+            s["kind"] = "bed"
+            if s["name_hint"] is None:
+                s["name_hint"] = "bed"
+        L.link_labels_one(s)
+        is_frozen = profiles.frozen(L.window["sched"], s["kind"], ev["hours_at_suggestion"], win, p)
+        s["frozen"] = is_frozen
+        if s["type"] == "dwell_zone":
+            vr = profiles.variants_for(wd, we, n_covered >= p.retention_covered_days, L.window["sched"],
+                                       is_frozen, win, p)
+            s["variants"] = vr["variants"]
+            s["variant_evidence_split"] = vr["evidence_split"]
+            s["variant_share_split"] = vr["share_split"]
+            s["variant_suppressed"] = vr["suppressed"]
+        else:
+            s["variants"] = []
+            s["variant_evidence_split"] = False
+            s["variant_share_split"] = False
+            s["variant_suppressed"] = False
 
 
 def _kind_of(typ: str) -> str:
@@ -569,3 +580,18 @@ def _ignore(L, night, d14_set, new_id, created, dirty) -> None:
         ns.suggestions.append(s)
         created.append(s)
         dirty.add(s["id"])
+
+
+def refresh_places_now(L) -> None:
+    """refresh_places for the stays of the 14 covered dates before today (no run date at hand)."""
+    if L.now is None:
+        return
+    today = L.tm.local(L.now).date_ord
+    d14 = L.obs.covered_dates(today)[-L.p.retention_covered_days:]
+    d14_set = set(d14)
+    stays14 = []
+    for st in L.bh.stays:
+        do = _date_ord(st["day"])
+        if do in d14_set:
+            stays14.append((st, L.geom.cell_of(st["x"] / 100.0, st["y"] / 100.0), do))
+    refresh_places(L, stays14, len(d14), naming=False)

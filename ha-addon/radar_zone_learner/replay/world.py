@@ -9,9 +9,13 @@ and ``World(rng, cfg).day_tracks(d, S)``, called per day in that order, so seed 
 people, sessions and ghosts as seed ``s`` of the published simulator runs. ``tests/test_world_port.py``
 checks this against the original.
 
-The only addition: ``day_tracks`` also returns ``sessions``, a list of
-``(agent, place, mode, t0, t1, x, y)`` recorded where a session's true position is drawn (before the settle
-shift of ``t0``). It makes no extra random-number calls.
+The only additions (no extra random-number calls, so the world stays the simulator's):
+
+* ``day_tracks`` also returns ``sessions``, a list of ``(agent, place, mode, t0, t1, x, y)`` recorded where a
+  session's true position is drawn (before the settle shift of ``t0``);
+* ``plan_day(..., late=list)`` records the bed sessions the simulator drops because the sleep onset falls after
+  00:00 (``(agent, onset_s)``; 3 of 280 simulated nights, at 00:02-00:12). The P4 replay keeps these onsets
+  (OA 7.5): ``WorldDay.late`` carries them.
 """
 from __future__ import annotations
 
@@ -74,8 +78,12 @@ def spot_pos(name, d, cfg):
     return p
 
 
-def plan_day(rng, d, cfg):
-    """Sessions per agent ``S`` (agent -> [[t0, t1, place, mode(, flag)], ...]) and home-empty intervals."""
+def plan_day(rng, d, cfg, late=None):
+    """Sessions per agent ``S`` (agent -> [[t0, t1, place, mode(, flag)], ...]) and home-empty intervals.
+
+    ``late`` (a list, optional): receives ``(agent, onset_s)`` for each 'cont_out' bed session that the simulator
+    drops because its start (the sleep onset) is at or after 00:00 of the next day. No random numbers are drawn.
+    """
     wd = d % 7
     weekend = wd >= 5
     at = lambda h, m=0: d * DAY + int(h * 3600 + m * 60)   # noqa: E731
@@ -160,6 +168,8 @@ def plan_day(rng, d, cfg):
             if s[1] - s[0] >= 30 or (len(s) > 4):
                 if s[1] > s[0]:
                     lst.append(s)
+                elif late is not None and len(s) > 4 and s[4] == 'cont_out':
+                    late.append((ag, s[0]))
         S[ag] = lst
     # home empty = both humans away (guests / visitors make it non-empty)
     he = []
@@ -426,9 +436,10 @@ class RunWorld:
     def ensure(self, d):
         while self.next_day <= d:
             dd = self.next_day
-            S, he = plan_day(self.rng, dd, self.cfg)
+            late = []
+            S, he = plan_day(self.rng, dd, self.cfg, late)
             tracks, occ, motion, sessions = self.world.day_tracks(dd, S)
-            rec = WorldDay(dd, S, he, tracks, occ, motion, sessions)
+            rec = WorldDay(dd, S, he, tracks, occ, motion, sessions, late)
             self.days[dd] = rec
             self.next_day += 1
             for cb in self.on_day:
@@ -445,9 +456,9 @@ class RunWorld:
 
 
 class WorldDay:
-    __slots__ = ("d", "S", "he", "tracks", "occ", "motion", "sessions")
+    __slots__ = ("d", "S", "he", "tracks", "occ", "motion", "sessions", "late")
 
-    def __init__(self, d, S, he, tracks, occ, motion, sessions):
+    def __init__(self, d, S, he, tracks, occ, motion, sessions, late=()):
         self.d = d
         self.S = S
         self.he = he
@@ -455,3 +466,4 @@ class WorldDay:
         self.occ = occ
         self.motion = motion
         self.sessions = sessions
+        self.late = list(late)         # [(agent, onset_s)]: sleep onsets after 00:00 that plan_day dropped

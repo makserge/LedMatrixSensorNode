@@ -46,15 +46,18 @@ def stays_in_progress(L) -> list:
     return out
 
 
-def make_label(L, stay: tuple, now_ms: int) -> dict:
+def make_label(L, stay: tuple, now_ms: int, name: Optional[str] = None, kind: Optional[str] = None) -> dict:
+    """A label at the stay. ``name`` and ``kind`` override the spot name and the kind it gives (the bed item's
+    'Mark spot here' makes kind bed named 'Bed', OA 7.6)."""
     p = L.p
     _, _, cx, cy, _ = stay
-    name = L.spot_name
+    if name is None:
+        name = L.spot_name
     lid = "l%04d" % L.next_label_n
     L.next_label_n += 1
     tr = p.time_round_s
     return {"id": lid, "created_s": int(now_ms // 1000 // tr) * tr, "x": round(cx, 3), "y": round(cy, 3),
-            "name": name, "kind": kind_of_name(name, p.bed_label_names),
+            "name": name, "kind": kind if kind is not None else kind_of_name(name, p.bed_label_names),
             "cells": L.geom.cells_within(cx, cy, p.label_radius_m)}
 
 

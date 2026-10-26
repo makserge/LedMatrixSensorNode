@@ -50,6 +50,15 @@ TABLE = [
     ("spot_name_max", 32),
     # 7.11 (D24)
     ("status_period_ms", 300000),
+    # P4: night evidence, the night-window proposal, review items, Night learning
+    ("night_lux", 5.0), ("lux_dark_min_s", 900), ("evening_start_min", 1200), ("night_onset_end_min", 240),
+    ("onset_quiet_s", 900), ("onset_replace_max_min", 60), ("onset_dark_s", 600), ("onset_ld_min", 0.9), ("wake_run_s", 600),
+    ("wake_rest_s", 1800), ("wake_earliest_min", 180), ("wake_latest_min", 720), ("night_keep_nights", 28),
+    ("night_res_min", 5), ("nw_min_nights", 7), ("nw_iqr_max_min", 90), ("nw_round_min", 15),
+    ("nw_min_len_min", 60), ("nw_max_len_min", 960), ("nw_same_min", 15), ("nw_deny_days", 30),
+    ("nw_late_min", 30), ("nw_late_nights", 14), ("review_min_nights", 7), ("nl_nights", 7),
+    ("nl_retry_s", 600), ("nl_restore_tries", 12), ("nl_result_timeout_s", 300),
+    ("nl_unconfirmed_wait_s", 900), ("nl_restore_late_s", 86400),
     # 5.2 / 7.13 diagnostic switches
     ("envelope_hard_filter", False), ("conf_includes_covis", True), ("clutter_rule", "ratio"),
 ]

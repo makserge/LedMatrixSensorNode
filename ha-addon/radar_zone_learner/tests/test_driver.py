@@ -9,9 +9,9 @@ from pathlib import Path
 
 from radar_zone_learner.core.learner import Learner
 from radar_zone_learner.core.params import DEFAULT_PARAMS
-from radar_zone_learner.core.types import (ContextState, FixedOffsetTime, FramesMessage, MarkPress, MarkResult,
-                                           NightlyDone, NodeStatus, ScheduleState, SpotName, StatusChanged,
-                                           Suggestion)
+from radar_zone_learner.core.types import (SCHEMA_VERSION, ContextState, FixedOffsetTime, FramesMessage, MarkPress,
+                                           MarkResult, NightlyDone, NodeStatus, ScheduleState, SpotName,
+                                           StatusChanged, Suggestion)
 from replay import driver as D
 from replay import framegen as G
 from replay import jobs as J
@@ -189,7 +189,7 @@ class DriverCoreTest(unittest.TestCase):
                 rc = capture_replay.main(["--in", str(cap), "--out", str(out), "--utc-offset-min", "60", "--png"])
             self.assertEqual(rc, 0)
             state = json.loads((out / "state.json").read_text(encoding="utf-8"))
-            self.assertEqual(state["schema"], 3)
+            self.assertEqual(state["schema"], SCHEMA_VERSION)
             self.assertTrue((out / "debug_map.png").read_bytes().startswith(b"\x89PNG"))
 
 

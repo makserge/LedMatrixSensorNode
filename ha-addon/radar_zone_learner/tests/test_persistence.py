@@ -4,11 +4,14 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from radar_zone_learner.core.types import StateError
+from radar_zone_learner.core.types import SCHEMA_VERSION, StateError
 from radar_zone_learner.shell import persistence
 from radar_zone_learner.shell.persistence import StateStore
 from tests._tmp import tmpdir
 from tests.fakes import quiet_logs
+
+
+NEWER = SCHEMA_VERSION + 1        # a schema this app does not know
 
 
 def state(n=1, schema=3):
@@ -124,18 +127,25 @@ class PersistenceTest(unittest.TestCase):
                           "state.json.corrupt-1767571205"])
         # a file with a newer schema is never deleted (D26)
         for k in range(5):
-            (self.dir / "state.json").write_bytes(json.dumps(state(1, schema=4 + k)).encode())
+            (self.dir / "state.json").write_bytes(json.dumps(state(1, schema=NEWER + k)).encode())
             self.assertIsNone(self.store.load())
         self.assertEqual(len([n for n in self.files() if ".newer-" in n]), 5)
 
     def test_newer_schema_kept_aside_and_fresh_start(self):
         self.store.snapshot(state(3), "2026-01-03")
-        newer = json.dumps(state(9, schema=4)).encode()
+        newer = json.dumps(state(9, schema=NEWER)).encode()
         (self.dir / "state.json").write_bytes(newer)
         self.assertIsNone(self.store.load())                  # fresh, not the snapshot
-        self.assertEqual((self.dir / "state.json.newer-4").read_bytes(), newer)
+        self.assertEqual((self.dir / ("state.json.newer-%d" % NEWER)).read_bytes(), newer)
         self.store.save(state(1))                             # the next save never touches it
-        self.assertEqual((self.dir / "state.json.newer-4").read_bytes(), newer)
+        self.assertEqual((self.dir / ("state.json.newer-%d" % NEWER)).read_bytes(), newer)
+
+    def test_older_schema_is_loaded_for_the_core_to_migrate(self):
+        # P4: the core loads a schema 3 file through migrate_3_to_4; the store must not quarantine it
+        self.store.save(state(5, schema=3))
+        self.assertEqual(self.store.load(), state(5, schema=3))
+        self.assertEqual(self.store.loaded_from, "state")
+        self.assertEqual([n for n in self.files() if ".corrupt-" in n], [])
 
     def test_loader_crash_is_treated_as_corrupt(self):
         def crashing(obj):

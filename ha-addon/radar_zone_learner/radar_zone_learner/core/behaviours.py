@@ -131,6 +131,8 @@ class Behaviours:
         self.walk_points_total = 0
         self.hold_times: list = []      # (birth wall s, x, y) of tracks that may still bridge, see flush()
         self.fold_n = FOLD_N
+        self.on_walk: Optional[Callable[[float], None]] = None      # P4: wall s of a walking point (activity)
+        self.on_death: Optional[Callable] = None     # P4: (wall s, x, y, class) of a classified track death
         self.counters = {"fragments": 0, "stays": 0, "ghost_stays": 0, "epp": 0, "short_stays": 0}
 
     # ------------------------------------------------------------ timelines in wall seconds
@@ -191,6 +193,8 @@ class Behaviours:
         if prev is not None and math.hypot(s[1] - prev[1], s[2] - prev[2]) > p.walk_step_m:
             self.grids.add_walk(s[1], s[2])
             self.walk_points_total += 1
+            if self.on_walk is not None:
+                self.on_walk(s[0])
         tb.prev = s
         if not tb.birth_done and tb.n >= p.exit_window_samples + 1:
             self._birth(tb)
@@ -277,6 +281,8 @@ class Behaviours:
             else:
                 death_class = "still"
                 self.grids.splat("death_still", last[1], last[2], 1.0)
+            if self.on_death is not None:
+                self.on_death(last[0], last[1], last[2], death_class)
         B = tb.B
         if tb.F is not None:
             n, cx, cy, sd, t0, t1 = tb.fold_stats()

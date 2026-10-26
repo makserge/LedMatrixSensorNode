@@ -9,12 +9,20 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Optional, Protocol, Union
 
-SCHEMA_VERSION = 3
-APP_VERSION = "0.3.0"
+SCHEMA_VERSION = 4
+MIN_SCHEMA_VERSION = 3            # older files are migrated on load (state.migrate_3_to_4)
+APP_VERSION = "0.4.0"
 STATUS_STATES = ("starting", "learning", "not_observing", "no_data")
 SUGGESTION_TYPES = ("dwell_zone", "short_task_zone", "reflection", "ignore_zone", "room_outline", "entry_zone")
 KINDS = ("dwell", "short_task", "bed", "reflection", "ignore", "entry", "outline")
 MARK_FAIL_REASONS = ("not_observing", "no_stay", "several_stays", "too_soon")
+
+# P4 review items (OA 7.8): the two that exist before P5, and the ops of ReviewAnswer
+ITEM_NIGHT_WINDOW = "night_window"
+ITEM_BED = "bed_needs_data"
+ITEM_IDS = (ITEM_NIGHT_WINDOW, ITEM_BED)
+ANSWER_OPS = ("approve", "reject", "later", "rename", "undo", "forget")   # the shell sends the first three
+NODE_COMMAND_KINDS = ("schedule", "window")
 
 
 # ---------------------------------------------------------------- inputs (shell or replay -> core)
@@ -56,7 +64,46 @@ class SpotName:
     recv_ms: int
 
 
-InputEvent = Union[FramesMessage, NodeStatus, ScheduleState, ContextState, MarkPress, SpotName]
+@dataclass(frozen=True, slots=True)
+class LuxSample:
+    lux: float                # BH1750 lux from <node_prefix>/sensors/state (the night-onset proxy, OA 7.5)
+    recv_ms: int
+
+
+@dataclass(frozen=True, slots=True)
+class ReviewSelect:
+    item: Optional[str]       # ITEM_IDS member, or None = nothing selected (the default: the first item)
+    recv_ms: int
+
+
+@dataclass(frozen=True, slots=True)
+class ReviewAnswer:
+    item: Optional[str]       # ITEM_IDS member, a place suggestion id ("s0005-1") or a zone id ("z0001");
+                              # None = the selected item
+    op: str                   # one of ANSWER_OPS
+    rev: Optional[int]        # the item's revision the answer was made on; None = not checked
+    sched: bool               # night_window approve: also switch the schedule ON ('the box ticked')
+    recv_ms: int
+
+
+@dataclass(frozen=True, slots=True)
+class NightLearningSwitch:
+    on: bool                  # the user turned 'Night learning' on or off
+    recv_ms: int
+
+
+@dataclass(frozen=True, slots=True)
+class CommandResult:
+    token: str                # the NodeCommand's token
+    kind: str                 # "schedule" | "window"
+    ok: bool                  # True: the echo matched (or the node already had the value)
+    reason: Optional[str]     # None, "unchanged", or why not: no_p2, node_offline, changed_by_user,
+                              # not_connected, no_echo (2 min), superseded, bad_command
+    recv_ms: int
+
+
+InputEvent = Union[FramesMessage, NodeStatus, ScheduleState, ContextState, MarkPress, SpotName, LuxSample,
+                   ReviewSelect, ReviewAnswer, NightLearningSwitch, CommandResult]
 
 
 # ---------------------------------------------------------------- decoded frames batch (core.frames)
@@ -135,10 +182,48 @@ class NightlyFailed:
 
 @dataclass(frozen=True, slots=True)
 class SaveRequested:
-    reason: str               # "nightly" | "label" | "name"
+    reason: str               # "nightly" | "label" | "name" | "review" | "night_learning"
 
 
-Output = Union[StatusChanged, DebugMapChanged, MarkResult, NameEcho, NightlyDone, NightlyFailed, SaveRequested]
+@dataclass(frozen=True, slots=True)
+class NodeCommand:
+    token: str                # chosen by the core; comes back in the CommandResult
+    kind: str                 # "schedule": set the night schedule switch; "window": times (and the switch)
+    sched: Optional[bool] = None   # schedule: the value; window: also ON/OFF when not None (the ticked box)
+    start_min: Optional[int] = None
+    end_min: Optional[int] = None
+    expect_current: Optional[bool] = None   # the schedule value the learner believes the node has; if the
+                                            # node's echo differs somebody else changed it: nothing is sent
+    reason: str = ""          # for the log only: "night_learning_start", "night_learning_end", "approved_window"
+
+
+@dataclass(frozen=True, slots=True)
+class ReviewItem:
+    id: str                   # ITEM_IDS member
+    rev: int
+    type: str                 # same as id before P5
+    data: dict                # night_window: start_min, end_min, saving_pct, current_saving_pct, late_nights,
+                              # late_of, from_lights_off, basis, text; bed_needs_data: start_min, end_min,
+                              # sched, show_window, text
+
+
+@dataclass(frozen=True, slots=True)
+class ReviewChanged:
+    items: tuple              # ReviewItem, in review order
+    selected: Optional[str]   # the item the select shows (the first item unless the user chose)
+
+
+@dataclass(frozen=True, slots=True)
+class NightLearningChanged:
+    active: bool
+    until: Optional[str] = None             # ISO date the 7 nights end
+    set_by_learner: Optional[bool] = None   # the schedule value the learner last wrote (OA 4.2); None = none
+    event: Optional[str] = None             # what happened (``NightLearning.last_event``); the shell raises the
+                                            # review event ``restore_failed`` for restore_failed / restore_overdue
+
+
+Output = Union[StatusChanged, DebugMapChanged, MarkResult, NameEcho, NightlyDone, NightlyFailed, SaveRequested,
+               NodeCommand, ReviewChanged, NightLearningChanged]
 
 
 # ---------------------------------------------------------------- read-only views

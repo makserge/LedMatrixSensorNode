@@ -12,6 +12,12 @@
 * CPU budget: after each simulated day, more than ``cpu_budget_s_per_day x days + 30 s`` of process CPU
   stops the run with ``status = "over_budget"``.
 
+P4 additions (OA 12 P4; ``replay.p4_scenarios``): a ``FakeNode`` answers the learner's ``NodeCommand`` with the
+schedule echo and a ``CommandResult``; the answers are injected as events at their times. P4 jobs carry the lux
+samples (``JobSpec.lux``) and a scenario (``JobSpec.script``): actors such as the Night learning user, the scripted
+'Mark spot here' presses and the answers to place suggestions act like the label planner below. After every
+nightly run a P4 job also records the learner's night evidence, proposal, review state and zones (``p4``).
+
 Labels (D37): a desk label in both worlds (``SpotName("Desk")`` at the start of the first desk session of
 >= 20 min on a work-from-home day, then ``MarkPress`` every 30 s from 60 s after its start until a
 ``MarkResult(ok=True)`` or the session ends, then on later such sessions until success), and in the bedroom a
@@ -22,6 +28,7 @@ are made only while the timeline observes. Labels change kinds and label metrics
 from __future__ import annotations
 
 import datetime
+import heapq
 import time
 import traceback
 from dataclasses import asdict
@@ -30,12 +37,14 @@ from typing import Callable, Optional
 
 from radar_zone_learner.core.params import DEFAULT_PARAMS, Params, params_digest
 from radar_zone_learner.core.types import (ContextState, FixedOffsetTime, MarkPress, MarkResult, NightlyDone,
-                                           NightlyFailed, NodeStatus, ScheduleState, SpotName)
+                                           NightlyFailed, NodeCommand, NodeStatus, ReviewChanged, ScheduleState,
+                                           SpotName)
 
+from . import p4_scenarios as P4
 from . import world as W
-from .framegen import BASE_MS, DAY_MS, RunStream
+from .framegen import BASE_MS, DAY_MS, OBSERVE_MS, RunStream
 from .jobs import JobSpec
-from .truth import Truth, rle
+from .truth import NightTruth, Truth, rle
 
 TICK_MS = 10_000
 PRESS_EVERY_MS = 30_000
@@ -73,19 +82,40 @@ class _LabelSession:
 class LabelPlanner:
     """'Mark spot here' as a persistent user (D37): one active session at a time, presses until success."""
 
-    def __init__(self, cfg: dict, timeline):
+    name = "labels"
+
+    def __init__(self, cfg: dict, timeline, enabled: bool = True):
         self.cfg = cfg
         self.timeline = timeline
+        self.enabled = enabled
+        self.run = None
         self.sessions = []
-        self.state = {"desk": {"ok": False, "night": None, "attempts": 0, "sessions": 0, "label": None, "kind": None,
-                               "fails": {}}}
-        if cfg["bed"]:
+        self.state = {}
+        if enabled:
+            self.state["desk"] = {"ok": False, "night": None, "attempts": 0, "sessions": 0, "label": None,
+                                  "kind": None, "fails": {}}
+        if enabled and cfg["bed"]:
             self.state["bed"] = {"ok": False, "night": None, "attempts": 0, "sessions": 0, "label": None, "kind": None,
                                  "fails": {}}
         self.current_name = None
         self.pending_press = None
 
+    def attach(self, run) -> None:
+        self.run = run
+
+    def on_output(self, o) -> None:
+        if isinstance(o, MarkResult):
+            self.on_result(o)
+
+    def on_night(self, rec) -> None:
+        pass
+
+    def summary(self) -> dict:
+        return {}
+
     def add_day(self, rec) -> None:
+        if not self.enabled:
+            return
         d = rec.d
         new = []
         if self.cfg["wfh"] and d % 7 in WFH_DAYS:
@@ -163,11 +193,23 @@ class Run:
         self.params = params
         self.budget = cpu_budget_s_per_day
         self.cfg = job.cfg()
-        self.stream = RunStream(self.cfg, seed, horizon_days if horizon_days is not None else job.nights + 2, job.faults)
+        self.horizon = horizon_days if horizon_days is not None else job.nights + 2
+        self.stream = RunStream(self.cfg, seed, self.horizon, job.faults, lux=job.lux, extras=job.extras())
         self.truth = Truth(self.cfg)
-        self.labels = LabelPlanner(self.cfg, self.stream.timeline)
+        self.labels = LabelPlanner(self.cfg, self.stream.timeline, enabled=job.labels)
         self.stream.world.on_day.append(self.truth.add_day)
-        self.stream.world.on_day.append(self.labels.add_day)
+        self.night_truth = NightTruth()
+        self.stream.world.on_day.append(self.night_truth.add_day)
+        # P4: the node, the user-like actors and the events the node's answers inject
+        nbeg, nend = self._window_min()
+        self.node = P4.FakeNode(job.p2, job.window is not None, nbeg, nend)
+        self.actors = [self.labels] + P4.make_actors(job)
+        for a in self.actors:
+            a.attach(self)
+            self.stream.world.on_day.append(a.add_day)
+        self.inject = []                 # heap of (abs_ms, seq, event): the node's echoes and results
+        self.inject_seq = 0
+        self.review_items = {}           # id -> ReviewItem of the last ReviewChanged
         if learner_factory is None:
             from radar_zone_learner.core.learner import Learner
 
@@ -191,14 +233,27 @@ class Run:
     # ------------------------------------------------------------ feeding
     def _process(self, outs) -> None:
         for o in outs or ():
-            if isinstance(o, MarkResult):
-                self.labels.on_result(o)
-            elif isinstance(o, NightlyDone):
+            if isinstance(o, NightlyDone):
                 self._record_night(o)
             elif isinstance(o, NightlyFailed):         # the core contains a raising nightly run: it is an error here
                 self.core_errors += 1
                 if self.first_error is None:
                     self.first_error = "nightly run %s failed: %s" % (o.date, o.error)
+            elif isinstance(o, NodeCommand):           # the fake node answers: the echo and the result come later
+                for t, ev in self.node.command(o, self.now):
+                    self.inject_seq += 1
+                    heapq.heappush(self.inject, (t, self.inject_seq, ev))
+            elif isinstance(o, ReviewChanged):
+                self.review_items = {i.id: i for i in o.items}
+            for a in self.actors:
+                a.on_output(o)
+
+    def _window_min(self) -> tuple:
+        w = self.job.window
+        if w:
+            a, b = w.split("-")
+            return _hm_min(a), _hm_min(b)
+        return 0, 360
 
     def _call(self, fn, arg) -> None:
         try:
@@ -223,20 +278,29 @@ class Run:
         self._call(self.learner.tick, t)
 
     def _advance_to(self, t: int) -> None:
-        """Ticks and label actions due at or before ``t``, in time order (ticks first on equal times)."""
+        """Ticks, the node's answers and the actors' actions (labels, P4 users) due at or before ``t``, in time
+        order: ticks first on equal times, then the node's events, then the actors in list order."""
         while True:
-            la = self.labels.next_time()
-            ta = BASE_MS + la if la < INF else INF
+            best, ta = None, INF
+            for a in self.actors:
+                x = a.next_time()
+                if x < INF and BASE_MS + x < ta:
+                    best, ta = a, BASE_MS + x
             nt = self.next_tick
-            if min(ta, nt) > t:
+            ti = self.inject[0][0] if self.inject else INF
+            if min(ta, nt, ti) > t:
                 return
-            if nt <= ta:
+            if nt <= ti and nt <= ta:
                 self.now = nt
                 self._tick(nt)
                 self.next_tick += TICK_MS
+            elif ti <= ta:
+                _, _, ev = heapq.heappop(self.inject)
+                self.now = max(self.now, ti)
+                self.feed(ev)
             else:
-                self.now = ta
-                self.labels.act(self.feed)
+                self.now = max(self.now, ta)
+                best.act(self.feed)
             if self._stopped():
                 return
 
@@ -244,14 +308,8 @@ class Run:
         return self.last_night is not None and self.last_night >= self.stop_night
 
     def _initial(self) -> None:
-        w = self.job.window
-        if w:
-            a, b = w.split("-")
-            sched = ScheduleState(True, _hm_min(a), _hm_min(b), BASE_MS)
-        else:
-            sched = ScheduleState(False, 0, 360, BASE_MS)
         self.feed(NodeStatus(True, BASE_MS))
-        self.feed(sched)
+        self.feed(self.node.initial_event())     # sched ON with the window; OFF without; nothing on a P1 node
         self.feed(ContextState("home_empty", False, BASE_MS))
 
     def run(self, stop_night: Optional[int] = None) -> str:
@@ -353,8 +411,62 @@ class Run:
                "labels": [{"id": l.id, "kind": l.kind, "name": l.name, "x": round(l.x_m, 3), "y": round(l.y_m, 3)}
                           for l in self.learner.labels()],
                "counters": self._counters()}
+        if self.job.is_p4:
+            rec["p4"] = self._p4_night(rec)
         self.nights.append(rec)
         self.truth.forget_regions_before(night - 1)
+        for a in self.actors:
+            a.on_night(rec)
+
+    def _p4_night(self, rec: dict) -> dict:
+        """The learner's night evidence, proposal, review state and zones after a nightly run (P4)."""
+        L = self.learner
+        try:
+            attrs = L.status().attributes
+        except Exception:
+            attrs = {}
+        try:
+            st = L.export_state()
+        except Exception:
+            st = {}
+        nt = st.get("night") or {}
+        base = BASE_DATE.toordinal()
+
+        def idx(iso):
+            return datetime.date.fromisoformat(iso).toordinal() - base
+
+        bed_named = [{"id": s["id"], "iou_bed": (s.get("iou") or {}).get("bed", 0.0), "kind": s["kind"],
+                      "name_hint": s["name_hint"]}
+                     for s in rec["suggestions"]
+                     if s["type"] in PLACE_TYPES and s["state"] == "shadow"
+                     and (s["kind"] == "bed" or (s["name_hint"] or "").strip().casefold() in ("bed", "bett"))]
+        return {
+            "night": attrs.get("night"), "review": attrs.get("review"), "night_learning": attrs.get("night_learning"),
+            "schedule": attrs.get("schedule"), "radar_valid": attrs.get("radar_valid"),
+            "items": {k: {"rev": it.rev, "data": it.data} for k, it in self.review_items.items()},
+            "onsets": [[idx(e["n"]), e["m"], e["s"]] for e in nt.get("onsets", [])],
+            "wakes": [[idx(e["n"]), e["m"]] for e in nt.get("wakes", [])],
+            "zones": [{"zid": z.get("zid"), "name": z.get("name"), "kind": z.get("kind"), "ref": z.get("ref")}
+                      for z in st.get("zones", [])],
+            "suppressions": [s.get("type") for s in st.get("suppressions", [])],
+            "bed_named": bed_named,
+        }
+
+    def _p4_result(self) -> dict:
+        tl = self.stream.timeline
+
+        def seen(a_ms, b_ms):         # the radars observe through [a, b) (not off, not warming up)
+            return not any(oa < b_ms and a_ms < ob + OBSERVE_MS for oa, ob in tl.offs)
+
+        nt = self.night_truth
+        onsets = [[n, nt.nm(n, s), n in nt.late, seen(s * 1000 - 90_000, s * 1000 + 930_000)]
+                  for n, s in sorted(nt.onset_s.items())]
+        wakes = [[n, nt.nm(n, s), seen(s * 1000 - 30_000, s * 1000 + 660_000)] for n, s in sorted(nt.wake_s.items())]
+        return {"script": self.job.script,
+                "node": self.node.summary(tl, self.cfg, self.horizon),
+                "actors": {a.name: a.summary() for a in self.actors if a is not self.labels},
+                "late_nights": list(self.stream.late_nights),
+                "true_onsets": onsets, "true_wakes": wakes}
 
     def _counters(self) -> dict:
         try:
@@ -379,7 +491,7 @@ class Run:
             precision = attrs.get("label_precision")
         except Exception:
             pass
-        return {
+        res = {
             "job": self.job.name,
             "job_spec": {k: (list(v) if isinstance(v, tuple) else v) for k, v in asdict(self.job).items()},
             "world": self.job.world, "window": self.job.window_key, "variant": self.job.variant,
@@ -402,6 +514,9 @@ class Run:
             "stream": dict(self.stream.stats),
             "calls": dict(self.counts),
         }
+        if self.job.is_p4:
+            res["p4"] = self._p4_result()
+        return res
 
     def _seated_capture(self, n_last: int):
         """Sum of retained stay durations over true 'sit' seconds of P1 and P2 on the same dates (14 days)."""

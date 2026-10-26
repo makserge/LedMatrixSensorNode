@@ -5,7 +5,8 @@
 - Load order: ``state.json``; if it is not JSON or fails validation it is renamed to
   ``state.json.corrupt-<epoch_s>`` and the snapshots are tried newest first; nothing valid -> ``None``
   (start fresh). A file with a schema newer than this app's is renamed to ``state.json.newer-<schema>``,
-  never overwritten, and the app starts fresh.
+  never overwritten, and the app starts fresh. A file with an older schema (back to ``MIN_SCHEMA_VERSION``)
+  is loaded: the core migrates it (P4: schema 3 -> 4).
 - ``snapshots/state-YYYY-MM-DD.json``: one per date, the 7 newest by date are kept.
 """
 from __future__ import annotations
@@ -19,6 +20,11 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from ..core.types import SCHEMA_VERSION
+
+try:
+    from ..core.types import MIN_SCHEMA_VERSION      # P4: older files are migrated by the core on load
+except ImportError:                                  # a core without migrations: only the current schema loads
+    MIN_SCHEMA_VERSION = SCHEMA_VERSION
 
 KEEP_CORRUPT = 3                  # quarantined state files kept
 STATE_NAME = "state.json"
@@ -141,7 +147,7 @@ class StateStore:
         schema = state.get("schema")
         if isinstance(schema, int) and not isinstance(schema, bool) and schema > SCHEMA_VERSION:
             raise _Newer(schema)
-        if schema != SCHEMA_VERSION or isinstance(schema, bool):
+        if isinstance(schema, bool) or not isinstance(schema, int) or schema < MIN_SCHEMA_VERSION:
             raise _Corrupt(f"schema {schema!r}")
         built = None
         if self.validate is not None:

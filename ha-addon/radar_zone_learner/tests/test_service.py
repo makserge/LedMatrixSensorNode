@@ -6,8 +6,8 @@ import threading
 import unittest
 from pathlib import Path
 
-from radar_zone_learner.core.types import (DebugMapChanged, FramesMessage, MarkResult, NameEcho, NightlyDone,
-                                           NightlyFailed, SaveRequested, StatusChanged)
+from radar_zone_learner.core.types import (SCHEMA_VERSION, DebugMapChanged, FramesMessage, MarkResult, NameEcho,
+                                           NightlyDone, NightlyFailed, SaveRequested, StatusChanged)
 from radar_zone_learner.shell import service as service_mod
 from radar_zone_learner.shell.mqtt_io import MqttIO
 from radar_zone_learner.shell.options import Settings
@@ -545,7 +545,7 @@ class RealLearnerTest(unittest.TestCase):
             self.assertTrue(png and png[-1][1].startswith(b"\x89PNG"))
             svc.shutdown(0)
             saved = json.loads((Path(d) / "state.json").read_text())
-            self.assertEqual(saved["schema"], 3)
+            self.assertEqual(saved["schema"], SCHEMA_VERSION)
             svc2 = service_mod.Service(settings, make, mqtt, StateStore(Path(d), validate=make), Stub(), Stub(),
                                        clock.clock_ms, clock.monotonic, topics=topics, events=events)
             self.assertIsInstance(svc2._load_learner(), Learner)

@@ -179,11 +179,15 @@ class FakeLearner:
         self.raise_on_handle: Optional[Exception] = None
         self.state_name = "starting"
         self.spot_name = (state or {}).get("settings", {}).get("spot_name", "")
+        self.responder = None               # optional callable(event) -> list of outputs (P4 tests)
+        self.attributes: dict = {}          # extra keys of status().attributes
 
     def handle(self, event) -> list:
         self.events.append(event)
         if self.raise_on_handle is not None:
             raise self.raise_on_handle
+        if self.responder is not None:
+            self.queued = self.queued + list(self.responder(event) or [])
         outs, self.queued = self.queued, []
         return outs
 
@@ -197,7 +201,7 @@ class FakeLearner:
                 "events": len(self.events), "settings": {"spot_name": self.spot_name}}
 
     def status(self) -> StatusChanged:
-        return StatusChanged(self.state_name, {"version": "0.3.0", "schema": 3, "mode": "shadow"})
+        return StatusChanged(self.state_name, {"version": "0.3.0", "schema": 3, "mode": "shadow", **self.attributes})
 
     def debug_map(self) -> DebugMapData:
         return empty_debug_map()
@@ -218,6 +222,72 @@ class FakeLearner:
         return {}
 
 
+class FakeNode:
+    """A fake LED matrix node with the P2 radar topics, next to a ``FakeMqttClient``.
+
+    ``announce`` delivers what the broker sends right after the app subscribes (the node's retained
+    states); ``process`` reads what the app has published since the last call and, like the ESP, echoes
+    the schedule and the night times on their retained state topics. ``p2=False`` is a P1 node: it has
+    no schedule topics at all, so it never echoes. ``echo=False`` drops the echo (a node that does not
+    confirm).
+    """
+
+    def __init__(self, client, prefix: str = "led_matrix_node", p2: bool = True, sched: bool = False,
+                 start: str = "00:00:00", end: str = "06:00:00", echo: bool = True, online: bool = True) -> None:
+        self.client = client
+        self.prefix = prefix
+        self.p2 = p2
+        self.sched = sched
+        self.start = start
+        self.end = end
+        self.echo = echo
+        self.online = online
+        self.received: list = []          # (topic, payload text) of every command that reached the node
+        self._cursor = 0
+
+    def announce(self) -> None:
+        p = self.prefix
+        self.client.fire_message(f"{p}/sensors/status", "online" if self.online else "offline", retain=True)
+        if self.p2:
+            self.client.fire_message(f"{p}/radar/schedule/state", "1" if self.sched else "0", retain=True)
+            self.client.fire_message(f"{p}/radar/night_start/state", self.start, retain=True)
+            self.client.fire_message(f"{p}/radar/night_end/state", self.end, retain=True)
+
+    def process(self) -> int:
+        """Takes the app's new publishes; returns how many commands reached the node."""
+        pub = self.client.published
+        if len(pub) < self._cursor:
+            self._cursor = 0
+        new = pub[self._cursor:]
+        self._cursor = len(pub)
+        p = self.prefix
+        got = 0
+        for topic, payload, _qos, retain in new:
+            if retain or not topic.startswith(p + "/radar/") or topic.endswith("/state") or not self.p2:
+                continue
+            text = payload.decode("utf-8")
+            self.received.append((topic, text))
+            got += 1
+            if topic == f"{p}/radar/schedule" and text in ("1", "0"):
+                self.sched = text == "1"
+                if self.echo:
+                    self.client.fire_message(f"{p}/radar/schedule/state", text, retain=True)
+            elif topic == f"{p}/radar/night_start":
+                self.start = text
+                if self.echo:
+                    self.client.fire_message(f"{p}/radar/night_start/state", text, retain=True)
+            elif topic == f"{p}/radar/night_end":
+                self.end = text
+                if self.echo:
+                    self.client.fire_message(f"{p}/radar/night_end/state", text, retain=True)
+        return got
+
+    def user_sets_schedule(self, on: bool) -> None:
+        """Somebody else (the user in Home Assistant) switches the schedule: the node echoes it."""
+        self.sched = on
+        self.client.fire_message(f"{self.prefix}/radar/schedule/state", "1" if on else "0", retain=True)
+
+
 def quiet_logs(testcase) -> None:
     """Keeps expected warnings of the app's loggers out of the test output (assertLogs still works)."""
     logger = logging.getLogger("radar_zone_learner")
@@ -227,4 +297,4 @@ def quiet_logs(testcase) -> None:
 
 
 __all__ = ["FakeMqttClient", "FakeClientFactory", "FakeMessage", "FakeMessageInfo", "FakeReasonCode",
-           "FakeClock", "FakeLearner", "empty_debug_map", "quiet_logs", "DebugMapChanged"]
+           "FakeClock", "FakeLearner", "FakeNode", "empty_debug_map", "quiet_logs", "DebugMapChanged"]

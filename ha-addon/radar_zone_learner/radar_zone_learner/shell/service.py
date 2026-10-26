@@ -17,6 +17,7 @@ import signal
 import threading
 import time
 from collections import deque
+from dataclasses import replace
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -26,12 +27,14 @@ from .discovery import discovery_messages
 from .health import HealthServer, StallWatchdog
 from .mqtt_io import MqttIO
 from .options import SettingsError, configure_logging, load_settings
+from .p4 import P4Layer
 from .persistence import StateStore
 from .png import encode_png
 from .render import render
 from .resources import CpuMeter, rss_mb
 from .timemodel import ZoneInfoTime
 from .topics import HaBirth, Republish, build_topics
+from .topics_p4 import build_topics_p4
 
 QUEUE_SIZE = 2000                 # D28
 TICK_PERIOD_S = 1.0               # spec 4.2: at least once a second
@@ -62,7 +65,7 @@ class Service:
                  clock_ms: Callable[[], int], monotonic: Callable[[], float], *,
                  topics=None, events: Optional[queue.Queue] = None, rng: Optional[random.Random] = None,
                  cpu: Optional[CpuMeter] = None, rss: Callable[[], Optional[float]] = rss_mb,
-                 time_model=None) -> None:
+                 time_model=None, p4=None) -> None:
         self.settings = settings
         self.learner_factory = learner_factory
         self.mqtt = mqtt
@@ -77,6 +80,7 @@ class Service:
         self.cpu = cpu if cpu is not None else CpuMeter()
         self.rss = rss
         self.time_model = time_model if time_model is not None else FixedOffsetTime(0)
+        self.p4 = p4                     # shell.p4.P4Layer, or None: then the app is the P3 app
 
         self.learner = None
         self.core_errors = 0
@@ -108,6 +112,8 @@ class Service:
         self.health.start()
         self.watchdog.start()
         self.mqtt.start()
+        if self.p4 is not None:
+            self._p4_call(self.p4.start, self.clock_ms())
         now = self.monotonic()
         self._last_tick = self._last_save = self._last_cpu = now
         self.cpu.sample()
@@ -173,6 +179,8 @@ class Service:
         """Final save (not after repeated errors), 'offline', disconnect, stop health and watchdog."""
         if self.learner is not None and code in (EXIT_OK, EXIT_REFUSED):
             self._save("shutdown")
+        if self.p4 is not None:
+            self._p4_call(self.p4.shutdown, self.clock_ms())
         self._teardown()
         log.info("stopped (exit %d)", code)
 
@@ -200,13 +208,17 @@ class Service:
             due = self.monotonic() + delay
             self._republish_at = due if self._republish_at is None else min(self._republish_at, due)
         elif ev is not None:
-            outs.extend(self._core(self.learner.handle, ev) or ())
+            for e in self._p4_events(ev):
+                outs.extend(self._core(self.learner.handle, e) or ())
         now = self.monotonic()
         if now - self._last_tick >= TICK_PERIOD_S:
             self._last_tick = now
             outs.extend(self._core(self.learner.tick, self.clock_ms()) or ())
+            if self.p4 is not None:
+                self._p4_call(self.p4.tick, self.clock_ms())
         for out in outs:
             self._execute(out)
+        self._drain_p4()
         take = getattr(self.mqtt, "take_republish_request", None)
         if take is not None and take():
             self._republish()
@@ -229,6 +241,38 @@ class Service:
             self._last_cpu = now
             self.cpu.sample()
         self.watchdog.beat()
+
+    # ------------------------------------------------------------ P4 layer
+    def _p4_call(self, fn, *args):
+        """Calls the P4 layer; an exception is logged, counted, and gives None (the app goes on as the P3 app)."""
+        try:
+            return fn(*args)
+        except Exception:
+            self.shell_errors += 1
+            log.exception("error in the P4 layer (%s)", getattr(fn, "__name__", "call"))
+            self._count_error()
+            return None
+
+    def _p4_events(self, ev) -> list:
+        """The events to give the core for one received event: the event itself without the P4 layer."""
+        if self.p4 is None:
+            return [ev]
+        evs = self._p4_call(self.p4.on_event, ev, self.clock_ms())
+        return [ev] if evs is None else evs
+
+    def _drain_p4(self) -> None:
+        """Gives the core the events the P4 layer produced (command results); their outputs may produce more."""
+        if self.p4 is None:
+            return
+        for _ in range(8):
+            evs = self._p4_call(self.p4.take_core_events) or ()
+            if not evs:
+                return
+            outs = []
+            for e in evs:
+                outs.extend(self._core(self.learner.handle, e) or ())
+            for out in outs:
+                self._execute(out)
 
     # ------------------------------------------------------------ core calls and errors
     def _core(self, fn, *args):
@@ -256,6 +300,8 @@ class Service:
 
     # ------------------------------------------------------------ outputs
     def _execute(self, out) -> None:
+        if self.p4 is not None and self._p4_call(self.p4.on_output, out, self.clock_ms()):
+            return                                   # a P4 output (node command, review items, Night learning)
         if isinstance(out, StatusChanged):
             self._status = out
             self._publish_status(force=False)
@@ -300,6 +346,8 @@ class Service:
             "state_bytes": self.state_bytes,
             "core_errors": self.core_errors,
         })
+        if self.p4 is not None:
+            attrs.update(self.p4.attributes())
         return attrs
 
     def _publish_status(self, force: bool) -> None:
@@ -338,11 +386,16 @@ class Service:
         """Discovery burst, then availability, state, attributes, the name echo and the debug map (9.2)."""
         for topic, payload in discovery_messages(self.settings, self.topics):
             self.mqtt.publish(topic, payload, qos=1, retain=False)
+        if self.p4 is not None:
+            for topic, payload in self.p4.discovery():
+                self.mqtt.publish(topic, payload, qos=1, retain=False)
         self.mqtt.publish(self.topics.learner_status, "online", qos=1, retain=True)
         if self._status is None and self.learner is not None:
             self._status = self._core(self.learner.status)
         self._publish_status(force=True)
         self.mqtt.publish(self.topics.review_name, self._spot_name or "", qos=1, retain=True)
+        if self.p4 is not None:
+            self._p4_call(self.p4.republish, self.clock_ms())
         self._publish_map()
         self._map_at = self.monotonic() + MAP_REPUBLISH_DELAY_S      # the first copy may be lost, see above
 
@@ -371,6 +424,8 @@ class Service:
             return
         self.state_saved_ms = self.clock_ms()
         self.state_bytes = written
+        if self.p4 is not None and reason in ("periodic", "nightly", "shutdown"):
+            self._p4_call(self.p4.save, self.clock_ms())
         level = logging.DEBUG if reason == "periodic" else logging.INFO
         log.log(level, "state saved (%s, %d bytes, %.0f ms)", reason, written, (time.perf_counter() - t0) * 1000)
         if reason == "nightly":
@@ -403,19 +458,23 @@ def main(argv: Optional[list] = None) -> int:
     from ..core.learner import Learner
     from ..core.params import DEFAULT_PARAMS
 
+    params = replace(DEFAULT_PARAMS, night_lux=settings.night_lux)
+    if params.night_lux != DEFAULT_PARAMS.night_lux:
+        log.info("night_lux %g lx (option)", params.night_lux)
     time_model = ZoneInfoTime(os.environ.get("TZ", "UTC"))
     log.info("time zone %s", time_model.name)
 
     def learner_factory(state):
-        return Learner(DEFAULT_PARAMS, time_model, state)
+        return Learner(params, time_model, state)
 
-    topics = build_topics(settings)
+    topics = build_topics_p4(settings)
     events: queue.Queue = queue.Queue(maxsize=QUEUE_SIZE)
     mqtt = MqttIO(settings, topics, events)
     store = StateStore(settings.data_dir, validate=learner_factory)
+    p4 = P4Layer(topics, mqtt.publish, settings.data_dir)
     service = Service(settings, learner_factory, mqtt, store, HealthServer(args.health_port), StallWatchdog(),
                       clock_ms=lambda: time.time_ns() // 1_000_000, monotonic=time.monotonic,
-                      topics=topics, events=events, time_model=time_model)
+                      topics=topics, events=events, time_model=time_model, p4=p4)
     stop_event = threading.Event()
 
     def on_signal(signum, frame):

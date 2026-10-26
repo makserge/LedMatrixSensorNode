@@ -42,6 +42,20 @@ class OptionsTest(unittest.TestCase):
         self.assertIs(s.mqtt_ssl, False)
         self.assertEqual(s.data_dir, self.dir)
 
+    def test_night_lux_default_and_value(self):
+        self.write({})
+        self.assertEqual(load_settings(self.path, environ={}).night_lux, 5.0)
+        self.write({"night_lux": 12})
+        s = load_settings(self.path, environ={})
+        self.assertEqual(s.night_lux, 12.0)
+        self.assertIsInstance(s.night_lux, float)
+
+    def test_night_lux_out_of_range_or_wrong_type(self):
+        for bad in (0, 0.05, 501, -1, True, "5", None, float("nan"), float("inf")):
+            self.write({"night_lux": bad})
+            with self.assertRaises(SettingsError, msg=repr(bad)):
+                load_settings(self.path, environ={})
+
     def test_missing_file_gives_defaults(self):
         s = load_settings(self.dir / "absent.json", environ={})
         self.assertEqual(s.node_prefix, "led_matrix_node")
