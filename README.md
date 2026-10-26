@@ -12,15 +12,16 @@ The firmware is split into FreeRTOS tasks, each pinned to a core. They share sta
 |---|---|---|---|---|---|
 | `MatrixEngine` (`LedMatrix::displayTaskEngine`) | 1 | 5 | 4096 | frame (5 ms) | Bit-bangs the panel's HUB75-style interface from double-buffered R/G/B column data. It busy-waits each column's full 180 µs window (lit part and dark remainder alike, so its CPU use does not depend on brightness) and sleeps one tick per frame: about 4.5 ms of every 5 ms, roughly 90% of core 1 |
 | `Ballistics` | 1 | 3 | 3072 | 10 ms | Per-band bar/peak ballistics and sleep fade |
-| `DisplayTask` | 1 | 1 | 4096 | 33 ms (10 ms in spectrum, 50 ms panel off / WiFi down, 200 ms during OTA) | Renders the views; view state machine, CO₂ alarm logic, the beeper (alarm and MQTT beeps), button input, OTA screen |
+| `DisplayTask` | 1 | 1 | 4096 | 33 ms (10 ms in spectrum, 50 ms panel off / WiFi down, 200 ms during OTA) | Renders the views; view state machine, CO₂ alarm logic, the beeper (alarm and MQTT beeps), button input (rev2: the GPIO8 ladder), OTA screen |
 | `NtpClockTask` | 1 | 1 | 3072 | 500 ms | Keeps wall-clock time via NTP, pushes the formatted clock text through a queue |
-| `MqttTask` | 1 | 1 | 8192 | 40 ms | Connects/reconnects to the broker, publishes sensor + radar data, dispatches incoming commands |
+| `MqttTask` | 1 | 1 | 8192 (rev2: 10240) | 40 ms | Connects/reconnects to the broker, publishes sensor + radar data, dispatches incoming commands |
 | `AudioViewSwitch` | 1 | 1 | 4096 | 10 ms | Spectrum auto-entry/return |
 | Arduino `loopTask` | 1 | 1 | 8192 | 5 ms | Runs `setup()`, then `loop()`: the web UI / OTA server (`webUi.loop()`) and WiFi link supervision |
 | `StreamIngest` | 0 | 4 | 8192 | 1 ms tick | Fetches and parses the WAV audio stream and runs both FFTs (their callbacks run inside its writes to the FFTs) |
 | `CO2Task`, `TempHumTask`, `LightTask`, `LD2412Task`, `LD2454Task` | 0 | 1 | 4096 each | 30 s (5 s without a value), 15 s, 2 s, 500 ms, 50 ms | Poll their respective sensors |
+| `RadarPower` (board revision 2 only) | 0 | 1 | 4096 | 1 s tick (5-100 ms steps while switching; woken early by commands) | Owns GPIO9, the radar power switch, and the night schedule: the park handshake with `LD2454Task`, the minimum ON / OFF times and the throttle, the offline failsafe, the `radar` NVS settings. It never publishes: `MqttTask` reads the `RadarStatus` snapshot it keeps |
 
-Priorities and stack sizes are the `*_TASK_PRIORITY` / `*_TASK_STACK_SIZE` constants in `constants.h` (the Arduino core sets `loopTask`'s). The other tasks on core 1 only run while `MatrixEngine` sleeps between frames, roughly 0.5 ms of every 5 ms. ESP-IDF's own WiFi, TCP/IP and `esp_timer` tasks run on core 0, above all of these. `setup()` starts `DisplayTask` (which starts `MatrixEngine`) first, then blocks in the WiFi setup (the captive portal can take up to 180 s), and only then creates the audio, sensor, clock and MQTT tasks.
+Priorities and stack sizes are the `*_TASK_PRIORITY` / `*_TASK_STACK_SIZE` constants in `constants.h` (the Arduino core sets `loopTask`'s). The other tasks on core 1 only run while `MatrixEngine` sleeps between frames, roughly 0.5 ms of every 5 ms. ESP-IDF's own WiFi, TCP/IP and `esp_timer` tasks run on core 0, above all of these. `setup()` starts `DisplayTask` (which starts `MatrixEngine`) first, then blocks in the WiFi setup (the captive portal can take up to 180 s), and only then creates the audio, sensor, clock and MQTT tasks. On board revision 2 (see [Build variants](#build-variants)) `setup()` drives GPIO9 first thing after `Serial.begin()` (`radarPowerEarlyInit()`), and the radar tasks (`RadarPower`, `LD2412Task`, `LD2454Task`) start before the WiFi setup, because `LD2454Task` must answer the park requests of `RadarPower` while the captive portal blocks.
 
 I²C sensors (SCD4x CO₂, HTU21D temp/humidity, BH1750 light) share the bus behind a single `i2cMutex` (`i2c_mutex.h`) — every I²C transaction, including `begin()` calls, must be wrapped in `xSemaphoreTake`/`Give`.
 
@@ -42,11 +43,14 @@ Board: Seeed XIAO ESP32-S3 Plus (Arduino-style `Dx` pin aliases used for most GP
 | Panel chip-selects | `L_EN`=40, `M_EN`=41, `R_EN`=D2 |
 | I²C bus (CO₂/temp/light sensors) | `SDA`=12, `SCL`=7 |
 | Beeper | 13 |
-| Mode button | D9 (`INPUT_PULLUP`) |
-| Power toggle button | D10 (`INPUT_PULLUP`) |
+| Mode button (current board) | D9 (`INPUT_PULLUP`) |
+| Power toggle button (current board) | D10 (`INPUT_PULLUP`) |
+| Both buttons (rev2) | D9 = GPIO8, one ADC input (ADC1) reading a resistor ladder, no `INPUT_PULLUP`: idle about 3.3 V (R1 pull-up), mode button 0 V (both buttons pressed also read 0 V), power / LED-off button about 1.65 V (through R8, 10 k) |
+| Radar power enable (rev2) | D10 = GPIO9, output: drives Q2 -> Q1 (AO3401A), which switches RADAR_5V for both radars; HIGH = radars on; R7 (100 k) keeps them on while the pin is not driven (reset, bootloader) |
 | LD2412 presence (digital) | D1 (`INPUT_PULLDOWN`: high = someone present; an unplugged radar reads as nobody) |
 | LD2454 UART (Serial1) | `RX`=11, `TX`=D7 @ 256000 baud |
-| LD2454 power | VBUS (5 V) — the LD2454 manual specifies DC 5 V, >200 mA |
+| LD2454 power (current board) | VBUS (5 V) — the LD2454 manual specifies DC 5 V, >200 mA |
+| LD2454 / LD2412 power (rev2) | RADAR_5V, switched by GPIO9 (not VBUS) |
 
 The radar header's pin order is not the LD2454's J1 order (1 `5V`, 2 `G`, 3 `T`, 4 `R`), so the cable is **not** 1:1: header 1 (VBUS) → J1-1, header 4 (GND) → J1-2, header 3 (`RADAR_T`, to GPIO11) → J1-3, header 2 (`RADAR_R`, from D7) → J1-4. The schematic (`schematics/`) carries the same note; its PDF render predates these changes, so re-plot it from KiCad.
 
@@ -71,6 +75,12 @@ static const char* const WIFI_BACKUP_PASS = "backup-password";
 
 `AUDIO_STREAM_URL` must be a plain `http://host[:port]/path` URL serving a live **WAV stream of 16-bit PCM** (see [Audio Spectrum Analyzer](#audio-spectrum-analyzer) for the exact requirements).
 
+### Build variants
+
+- `pio run` (and `pio run -t upload`) builds only the **current board**: `platformio.ini` sets `default_envs = seeed_xiao_esp32s3`. On this board GPIO9 (D10) is the power / LED-off button and the firmware has no radar switch, no radar entities and no night schedule.
+- `pio run -e seeed_xiao_esp32s3_rev2` builds the **board revision 2** firmware (`-D BOARD_REV2`): GPIO9 drives the radar power switch, both buttons are read as a ladder on GPIO8, and the night schedule and the manual radar control exist (the sections below mark these *rev2*). **Never flash the rev2 image to the current board**: GPIO9 is a button there and would be driven as an output. A rev2 image shows `"board":"rev2"` on the web page's status (`GET /api/ota/status`), and its boot log starts with a `[BOARD] BOARD_REV2 firmware ...` line.
+- Every rev2 line of code is inside `#ifdef BOARD_REV2`; the rev2 constants are in `include/radar_constants.h` (not `constants.h`).
+
 ### Library dependencies
 
 `WiFiManager`, `PubSubClient`, `ArduinoJson`, `Preferences`, `SensirionI2cScd4x`, `HTU21D`, `BH1750`, and `AudioTools` (with `AudioRealFFT`). The web UI / OTA uses the core's synchronous `WebServer` and `Update` (no extra library). The LD2454 radar driver is built in (`ld2454_sensor.cpp`) — no external library.
@@ -89,7 +99,7 @@ static const char* const WIFI_BACKUP_PASS = "backup-password";
   - Selecting spectrum manually (button or MQTT `display/mode spectrum`) shows it for at least `MIN_SPECTRUM_DISPLAY_MS` from the selection; with no audio it then falls back to the clock like an automatic entry, and it re-enables automatic entry.
   - Once the user manually switches to a view other than spectrum (button or MQTT `display/mode`, temp/CO₂ included), spectrum's automatic re-entry is **suppressed** until the user manually selects spectrum again — audio staying active no longer yanks the display back. This override is persisted, so it survives a reboot.
   - Custom messages and MQTT-pushed icons **restore the view that was active before they interrupted it** (including spectrum) once they expire, rather than always falling back to the clock — the same pattern the CO₂ alarm popup already used. The exception is a temp/CO₂ peek or the CO₂ popup: its time is up by then, so the message or icon hands back to the clock instead (spectrum re-enters by itself if audio is active). A message or icon that the CO₂ popup interrupts is replayed from the start (with its full duration) after the popup. Manually cycling to temp/CO₂ via the button still auto-returns to the clock after 5s, unchanged — that's deliberate browsing, not an interruption.
-- **Buttons:** mode button cycles `TIME → TEMP → CO2 → SPECTRUM`; power button blanks/wakes the panel without stopping any background task. Each press acts **once**, as soon as a poll (every 10–50ms) sees it; holding a button does not repeat, and it is re-armed only after reading released for `BUTTON_DEBOUNCE_MS` (30ms), so contact bounce can't fire it twice. A button held while the node boots acts only after it has been let go and pressed again.
+- **Buttons:** mode button cycles `TIME → TEMP → CO2 → SPECTRUM`; power button blanks/wakes the panel without stopping any background task. Each press acts **once**, as soon as a poll (every 10–50ms) sees it; holding a button does not repeat, and it is re-armed only after reading released for `BUTTON_DEBOUNCE_MS` (30ms), so contact bounce can't fire it twice. A button held while the node boots acts only after it has been let go and pressed again. On rev2 both buttons share one ADC pin (GPIO8, see [Hardware / Pinout](#hardware--pinout)): a press is decoded from the voltage (`LADDER_*` bands, confirmed by a second read 3ms later), the mode button wins when both are held, and a press is acted on once as before.
 - **Timers** (view auto-return, message/icon duration, CO₂ popup length and interval) are kept as start time + length and compared as elapsed time, so they stay correct across the 49.7-day `millis()` rollover.
 - **Persistent clock color:** MQTT-settable, survives reboots (see [MQTT Topics](#mqtt-topics)). It is shown in the nearest of the panel's 8 colors (see [Hardware / Pinout](#hardware--pinout)).
 - **No artificial startup delay** — `displayTask` initializes the matrix immediately rather than waiting a fixed period before starting.
@@ -230,6 +240,24 @@ The connection is dropped and re-established if the HTTP and WAV headers aren't 
 
 **LD2412** — binary presence on a single GPIO (its OUT pin, high while someone is present, the factory polarity). The input has an internal pulldown, as the board has no pull resistor: an unplugged or unpowered radar reads as "nobody" instead of a floating pin that flaps the presence topic. **LD2454** — up to 3 tracked targets over UART (256000 baud, 10 frames/s), implemented against Hi-Link's *HLK-LD2454 串口通信协议 V1.00* (LD2450-compatible frames: `AA FF 03 00 … 55 CC`, sign-magnitude coordinates in mm, speed in cm/s). The radar's factory default is **single-target** tracking and the protocol has no command to read the mode back, so the driver sends enable-config → multi-target (`0x90`) → end-config and only reports multi-target mode once every step is ACKed. It re-applies the mode whenever the gap between two frames reaches `LD2454_RESTART_GAP_MS` (a radar reboot would otherwise silently revert it; the pause around its own configuration is ignored), retries a failed attempt with backoff from `LD2454_CONFIG_RETRY_MIN_MS` up to `LD2454_CONFIG_RETRY_MS` (immediately once a silent radar starts reporting again), resyncs on every frame header so a truncated frame can't swallow the next frame or ACK, and its watchdog clears the targets and fully re-inits the link on a stall — UART desync doesn't self-heal the way the frame-redrawn matrix does. Multi-target mode needs the ESP's TX (`D7`) wired to the radar's `R` pin; receiving targets only needs `RX`=11 ← radar `T`.
 
+### Board revision 2: radar power switch, night schedule, manual control
+
+`radar_power.cpp` / `radar_constants.h`; compiled only for rev2 (see [Build variants](#build-variants)); MQTT and Home Assistant side: [Radar control and state](#radar-control-and-state-board-revision-2-only).
+
+- **One switch for both radars.** GPIO9 (`RADAR_PWR_EN_PIN`) HIGH = LD2454 and LD2412 powered (RADAR_5V, through Q2 -> Q1); the 100 k pull-up R7 keeps them on while the ESP resets. The `RadarPower` task is the only writer of the pin. `setup()` latches the stored state first thing after `Serial.begin()` (`gpio_set_level()` before `pinMode()`, so the pin never glitches).
+- **Night schedule.** The radars are off inside the night window, by default 00:00-06:00 every day (NVS `ns` = 0, `ne` = 360; a window that crosses midnight works, start = end means never). **The schedule is off on a fresh flash**: switch 'Radar night schedule' on at commissioning.
+- **Five states** ('Radar state', and the frames' `sm`): `on` (`A`: schedule on, outside the window), `night_off` (`N`: the automatic OFF), `forced_on` (`F`: schedule off, radars on around the clock), `forced_off` (`X`: the manual 'Radars' switch is off) and `failsafe_on` (`S`: radars on although the schedule says off: no valid clock, Home Assistant not online for 5 minutes, the throttle, or a park fault). The attribute `reason` says why.
+- **Manual switch.** 'Radars' off switches both radars off now and is stored in NVS: it **persists across reboots, OTA and Home Assistant outages** until it is switched on again. A manual OFF waits for the minimum ON time and is never throttled. Switching on hands control back to the schedule. A command equal to the stored value writes nothing (every NVS commit blanks the panel for a moment).
+- **Settings are rate limited.** Each setting (Radars, schedule, night start, night end, schedule without HA, legacy JSON) is stored in NVS at most once per second. A script or time entity that flaps a setting cannot wear the flash (the `radar` NVS partition has only four usable pages) or blank the panel on every message. The first change after a quiet second is applied at once; a changed value that arrives sooner waits and is applied one second after the previous store of that setting. The newest value wins, and a newer value equal to the stored one cancels the waiting one. The settings are independent of each other. While a change waits, the state topics keep showing the stored value and converge when it is applied.
+- **The night OFF waits for the settings to settle.** An automatic OFF (the night schedule) does not start within 0.5 s of an applied setting change, so a multi-command update such as the HA app's night start, night end and schedule (about 41 ms apart) never parks the LD2454 link or switches the radars off for an intermediate window. 'Radar state' may show reason `pending` for that half second. Never delayed: a manual 'Radars' OFF, a park that is already running, the withdrawal of a park, and a window start by the clock when no setting changed in the last half second.
+- **A failed NVS write** leaves the setting as it was and the state topic shows the stored value (log `[RADAR] NVS write failed: <key>`). The one exception is 'Radars' ON: it is applied to RAM although the write failed (log `[RADAR] NVS write failed: en (applied to RAM only)`), so a broken NVS that holds 'Radars' OFF cannot lock the radars off. A reboot reloads the stored OFF.
+- **Park rule: TX high-Z before GPIO9 falls.** There is no series resistor in the radar's UART lines, so a powered-down radar could be fed through its RX pin. `LD2454Task` therefore closes Serial1 and puts TX / RX to high-Z / pulldown, then acknowledges; only after that acknowledgement does `RadarPower` drive GPIO9 low. The radars are never switched off without it: no acknowledgement within `PARK_ACK_TIMEOUT_MS` (6s) is the fault `park_timeout` and the radars stay on. After each power-up `LD2454Task` waits for the first tracking frame, then re-applies multi-target mode (the radar loses it while off).
+- **Guards.** Minimum ON time 60s and minimum OFF time 10s; at most 12 power-ups per hour for automatic OFFs (a refused OFF shows as `failsafe_on` with reason `throttle`); the radars count as powered 5ms after GPIO9 rises and as off 50ms after it falls; GPIO9 never toggles faster than that. No frames for 8s after a power-up is the fault `ld2454_no_frames` (the radars are power-cycled once, at most once an hour).
+- **Offline failsafe.** Inside the window the radars go off only while the clock is valid and Home Assistant is online (`homeassistant/status`). Home Assistant not online for `RADAR_OFFLINE_GRACE_MS` (5 min; a lost WiFi or MQTT connection counts, and so does a boot) or no valid clock keeps them on. 'Radar schedule without HA' switches the Home Assistant condition off.
+- **No detection while off.** No presence, no targets, no frames with targets; the learner shows its zones `unavailable`. The LD2454 data timeout is not a fault while the radars are off or parked. **'Radar observing'** is on only when the radars are powered, multi-target mode is confirmed, five frames have followed, and 12s have passed since the power-up (`LD2412_STATIC_WARMUP_MS`).
+- **LD2412 `presence()`.** A tri-state next to the unchanged `isPresent()` (the raw OUT level; the spectrum view still uses it): UNKNOWN from the park request until 3s after a power-up (`LD2412_OUT_IGNORE_MS`), PRESENT once OUT has been high for 2s (`LD2412_OUT_MIN_HIGH_MS`), and a low OUT is UNKNOWN, not ABSENT, until 12s after the power-up. 'Radar presence' is on while the radars observe and the LD2412 reads PRESENT or the LD2454 tracks a target; an LD2454 target holds it on for 3s after the last one (`RADAR_PRESENCE_HOLD_MS`), because the target flag follows every frame and flickers at the edge of the field of view.
+- **OTA.** `RadarPower` pauses with the other tasks during an upload (and leaves the task watchdog for that time); GPIO9 does not change meanwhile, and a park pending when the upload starts restarts its 6s timeout afterwards.
+
 ## WiFi & OTA
 
 - `WiFiManager` captive portal (180s timeout) for first-time setup, followed by an automatic **backup network** attempt (`WIFI_BACKUP_SSID`/`PASS`, `WIFI_BACKUP_TIMEOUT_MS` = 15s) if the primary/portal path fails, before finally restarting.
@@ -249,7 +277,8 @@ The connection is dropped and re-established if the HTTP and WAV headers aren't 
   - Buttons, CO₂ alarm logic, and normal view rendering are all paused until the update finishes. The beeper is switched off when the upload starts (a beep that was sounding would otherwise last until the reboot), and pending MQTT beeps are dropped.
   - **The panel stops refreshing while flash is erased or written.** This ESP-IDF 5.4 build has no SPI-flash auto-suspend, so every flash erase or write (each OTA chunk, and NVS commits such as a new clock color or spectrum override) suspends the scheduler on both cores and parks the other core in a busy-wait with its flash cache off. `MatrixEngine` is an ordinary task, so it stops for that time: milliseconds per write, tens to hundreds of milliseconds per erase (`Update` erases the OTA partition in 64 KB blocks). The panel goes dark meanwhile; if the operation started on core 0 and caught the engine in the middle of a column, that one column stays lit instead. `displayTaskEngine` being `IRAM_ATTR`, with `gpio_ll_set_level()` pin writes instead of `digitalWrite()`, doesn't change this: it keeps the scan loop free of flash-cache misses, so the column timing is steady, but a task can't run while the scheduler is suspended, wherever its code lives. Refreshing through a flash operation would take an IRAM-safe interrupt (this core's GPTimer driver isn't built IRAM-safe) or a DMA-driven refresh.
 - **Reset WiFi** (`POST /api/reset-wifi`) clears the saved WiFi credentials and reboots into the config portal; the reply is sent before the restart. It switches WiFi storage back to flash first, so the erase also reaches NVS while the node is on the backup network.
-- **Cross-site / DNS-rebinding guard** (no login, by design): every request's `Host` must be an IP literal, a single-label name or a local-only suffix (`.local`, `.lan`, `.home`, `.home.arpa`, `.internal`, `.fritz.box`, …; add your own with `-D WEB_EXTRA_HOST_SUFFIX=\".corp.example.com\"`), and state-changing requests (`/update`, `/api/reset-wifi`) are refused when their `Origin`/`Referer` names another host — so a web page open in a browser on your LAN cannot flash firmware or wipe WiFi. Non-browser clients (curl, scripts) send neither header and stay allowed.
+- **Radars** (rev2 only): a *Radars* card on the page shows the radar state, reason, window, schedule, power-ups, HA state and the last button-ladder voltage, with *Radars ON* / *Radars OFF* buttons. `POST /api/radar` with `{"en":0}` / `{"en":1}` (JSON) or `en=0` / `en=1` (form or query, e.g. `curl -d en=0 http://<node-ip>/api/radar`) is the same manual switch as MQTT's `radar/power`, and the local way back while Home Assistant is down. `GET /api/ota/status` gains `"board":"rev2"` and a `radar` object (`en`, `sched`, `offl`, `legacy`, `state`, `reason`, `phase`, `powered`, `observing`, `pw`, `ns`, `ne`, `next`, `ups24`, `on24`, `thr`, `fault`, `parkTimeouts`, `ha`, `ladderMv`).
+- **Cross-site / DNS-rebinding guard** (no login, by design): every request's `Host` must be an IP literal, a single-label name or a local-only suffix (`.local`, `.lan`, `.home`, `.home.arpa`, `.internal`, `.fritz.box`, …; add your own with `-D WEB_EXTRA_HOST_SUFFIX=\".corp.example.com\"`), and state-changing requests (`/update`, `/api/reset-wifi`, and on rev2 `/api/radar`) are refused when their `Origin`/`Referer` names another host — so a web page open in a browser on your LAN cannot flash firmware or wipe WiFi. Non-browser clients (curl, scripts) send neither header and stay allowed.
 
 ---
 
@@ -272,15 +301,15 @@ The connection is dropped and re-established if the HTTP and WAV headers aren't 
 |---|---|---|---|
 | `led_matrix_node/sensors/state` | `{"co2":812,"temp":21.4,"hum":47.2,"lux":18.6}` | 10s | A field is left out while its sensor has no fresh value (missing, failing, still starting); sent even if that leaves `{}` |
 | `led_matrix_node/sensors/status` | `online` / `offline` | on connect / LWT | Retained |
-| `led_matrix_node/radar/ld2412` | `1` / `0` | on change, else 60s | Retained; the raw OUT level |
-| `led_matrix_node/radar/ld2454` | `{"targets":[{"id":0,"x":-120,"y":1850,"speed":0,"distance":1854}],"count":N,"multi_target":true}` | not sent | Legacy 1 Hz JSON, off: nothing reads it (the code path stays, for a later switch) |
-| `led_matrix_node/radar/ld2454/frames` | `{"v":1,"b":"9f3c21aa","t":81234567,"s":1234560,"n":5,"a0":480,"a1":40,"mt":1,"p2":1,"pw":3,"sm":"A","f":[[0,480,0,-15,1193,55],[4,40,0,-761,5446,58]]}` | ≤500ms with targets, else 5s | Every parsed LD2454 frame, batched; QoS 0, not retained, dropped (not queued) while MQTT is down. The batch holds frames `s`…`s+n-1` of boot `b` (random per boot), so a seq gap means lost frames; `t` = uptime in ms; `a0`/`a1` = age in ms of the first/last frame; `f` = `[k, age, slot, x, y, speed, …]` per frame with targets (k = seq − `s`; mm, cm/s); `mt` = multi-target mode, `p2` = LD2412 OUT |
+| `led_matrix_node/radar/ld2412` | `1` / `0` | on change, else 60s | Retained; the raw OUT level. Rev2: `1` / `0` from `presence()`, and a retained `None` (unknown) while the radars are off or warming up, with no heartbeat while it is `None` |
+| `led_matrix_node/radar/ld2454` | `{"targets":[{"id":0,"x":-120,"y":1850,"speed":0,"distance":1854}],"count":N,"multi_target":true}` | not sent | Legacy 1 Hz JSON, off: nothing reads it (the code path stays, for a later switch). Rev2: the 'Legacy radar JSON' switch turns it on (1 Hz with targets, else a 30s heartbeat, only while the radars observe) |
+| `led_matrix_node/radar/ld2454/frames` | `{"v":1,"b":"9f3c21aa","t":81234567,"s":1234560,"n":5,"a0":480,"a1":40,"mt":1,"p2":1,"pw":3,"sm":"A","f":[[0,480,0,-15,1193,55],[4,40,0,-761,5446,58]]}` | ≤500ms with targets, else 5s | Every parsed LD2454 frame, batched; QoS 0, not retained, dropped (not queued) while MQTT is down. The batch holds frames `s`…`s+n-1` of boot `b` (random per boot), so a seq gap means lost frames; `t` = uptime in ms; `a0`/`a1` = age in ms of the first/last frame; `f` = `[k, age, slot, x, y, speed, …]` per frame with targets (k = seq − `s`; mm, cm/s); `mt` = multi-target mode, `p2` = LD2412 OUT. Rev2: `pw` and `sm` come from the radar state (see [Radar control and state](#radar-control-and-state-board-revision-2-only)), `mt` / `p2` are left out while not observing, and the heartbeat is 30s while the radars are off |
 
 ```bash
 mosquitto_sub -v -t 'led_matrix_node/#'
 ```
 
-`tools/frames_checker.py` (Python 3 with `paho-mqtt` 2.x; an MQTT 5 broker such as Mosquitto 1.6+) checks the frames stream (seq gaps, cadence, rates, sizes), the legacy radar topics and the discovery configs on the broker, by default for 24 h: `read -rs MQTT_PASSWORD; export MQTT_PASSWORD; python3 tools/frames_checker.py --host <broker> --user <user>`. `python3 -I tools/tests/frames_batcher_model.py` tests the batching logic on the PC.
+`tools/frames_checker.py` (Python 3 with `paho-mqtt` 2.x; an MQTT 5 broker such as Mosquitto 1.6+) checks the frames stream (seq gaps, cadence, rates, sizes), the legacy radar topics and the discovery configs on the broker, by default for 24 h: `read -rs MQTT_PASSWORD; export MQTT_PASSWORD; python3 tools/frames_checker.py --host <broker> --user <user>`. `python3 -I tools/tests/frames_batcher_model.py` tests the batching logic on the PC. On rev2 add `--phase p2` to the checker (the radars are off at night: a 30s heartbeat, `pw` 0, `mt` / `p2` only with their `pw` bit, LD2412 `None`). The rev2 logic has host tests in `tools/tests/` as well (`python3 -I -B tools/tests/<file>`, exit code 0 = all passed): `radar_power_model.py` and `ld2454_park_model.py` (RadarPower and the park handshake), `mqtt_radar_model.py`, `discovery_payloads_check.py`, `ladder_model.py`, `ld2412_presence_model.py` and `board_gate_check.py` (the default build contains no rev2 symbol).
 
 ### Home Assistant Auto-Discovery
 
@@ -289,6 +318,47 @@ Retained discovery configs are published under `homeassistant/sensor/Led_Matrix_
 - `state_class: measurement`, so Home Assistant keeps long-term statistics for it.
 - a value template that turns a missing field into `None`, e.g. `{{ value_json.co2 if 'co2' in value_json else None }}`, which HA shows as **unknown**. A plain `{{ value_json.co2 }}` would render an empty string, which HA ignores, so the old value would stay.
 - `expire_after` = `MQTT_EXPIRE_AFTER_S` (30s, 3 publish intervals): if no state arrives at all (node hung or gone), the sensor turns **unavailable**.
+
+### Radar control and state (board revision 2 only)
+
+Retained discovery configs for ten more entities, under the same device (`homeassistant/<component>/Led_Matrix_Node_{id}/config`, every payload below the 512 B buffer, largest 422 B):
+
+| Entity (HA name) | Component, id | Entity id to expect (check in HA after the first discovery) |
+|---|---|---|
+| **Radars** (the manual switch) | `switch`, `radar_power` | `switch.led_matrix_node_radars` |
+| **Radar night schedule** | `switch`, `radar_schedule` | `switch.led_matrix_node_radar_night_schedule` |
+| Radar power (read-only: the switch really is on) | `binary_sensor`, `radar_powered` | `binary_sensor.led_matrix_node_radar_power` |
+| Radar observing (diagnostic) | `binary_sensor`, `radar_observing` | `binary_sensor.led_matrix_node_radar_observing` |
+| Radar state (enum, diagnostic; attributes: the status JSON) | `sensor`, `radar_state` | `sensor.led_matrix_node_radar_state` |
+| Radar presence (unavailable while the radars are off) | `binary_sensor`, `radar_presence` | `binary_sensor.led_matrix_node_radar_presence` |
+| Radar schedule without HA (config) | `switch`, `radar_sched_offline` | `switch.led_matrix_node_radar_schedule_without_ha` |
+| Legacy radar JSON (config) | `switch`, `radar_legacy` | `switch.led_matrix_node_legacy_radar_json` |
+| Radar night start / Radar night end (config) | `time`, `radar_night_start` / `radar_night_end` | `time.led_matrix_node_radar_night_start` / `..._end` |
+
+The read-only **'Radar power'** is not the **'Radars'** switch: automations switch the radars with `switch.led_matrix_node_radars` and read the real state from `binary_sensor.led_matrix_node_radar_power`.
+
+**Commands** (QoS 0, **never publish them retained**: a stray retained radar command is deleted from the broker with an empty retained message at every connect, before the node subscribes):
+
+| Topic | Payload | Effect |
+|---|---|---|
+| `led_matrix_node/radar/power` | `1` \| `0` (also `ON` / `OFF`, any case) | 'Radars': `0` = both radars off now (manual OFF, persisted), `1` = enabled, the schedule applies. Anything else is ignored and logged |
+| `led_matrix_node/radar/schedule` | `1` \| `0` | 'Radar night schedule' (`0` = radars on around the clock); persisted |
+| `led_matrix_node/radar/night_start`, `.../night_end` | `HH:MM:SS` (what HA's time entity sends), `HH:MM`, `H:MM` | Window start / end to the minute, persisted; `None`, `24:00`, signs and trailing text are refused |
+| `led_matrix_node/radar/sched_offline` | `1` \| `0` | 'Radar schedule without HA' |
+| `led_matrix_node/radar/legacy` | `1` \| `0` | 'Legacy radar JSON' (default off) |
+| `homeassistant/status` (subscribed) | `online` \| `offline` | HA's birth and will: the node resends its discovery and states after a random 0-2s when HA comes up (not for the retained `online` that follows its own connect) |
+
+**States** (all retained): `led_matrix_node/radar/power/state`, `.../schedule/state`, `.../sched_offline/state`, `.../legacy/state` (`1` / `0`: the stored setting; an unchanged command is echoed again, a failed NVS write shows the stored value), `.../night_start/state`, `.../night_end/state` (always a valid `HH:MM:SS`), `led_matrix_node/radar/powered` and `.../observing` (`ON` / `OFF`), `led_matrix_node/radar/state` (`on`, `night_off`, `forced_on`, `forced_off`, `failsafe_on`), `led_matrix_node/presence` (`ON` / `OFF`, on change; an LD2454 target holds it `ON` for 3s after the last one). `led_matrix_node/radar/state/attr` is the status JSON, e.g. `{"sw":0,"since":81234,"next":"06:00","reason":"manual","ha":"online","ups24":1,"on24":75.0,"thr":0,"fault":"","b":"9f3c21aa","seq":1234565}`: `sw` the switch, `since` uptime seconds at the last change, `next` the next scheduled or pending change (local time, `""` if none), `reason` one of `schedule manual failsafe ha_unknown ota fault throttle pending`, `ha` `online` / `offline` / `unknown`, `ups24` power-ups and `on24` percent on-time in the last 24h, `thr` the throttle refused an OFF, `fault` `""` / `park_timeout` / `ld2454_no_frames`, `b` / `seq` the frames boot id and sequence counter.
+
+**Frames stream, rev2:** `pw` bit 0 = the LD2454 observes (powered, multi-target confirmed, warmed up), bit 1 = the LD2412 observes (powered, 12s warm-up over); `sm` = `A` on, `N` night_off, `F` forced_on, `X` forced_off, `S` failsafe_on. `mt` is left out while `pw` bit 0 is 0, `p2` while bit 1 is 0; `p2` is 1 only while `presence()` is PRESENT. While the radars are off the stream is a 30s heartbeat, e.g. `{"v":1,"b":"9f3c21aa","t":81244567,"s":1234615,"n":0,"pw":0,"sm":"X"}`; in every other phase it is 5s as before.
+
+**Setup (Home Assistant):**
+
+1. Home Assistant **2026.5 or newer** (the night start and end are MQTT `time` entities).
+2. **Enable retain for HA's MQTT birth and will messages** (Settings -> Devices & services -> MQTT -> Configure -> MQTT options). Check: `mosquitto_sub -v -t homeassistant/status -C 1 -W 3` must print a retained `online` at once. Without it the node never learns HA's state: it stays `unknown`, and after 5 minutes inside the night window the radars stay on (`failsafe_on`, reason `ha_unknown`; the web page shows a hint). The same reason also shows while the MQTT broker has been unreachable for 5 minutes.
+3. Switch **'Radar night schedule' on**. Check the entity ids above in HA.
+
+**Automations:** state triggers on 'Radar power' need `not_from: ['unavailable', 'unknown']`, otherwise every restart of the node fires them (the entity goes `unavailable`, then back to its retained state): use `to: 'off'` for the night switch-off and `to: 'on'` for the morning power-up. No automation can react to presence while the radars are off. Radar commands from automations or scripts are plain `switch.turn_on` / `switch.turn_off` calls; do not publish them with `retain`.
 
 ### Connection
 
@@ -335,6 +405,13 @@ When the broker is unreachable or refuses the login, the node retries after `MQT
 | Radar | `LD2454_DATA_TIMEOUT_MS` | 10000ms |
 | Radar | `LD2454_CONFIG_RETRY_MIN_MS` → `LD2454_CONFIG_RETRY_MS` | 2000ms doubling to 60000ms |
 | Radar | `LD2454_ACK_TIMEOUT_MS` / `LD2454_RESTART_GAP_MS` | 1500ms / 1000ms |
+| Radar (rev2) | `RADAR_ON_SETTLE_MS` / `RADAR_OFF_SETTLE_MS` | 5ms / 50ms (GPIO9 high -> radars powered / GPIO9 low -> radars off) |
+| Radar (rev2) | `RADAR_MIN_ON_MS` / `RADAR_MIN_OFF_MS` / `RADAR_MAX_POWERUPS_PER_H` | 60000ms / 10000ms / 12 (the throttle applies to automatic OFFs only) |
+| Radar (rev2) | `RADAR_OFFLINE_GRACE_MS` / `PARK_ACK_TIMEOUT_MS` / `RADAR_FAULT_CYCLE_MIN_MS` | 300000ms / 6000ms / 3600000ms |
+| Radar (rev2) | `LD2454_BOOT_TIMEOUT_MS` / `LD2454_WARMUP_FRAMES` | 8000ms / 5 frames |
+| Radar (rev2) | `LD2412_OUT_IGNORE_MS` / `LD2412_OUT_MIN_HIGH_MS` / `LD2412_STATIC_WARMUP_MS` | 3000ms / 2000ms / 12000ms |
+| Radar (rev2) | `LD2454_STREAM_OFF_IDLE_MS` / `LEGACY_HEARTBEAT_MS` | 30000ms / 30000ms |
+| Buttons (rev2) | `LADDER_MODE_MAX_MV` / `LADDER_POWER_MIN_MV`-`LADDER_POWER_MAX_MV` / `LADDER_IDLE_MIN_MV` / `LADDER_CONFIRM_MS` | 500mV / 1150-2150mV / 2600mV / 3ms |
 | Spectrum | `SPECTRUM_FLOOR_DB` / `SPECTRUM_DB_PER_STEP` / `SPECTRUM_COMPRESSION_KNEE_DB` | −20 dB / 2.5 dB / −12 dB (relative to the AGC reference) |
 | Spectrum | `SPECTRUM_TILT_DB_PER_OCTAVE` | 3dB/oct |
 | Spectrum | `SPECTRUM_PEAK_GRAVITY_STEPS_PER_S2` | 220.0 (steps/s²) |
@@ -346,7 +423,7 @@ When the broker is unreachable or refuses the login, the node retries after `MQT
 | Audio stream | `STREAM_READ_BURST_BYTES` | 2048 bytes per 1 ms tick |
 | Audio stream | `STREAM_RETRY_MIN_MS` → `STREAM_RETRY_MAX_MS` | 2000ms doubling to 30000ms |
 
-See `constants.h` for the full list.
+See `constants.h` for the full list. The board-revision-2 constants (the rows marked *rev2*, and the radar MQTT topics) are in `radar_constants.h`.
 
 ---
 
@@ -354,5 +431,6 @@ See `constants.h` for the full list.
 
 - `secrets.h` contains live credentials (backup WiFi, MQTT, audio stream URL; the primary WiFi network is entered in the setup portal and kept in NVS) — keep it out of version control.
 - MQTT is plain TCP on port 1883 (`MQTT_PORT`) without TLS, so the broker login and every command travel unencrypted on the LAN; anyone who can publish to the broker can drive the panel and the beeper.
+- On rev2 the radar commands (`led_matrix_node/radar/...`) are as unauthenticated as the display commands: anyone who can publish to the broker, or reach `POST /api/radar` from the LAN, can switch the radars off, and a manual OFF persists across reboots until it is switched on again. There are no ACLs on the broker by design.
 - The RLE icon generator (`RLE icon generator/`) saves the MQTT password only when its *Remember* box is ticked, and then in plain text in the browser's storage (see its README).
-- The web UI (`/`, `/update`, `/api/reset-wifi`) has no login: any device on the local network can flash firmware or reset WiFi (e.g. with curl). Other *websites* are blocked by the Origin/Host guard above, but treat the LAN itself as trusted. The WiFiManager setup access point is open (no password) while it runs — only at boot, when the saved network doesn't connect; a link lost later never reopens it.
+- The web UI (`/`, `/update`, `/api/reset-wifi`, and `/api/radar` on rev2) has no login: any device on the local network can flash firmware, reset WiFi or switch the radars off (e.g. with curl). Other *websites* are blocked by the Origin/Host guard above, but treat the LAN itself as trusted. The WiFiManager setup access point is open (no password) while it runs — only at boot, when the saved network doesn't connect; a link lost later never reopens it.

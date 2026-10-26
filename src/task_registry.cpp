@@ -20,3 +20,9 @@ bool waitWhileOtaPaused() {
     }
     return true;
 }
+
+#ifdef BOARD_REV2
+bool isOtaPauseRequested() {
+    return otaPauseRequested;
+}
+#endif

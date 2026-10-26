@@ -1,5 +1,8 @@
 #include "ld2454_sensor.h"
 #include "ld2454_frames.h"
+#ifdef BOARD_REV2
+#include "radar_power.h"
+#endif
 
 Ld2454Sensor ld2454Sensor;
 
@@ -51,9 +54,30 @@ void Ld2454Sensor::update() {
 
     uint32_t nowMs = millis();
 
+#ifdef BOARD_REV2
+    if (_awaitFirstFrame) {                           // no data watchdog, no restart heuristics until the first frame
+        if (_firstFrameSeen) {
+            _awaitFirstFrame = false; _firstFrameSeen = false;
+            Serial.println("[LD2454] first frame after power-up - configuring multi-target mode");
+            enableMultiTargetTracking();              // multi-target is re-applied after EVERY power-up
+        } else if (nowMs - _openedMs >= LD2454_BOOT_TIMEOUT_MS) {
+            _awaitFirstFrame = false;
+            _noFramesFault = true;
+            g_ld2454Fault = RADAR_FAULT_LD2454_NO_FRAMES; radarPowerKick();
+            Serial.println("[LD2454] no frame within the boot timeout - fault, trying the configuration anyway");
+            _lastDataMs = nowMs;
+            enableMultiTargetTracking();              // a silent radar: fails, then the existing backoff 2 s, 4 s, ... 60 s
+        }
+        return;
+    }
+#endif
+
     if (nowMs - _lastDataMs >= LD2454_DATA_TIMEOUT_MS) {
         Serial.println("[LD2454] watchdog: no data for too long, re-initializing UART link");
         clearTargets(); // stale targets would otherwise hold presence on indefinitely
+#ifdef BOARD_REV2
+        _framesSinceConfigEnd = 0; syncReady();       // readiness goes with the data
+#endif
         Serial1.end();
         delay(10);
         beginRadarLink();
@@ -113,6 +137,9 @@ void Ld2454Sensor::enableMultiTargetTracking() {
     _lastDataMs = millis();
     _lastConfigAttemptMs = _lastDataMs;
     _configEndMs = _lastDataMs;
+#ifdef BOARD_REV2
+    _framesSinceConfigEnd = 0; syncReady();
+#endif
 }
 
 bool Ld2454Sensor::sendCommand(uint8_t command, const uint8_t* value, size_t valueLen) {
@@ -230,6 +257,11 @@ void Ld2454Sensor::processTrackingFrame() {
 
     uint32_t nowMs = millis();
     ld2454FrameRing.push(parsed, nowMs);   // to the frames stream (MqttTask)
+#ifdef BOARD_REV2
+    if (_awaitFirstFrame) {                           // the first frame after a power-up is never a reboot sign
+        _firstFrameSeen = true;                       // update() configures on its next pass
+    } else
+#endif
     if (_configuring) {
         // The radar pauses reporting during our own configuration attempt; no restart heuristics.
     } else if (_retryOnNextFrame) {
@@ -259,6 +291,11 @@ void Ld2454Sensor::processTrackingFrame() {
     _lastFrameMs = nowMs;
     _lastDataMs = nowMs;
     _frameCount++;
+#ifdef BOARD_REV2
+    if (_noFramesFault) { _noFramesFault = false; g_ld2454Fault = RADAR_FAULT_NONE; radarPowerKick(); }
+    if (_framesSinceConfigEnd < 255) _framesSinceConfigEnd++;
+    syncReady();
+#endif
 }
 
 void Ld2454Sensor::processAckFrame() {
@@ -275,6 +312,46 @@ void Ld2454Sensor::clearTargets() {
     memset(_targets, 0, sizeof(_targets));
     portEXIT_CRITICAL(&_targetsMux);
 }
+
+#ifdef BOARD_REV2
+// ---- BOARD_REV2: the link follows the radar power (radar_power.h) --------------------------------------------------
+void Ld2454Sensor::openLink() {                       // only in phase ON with no park request (checked by the task)
+    beginRadarLink();                                 // Serial1.setRxBufferSize(1024); Serial1.begin(...); rx state reset
+    _linkOpen = true;
+    _multiTargetEnabled = false;                      // the factory default after a power-up
+    _modeReapplyPending = false; _retryOnNextFrame = false; _immediateAttempt = false; _lateResumeSeen = false;
+    _retryDelayMs = 0;
+    _lastFrameMs = 0;                                 // 0 = no frame since the last configuration attempt
+    _lastDataMs = millis();
+    _lastConfigAttemptMs = _lastDataMs;
+    _openedMs = _lastDataMs;
+    _framesSinceConfigEnd = 0;
+    _awaitFirstFrame = true;                          // configure on the first tracking frame, not before
+    _firstFrameSeen = false;
+    _noFramesFault = false;
+    g_ld2454Fault = RADAR_FAULT_NONE;
+    syncReady();
+}
+
+void Ld2454Sensor::parkLink() {                       // idempotent
+    clearTargets();                                   // stale targets would hold presence on
+    if (_linkOpen) { Serial1.end(); _linkOpen = false; }
+    pinMode(RADAR_TX_PIN, INPUT);                     // high-Z, no pull: core 3.2.0's end() leaves TX a GPIO output
+    pinMode(RADAR_RX_PIN, INPUT_PULLDOWN);            // (fw:cores/esp32/esp32-hal-uart.c:238-239)
+    _multiTargetEnabled = false;
+    _modeReapplyPending = false; _retryOnNextFrame = false; _immediateAttempt = false; _lateResumeSeen = false;
+    _awaitFirstFrame = false; _firstFrameSeen = false; _noFramesFault = false;
+    _framesSinceConfigEnd = 0;
+    _rxLen = 0; _headerWindow = 0;
+    g_ld2454Fault = RADAR_FAULT_NONE;
+    syncReady();                                      // g_ld2454Ready = false
+}
+
+void Ld2454Sensor::syncReady() {                      // g_ld2454Ready = multi-target confirmed + 5 frames after END_CONFIG, never mid-attempt
+    const bool ready = _multiTargetEnabled && !_awaitFirstFrame && !_configuring && _framesSinceConfigEnd >= LD2454_WARMUP_FRAMES;
+    if (ready != g_ld2454Ready.load()) { g_ld2454Ready = ready; radarPowerKick(); }
+}
+#endif
 
 Ld2454TargetData Ld2454Sensor::getTarget(uint8_t index) const {
     if (index >= LD2454_MAX_TARGETS) {
@@ -301,6 +378,33 @@ bool Ld2454Sensor::hasAnyTarget() const {
 }
 
 void ld2454SensorTask(void *pvParameters) {
+#ifdef BOARD_REV2
+    bool parked = false;                              // the pins are parked (Serial1 closed, TX high-Z)
+    for (;;) {
+        // after an aborted OTA upload the UART still holds the frames of the pause: keep them out of the stream (P1, unchanged)
+        bool resumed = waitWhileOtaPaused();
+        if (resumed) ld2454FrameRing.beginMute();
+
+        if (g_parkRequest) {                          // level-based, every pass while the request is set
+            if (!parked) { ld2454Sensor.parkLink(); parked = true; }
+            if (!g_parkAck) { g_parkAck = true; radarPowerKick(); }        // only after the pins are parked
+        } else if (!ld2454Sensor.isLinkOpen() && g_radarPhase == RADAR_PHASE_ON) {
+            g_parkAck = false;                        // a late ack of a withdrawn request must not meet the next request (spec 5.1 rule 4);
+            if (!g_parkRequest) {                     // the re-check after the clear: a request raised meanwhile finds the link still parked
+                ld2454Sensor.openLink();              // power epoch g_powerEpoch; see spec 5.1 rule 1
+                parked = false;
+                Serial.printf("[LD2454] link opened, power epoch %lu\n", (unsigned long)g_powerEpoch.load());
+            }
+        }
+        if (ld2454Sensor.isLinkOpen()) ld2454Sensor.update();
+
+        if (resumed) {
+            Serial.printf("[LD2454] resumed after OTA pause, %lu stale frames kept out of the stream\n",
+                          (unsigned long)ld2454FrameRing.endMute());
+        }
+        vTaskDelay(pdMS_TO_TICKS(LD2454_SENSOR_INTERVAL));
+    }
+#else
     vTaskDelay(pdMS_TO_TICKS(LD2454_STARTUP_DELAY_MS));
     ld2454Sensor.begin();
 
@@ -317,6 +421,7 @@ void ld2454SensorTask(void *pvParameters) {
         }
         vTaskDelay(pdMS_TO_TICKS(LD2454_SENSOR_INTERVAL));
     }
+#endif
 }
 
 void initLd2454SensorTask() {

@@ -1,4 +1,7 @@
 #include "display_manager.h"
+#ifdef BOARD_REV2
+#include "radar_constants.h"
+#endif
 
 extern Co2Sensor co2Sensor;
 
@@ -81,8 +84,13 @@ void DisplayManager::begin() {
     _matrix->clearScreen();
     _matrix->swapBuffers();
     
+#ifndef BOARD_REV2
     pinMode(MODE_BUTTON_PIN, INPUT_PULLUP);
     pinMode(SWITCH_OFF_LED_PIN, INPUT_PULLUP);
+#else
+    // no pinMode for the ladder on GPIO8 (INPUT_PULLUP would shift its 1.65 V level):
+    // analogReadMilliVolts() configures the pad, which has no pull at reset.
+#endif
     pinMode(BEEPER_PIN, OUTPUT);
     digitalWrite(BEEPER_PIN, LOW);
 
@@ -411,6 +419,52 @@ struct DebouncedButton {
     }
 };
 
+#ifdef BOARD_REV2
+std::atomic<uint16_t> g_ladderMv{0};                           // last reading, for /api/ota/status
+
+enum class LadderEvent : uint8_t { NONE, MODE, POWER };
+
+// Both buttons on GPIO8 as a resistor ladder: idle about 3.3 V, mode button 0 V (both pressed also read 0 V),
+// power / LED-off button about 1.65 V. Fires once per press on the first poll that sees it (confirmed by a second
+// read 3 ms later), re-armed only after BUTTON_DEBOUNCE_MS of IDLE.
+struct LadderButtons {
+    enum Band : uint8_t { BAND_IDLE, BAND_MODE, BAND_POWER, BAND_UNSURE };   // prefixed: no clash with SDK macros
+    uint8_t pin;
+    bool armed;                 // false after a press fired, until it has read IDLE for BUTTON_DEBOUNCE_MS
+    bool releasing;
+    unsigned long sinceMs;
+
+    uint32_t read() { uint32_t mv = analogReadMilliVolts(pin); g_ladderMv = (uint16_t)(mv > 65535 ? 65535 : mv); return mv; }
+    static Band classify(uint32_t mv) {
+        if (mv <= LADDER_MODE_MAX_MV)                                return BAND_MODE;
+        if (mv >= LADDER_POWER_MIN_MV && mv <= LADDER_POWER_MAX_MV)  return BAND_POWER;
+        if (mv >= LADDER_IDLE_MIN_MV)                                return BAND_IDLE;
+        return BAND_UNSURE;
+    }
+    explicit LadderButtons(uint8_t p) : pin(p), armed(false), releasing(false), sinceMs(0) {
+        armed = (classify(read()) == BAND_IDLE);                      // a button held during boot fires only after release
+    }
+    LadderEvent poll(unsigned long nowMs) {
+        const Band b = classify(read());
+        if (b == BAND_MODE || b == BAND_POWER) {
+            releasing = false;
+            if (!armed) return LadderEvent::NONE;                // already fired; wait for the release
+            vTaskDelay(pdMS_TO_TICKS(LADDER_CONFIRM_MS));        // 3 ms, only on a press edge: yields, does not spin
+            if (classify(read()) != b) return LadderEvent::NONE; // edge or bounce (e.g. a mode edge passing 1.65 V): decide next poll
+            armed = false;
+            return b == BAND_MODE ? LadderEvent::MODE : LadderEvent::POWER;
+        }
+        if (b == BAND_IDLE && !armed) {
+            if (!releasing) { releasing = true; sinceMs = nowMs; }
+            else if (nowMs - sinceMs >= BUTTON_DEBOUNCE_MS) armed = true;
+        } else if (b == BAND_UNSURE) {
+            releasing = false;
+        }
+        return LadderEvent::NONE;
+    }
+};
+#endif
+
 void displayTask(void* pvParameters) {
     displayManager.begin();
     
@@ -421,8 +475,12 @@ void displayTask(void* pvParameters) {
     MessageScroll msgScroll = {MATRIX_WIDTH, 0, 0};
     bool otaActiveLastLoop = false;
 
+#ifdef BOARD_REV2
+    LadderButtons ladder(BUTTON_LADDER_PIN);
+#else
     DebouncedButton modeButton(MODE_BUTTON_PIN);
     DebouncedButton powerButton(SWITCH_OFF_LED_PIN);
+#endif
 
     // All timers below are start + length, compared as elapsed time (now - start),
     // so they stay right across the 49.7-day millis() wrap.
@@ -484,12 +542,20 @@ void displayTask(void* pvParameters) {
         }
 
         unsigned long buttonMs = millis();
+#ifdef BOARD_REV2
+        switch (ladder.poll(buttonMs)) {
+            case LadderEvent::MODE:  DisplayManager::nextView(); break;
+            case LadderEvent::POWER: DisplayManager::toggleDisplayPower(); break;
+            default: break;
+        }
+#else
         if (modeButton.poll(buttonMs)) {
             DisplayManager::nextView();
         }
         if (powerButton.poll(buttonMs)) {
             DisplayManager::toggleDisplayPower();
         }
+#endif
 
         // After the buttons: a view selection may have waited on an NVS commit.
         unsigned long nowMs = millis();

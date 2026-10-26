@@ -7,6 +7,9 @@
 #include "constants.h"
 #include "display_manager.h"
 #include "task_registry.h"
+#ifdef BOARD_REV2
+#include "radar_power.h"
+#endif
 
 WebUi webUi;
 
@@ -159,6 +162,40 @@ loadStatus(); setInterval(loadStatus, 10000);
 </script></body></html>
 )HTML";
 
+#ifdef BOARD_REV2
+// The Radars card and its own script. handleRoot() sends it between the WiFi card and the page's bottom script, so
+// INDEX_HTML stays byte-identical to the default build's page.
+static const char HTML_RADAR[] PROGMEM = R"HTML(<div class="card">
+  <div class="section-title">Radars</div>
+  <div class="status" id="radarInfo" style="margin-bottom:.6rem">loading...</div>
+  <div class="status muted" id="radarHint" style="margin-bottom:.6rem"></div>
+  <button id="radarOnBtn" onclick="radarSet(1)">Radars ON</button>
+  <button id="radarOffBtn" class="btn-danger" onclick="radarSet(0)">Radars OFF</button>
+  <div class="status muted" style="margin-top:.6rem">OFF persists across reboots and Home Assistant outages until switched on again. No radar detection while off.</div>
+</div>
+<script>
+async function loadRadar(){
+  try {
+    const s = await (await fetch('/api/ota/status')).json(); const r = s.radar; if (!r) return;
+    document.getElementById('radarInfo').innerText =
+      `Radar state: ${r.state} (${r.reason}) | radars ${r.powered ? 'on' : 'off'}, observing ${r.observing ? 'yes' : 'no'} | window ${r.ns}-${r.ne}, schedule ${r.sched ? 'on' : 'off'}` +
+      ` | next ${r.next || '-'} | power-ups 24 h: ${r.ups24} | park timeouts: ${r.parkTimeouts}${r.fault ? ' | FAULT ' + r.fault : ''} | HA: ${r.ha} | buttons: ${r.ladderMv} mV`;
+    document.getElementById('radarHint').innerText =
+      r.reason === 'ha_unknown' ? 'Home Assistant status unknown: the MQTT broker is unreachable, or birth/will retain is off in the HA MQTT options.' : '';
+  } catch (e) { /* device rebooting or offline - keep the last text */ }
+}
+async function radarSet(en){
+  if (!en && !confirm('Switch both radars off? They stay off until switched on again.')) return;
+  let r = null;
+  try { r = await fetch('/api/radar', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({en:en})}); } catch (e) {}
+  if (r && !r.ok) { alert('Radar command refused: ' + await r.text()); return; }
+  setTimeout(loadRadar, 500);
+}
+loadRadar(); setInterval(loadRadar, 5000);
+</script>
+)HTML";
+#endif
+
 // Hostname part of a Host header or an Origin/Referer URL: no scheme, path
 // or port, lowercased.
 static String hostOnly(String s) {
@@ -274,6 +311,10 @@ void WebUi::begin() {
     get("/", [this]() { handleRoot(); });
     get("/api/ota/status", [this]() { handleApiOtaStatus(); });
     change("/api/reset-wifi", HTTP_POST, [this]() { handleApiResetWifi(); });
+#ifdef BOARD_REV2
+    // Through change(): the Host / Origin guard, so a web page open on the LAN cannot switch the radars off.
+    change("/api/radar", HTTP_POST, [this]() { handleApiRadar(); });
+#endif
 
     // OTA firmware upload: POST /update with multipart file "firmware".
     // Progress is tracked client-side (browser knows the file size via the
@@ -294,6 +335,20 @@ void WebUi::loop() {
 }
 
 void WebUi::handleRoot() {
+#ifdef BOARD_REV2
+    // INDEX_HTML in two pieces with the Radars card between them, split at the "<script>" that starts the page's
+    // bottom script (found through its first function, so nothing depends on the source file's line endings).
+    const char* split = strstr(INDEX_HTML, "async function loadStatus");
+    while (split && split > INDEX_HTML && *split != '<') --split;
+    if (split && *split == '<') {
+        _server.setContentLength(strlen_P(INDEX_HTML) + strlen_P(HTML_RADAR));
+        _server.send(200, "text/html", "");                    // headers with the Content-Length, no body yet
+        _server.sendContent_P(INDEX_HTML, (size_t)(split - INDEX_HTML));
+        _server.sendContent_P(HTML_RADAR);
+        _server.sendContent_P(split);
+        return;
+    }
+#endif
     _server.send_P(200, "text/html", INDEX_HTML);
 }
 
@@ -309,10 +364,49 @@ void WebUi::handleApiOtaStatus() {
     doc["fwSize"] = ESP.getSketchSize();
     doc["ip"] = WiFi.localIP().toString();
     doc["uptimeSec"] = millis() / 1000;
+#ifdef BOARD_REV2
+    doc["board"] = "rev2";
+    const RadarStatus rs = radarStatusSnapshot();
+    JsonObject r = doc["radar"].to<JsonObject>();
+    r["en"] = rs.en;  r["sched"] = rs.sched;  r["offl"] = rs.offl;  r["legacy"] = rs.legacy;
+    r["state"] = radarStateName(rs.state);  r["reason"] = radarReasonName(rs.reason);  r["phase"] = radarPhaseName(rs.phase);
+    r["powered"] = rs.powered;  r["observing"] = rs.observing;  r["pw"] = rs.pw();
+    char ns[6], ne[6], nx[6] = "";   // live until serializeJson()
+    radarFormatHm(rs.ns, ns);  radarFormatHm(rs.ne, ne);
+    if (rs.nextMin >= 0) radarFormatHm(rs.nextMin, nx);
+    r["ns"] = ns;  r["ne"] = ne;  r["next"] = nx;
+    r["ups24"] = rs.ups24;  r["on24"] = rs.on24x10 / 10.0;  r["thr"] = rs.thr;
+    r["fault"] = radarFaultName(rs.fault);  r["parkTimeouts"] = rs.parkTimeouts;  r["ha"] = radarHaName(rs.ha);
+    r["ladderMv"] = g_ladderMv.load();                       // the last button ladder reading, to help set the bands
+#endif
     String out;
     serializeJson(doc, out);
     _server.send(200, "application/json", out);
 }
+
+#ifdef BOARD_REV2
+// POST /api/radar: {"en":0|1} as JSON, or en=0 / en=1 as a form or query (curl -d en=0). Only the manual switch;
+// the schedule and the other settings stay on MQTT / Home Assistant. The local way back while HA is down.
+void WebUi::handleApiRadar() {
+    int en = -1;
+    if (_server.hasArg("en")) en = radarParseOnOff(_server.arg("en").c_str());
+    if (en < 0 && _server.hasArg("plain")) {                                            // JSON body {"en":0}
+        const String body = _server.arg("plain");                                       // set by the core for non-form bodies
+        if (body.length() <= 64) {
+            JsonDocument doc;
+            if (!deserializeJson(doc, body)) {
+                JsonVariantConst v = doc["en"];
+                if (v.is<bool>())      en = v.as<bool>() ? 1 : 0;
+                else if (v.is<int>())  { const int i = v.as<int>(); en = (i == 0 || i == 1) ? i : -1; }
+            }
+        }
+    }
+    if (en < 0) { _server.send(400, "text/plain", "expected {\"en\":0} or {\"en\":1}"); return; }
+    Serial.printf("[Web] radar en=%d\n", en);
+    radarPowerRequest(RADAR_CMD_ENABLE, en);                                            // the same non-blocking path as MQTT
+    _server.send(200, "application/json", en ? "{\"en\":1}" : "{\"en\":0}");
+}
+#endif
 
 void WebUi::handleApiResetWifi() {
     Serial.println("[WiFi] Reset requested via web UI - erasing credentials and rebooting");

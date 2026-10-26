@@ -10,6 +10,9 @@
 #include "screen_renderers.h"
 #include "co2_sensor.h"
 #include "time.h"
+#ifdef BOARD_REV2
+#include <atomic>
+#endif
 
 class DisplayManager {
 public:
@@ -115,6 +118,11 @@ private:
 };
 
 extern DisplayManager displayManager;
+
+#ifdef BOARD_REV2
+// The last reading of the button ladder on GPIO8 in mV (/api/ota/status shows it, to help set the bands).
+extern std::atomic<uint16_t> g_ladderMv;
+#endif
 
 void initDisplayTask();
 

@@ -14,6 +14,10 @@ Checks, over --duration seconds (default 24 h):
   * every discovery config of the device under homeassistant/+/+/config parses, and the four sensor
     configs are byte-identical to the pre-P1 firmware.
 An OTA pause of the node shows as a frames silence, so do OTA tests outside a checker run.
+--phase p2 checks the board-revision-2 firmware (radar power switch, night schedule): the radars are off at night, so
+the stream is a 30 s heartbeat then (pw 0, sm N or X, no mt / p2), mt and p2 are present only with their pw bit, the
+LD2412 topic may carry None, and the silence and spacing limits are wider while pw is 0. --phase p1 (the default) is
+unchanged.
 It prints gaps and errors as they happen, an interim summary every --report-every seconds and a final
 summary; the exit code is 0 if no check failed, 1 if one did, 2 on a usage or setup error.
 
@@ -45,6 +49,8 @@ FRAMES_SPACING_MAX_MS = 6000    # node t between two frames messages: LD2454_STR
 # ('offline') comes only after keepalive 15 s x 1.5 = 22.5 s, up to 5 s after its last frames message:
 # shorter limits would fail every outage before the will explains it.
 FRAMES_SILENCE_MAX_S = 30.0     # heartbeat 5 s
+FRAMES_SPACING_OFF_MAX_MS = 31000   # --phase p2: node t between two messages while one has pw 0 (30 s heartbeat + 1 s)
+FRAMES_SILENCE_OFF_MAX_S = 45.0     # --phase p2: checker clock after a message with pw 0, or none since the (re)connect
 LD2412_SILENCE_MAX_S = 90.0     # heartbeat 60 s
 CHECKER_OFFLINE_MAX_S = 60.0    # checker without a broker connection: nothing is being checked
 ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -117,6 +123,16 @@ def validate_frames(obj, phase="p1"):
         errors.append(f"P1 sends pw 3 and sm 'A', got pw {obj['pw']!r}, sm {obj['sm']!r}")
     if errors:
         return errors
+    if phase == "p2":
+        # mt only while the LD2454 observes (pw bit 0), p2 only while the LD2412 does (bit 1); N / X = radars off
+        for key, bit in (("mt", 1), ("p2", 2)):
+            wanted = bool(obj["pw"] & bit)
+            if wanted != (key in obj):
+                errors.append(f"{key} must be {'present' if wanted else 'absent'} with pw {obj['pw']}")
+        if obj["sm"] in ("N", "X") and obj["pw"] != 0:
+            errors.append(f"sm {obj['sm']!r} (radars off) with pw {obj['pw']}, expected pw 0")
+        if errors:
+            return errors
 
     n = obj["n"]
     has_ages = "a0" in obj or "a1" in obj
@@ -215,6 +231,7 @@ class FrameStreamChecker:
         self.node_status = None           # last payload on the status topic, retained or live
         self.frames_ref_mono = None       # last frames message, checker connect or node status change
         self.frames_silence_open = False  # the current frames silence was already reported
+        self.frames_last_pw = None        # pw of the last frames message since the (re)connect (--phase p2 limits)
         self.frames_silences = 0
         self.frames_silence_max = 0.0     # longest frames silence seen while the node was online, s
         self.frames_spacing_max = 0       # largest node t between two frames messages in one epoch, ms
@@ -254,6 +271,7 @@ class FrameStreamChecker:
         self.connected = True
         self.offline_reported = False
         self.frames_ref_mono = self.ld2412_ref_mono = mono   # silences count from the (re)connect
+        self.frames_last_pw = None
 
     def on_disconnect(self, wall, mono):
         self.epoch += 1
@@ -282,18 +300,32 @@ class FrameStreamChecker:
             return out                    # the node is gone (LWT); its 'online' restarts the clocks
         silence = mono - self.frames_ref_mono
         self.frames_silence_max = max(self.frames_silence_max, silence)
-        if silence > FRAMES_SILENCE_MAX_S and not self.frames_silence_open:
+        limit = self._frames_silence_limit()
+        if silence > limit and not self.frames_silence_open:
             self.frames_silence_open = True
             self.frames_silences += 1
             out.append(self._fail(wall, f"frames stream stopped: no frames message for {silence:.0f} s while the "
-                                        f"node is online (heartbeat 5 s)"))
+                                        f"node is online (heartbeat {'30 s while pw is 0, else ' if limit > FRAMES_SILENCE_MAX_S else ''}5 s)"))
         silence = mono - self.ld2412_ref_mono
-        if silence > LD2412_SILENCE_MAX_S and not self.ld2412_silence_open:
+        if silence > LD2412_SILENCE_MAX_S and not self.ld2412_silence_open and not self._ld2412_none():
             self.ld2412_silence_open = True
             self.ld2412_silences += 1
             out.append(self._fail(wall, f"LD2412 silent for {silence:.0f} s while the node is online "
                                         f"(heartbeat {HEARTBEAT_LD2412_S:.0f} s)"))
         return out
+
+    def _frames_silence_limit(self):
+        # --phase p2: while the radars are off the heartbeat is 30 s; after a (re)connect the last pw is not known yet
+        if self.phase == "p2" and self.frames_last_pw in (None, 0):
+            return FRAMES_SILENCE_OFF_MAX_S
+        return FRAMES_SILENCE_MAX_S
+
+    def _ld2412_none(self):
+        # --phase p2: the LD2412 topic says None (unknown) while the radars are off or warming up; no heartbeat then
+        if self.phase != "p2":
+            return False
+        st = self.ld2412
+        return (st["last"] if st["last"] is not None else st["retained_seen"]) == "None"
 
     # ---------------------------------------------------------------- messages
     def on_message(self, topic, payload, retain, qos, wall, mono):
@@ -324,6 +356,7 @@ class FrameStreamChecker:
             # the node (re)connected or is gone: its silences count from here
             self.frames_ref_mono = self.ld2412_ref_mono = mono
             self.frames_silence_open = self.ld2412_silence_open = False
+            self.frames_last_pw = None
             self.node_status = text
             return out
         if topic.startswith(self.discovery_prefix + "/") and topic.endswith("/config"):
@@ -385,7 +418,7 @@ class FrameStreamChecker:
                 out.append(f"{_iso(wall)} INFO first frames message: boot id {b}, s {obj['s']}")
             st = self.boots[b] = {"first_wall": wall, "first_s": obj["s"], "msgs": 0, "covered": 0,
                                   "gaps": 0, "missing": 0, "ended": False, "last_target_t": None,
-                                  "prev_listed": None}
+                                  "prev_listed": None, "pw": None}
             self.boot_order.append(b)
         else:
             if st["ended"]:
@@ -418,10 +451,13 @@ class FrameStreamChecker:
             spacing = obj["t"] - st["t"]
             if st["epoch"] == self.epoch and spacing > 0:
                 self.frames_spacing_max = max(self.frames_spacing_max, spacing)
-                if spacing > FRAMES_SPACING_MAX_MS and not reported_silence:
+                limit = FRAMES_SPACING_MAX_MS
+                if self.phase == "p2" and (obj["pw"] == 0 or st["pw"] == 0):
+                    limit = FRAMES_SPACING_OFF_MAX_MS   # the 30 s heartbeat while the radars are off
+                if spacing > limit and not reported_silence:
                     self.frames_spacing_fails += 1
                     out.append(self._fail(wall, f"frames cadence: {spacing} ms between two frames messages on the "
-                                                f"node (boot {b}, by t), limit {FRAMES_SPACING_MAX_MS} ms: MqttTask "
+                                                f"node (boot {b}, by t), limit {limit} ms: MqttTask "
                                                 f"blocked, or the node paused (OTA)"))
             # onset latency, only on an unbroken stream (no reconnect, no gap since the previous message)
             if listed and st["epoch"] == self.epoch and obj["s"] == expected:
@@ -432,7 +468,8 @@ class FrameStreamChecker:
         if listed:
             st["last_target_t"] = obj["t"]
         st["prev_listed"] = listed
-        st.update(s=obj["s"], n=obj["n"], t=obj["t"], epoch=self.epoch)
+        st.update(s=obj["s"], n=obj["n"], t=obj["t"], epoch=self.epoch, pw=obj["pw"])
+        self.frames_last_pw = obj["pw"]
         st["msgs"] += 1
         st["covered"] += obj["n"]
         return out
@@ -440,20 +477,22 @@ class FrameStreamChecker:
     def _on_ld2412(self, payload, retain, wall, mono):
         st = self.ld2412
         text = payload.decode("utf-8", "replace")
+        valid = ("0", "1", "None") if self.phase == "p2" else ("0", "1")   # None: unknown, radars off or warming up
         if retain:
             st["retained_seen"] = text
-            return [] if text in ("0", "1") else [self._fail(wall, f"retained LD2412 payload {text!r}")]
+            return [] if text in valid else [self._fail(wall, f"retained LD2412 payload {text!r}")]
         out = []
         reported_silence = self.ld2412_silence_open
         self.ld2412_ref_mono = mono
         self.ld2412_silence_open = False
-        if text not in ("0", "1"):
-            out.append(self._fail(wall, f"LD2412 payload must be '0' or '1', got {text!r}"))
+        if text not in valid:
+            out.append(self._fail(wall, f"LD2412 payload must be {' or '.join(repr(v) for v in valid)}, got {text!r}"))
         st["count"] += 1
         if st["last_mono"] is not None and st["last_epoch"] == self.epoch:
             gap = mono - st["last_mono"]
             st["max_gap"] = max(st["max_gap"], gap)
-            if gap > HEARTBEAT_LD2412_S + HEARTBEAT_SLACK_S and not reported_silence:
+            if gap > HEARTBEAT_LD2412_S + HEARTBEAT_SLACK_S and not reported_silence and not (
+                    self.phase == "p2" and st["last"] == "None"):     # no heartbeat while None
                 out.append(self._fail(wall, f"LD2412 silent for {gap:.0f} s (heartbeat {HEARTBEAT_LD2412_S:.0f} s)"))
             if text == st["last"] and gap < HEARTBEAT_LD2412_S - HEARTBEAT_SLACK_S:
                 out.append(self._fail(wall, f"LD2412 repeated {text!r} after {gap:.1f} s: not on change only"))
@@ -573,9 +612,14 @@ class FrameStreamChecker:
         verdict = "PASS" if self.peak10 <= PEAK_10S_MAX else "FAIL"
         lines.append(f"{verdict} peak: {self.peak10} frames messages in 10 s (limit {PEAK_10S_MAX})")
         verdict = "PASS" if not (self.frames_silences or self.frames_spacing_fails) else "FAIL"
+        if self.phase == "p2":
+            limits = (f"{FRAMES_SPACING_MAX_MS} ms, {FRAMES_SPACING_OFF_MAX_MS} ms around pw 0; silence limit "
+                      f"{FRAMES_SILENCE_MAX_S:.0f} s, {FRAMES_SILENCE_OFF_MAX_S:.0f} s after pw 0")
+        else:
+            limits = f"{FRAMES_SPACING_MAX_MS} ms; silence limit {FRAMES_SILENCE_MAX_S:.0f} s"
         lines.append(f"{verdict} frames cadence: largest spacing on the node {self.frames_spacing_max} ms (limit "
-                     f"{FRAMES_SPACING_MAX_MS} ms); longest silence while the node was online "
-                     f"{self.frames_silence_max:.0f} s, {self.frames_silences} over {FRAMES_SILENCE_MAX_S:.0f} s")
+                     f"{limits}); longest silence while the node was online "
+                     f"{self.frames_silence_max:.0f} s, {self.frames_silences} over the limit")
         if self.onset_ages:
             ages = sorted(self.onset_ages)
             p95 = ages[min(len(ages) - 1, int(len(ages) * 0.95))]
@@ -585,7 +629,7 @@ class FrameStreamChecker:
 
         # legacy topics
         st = self.ld2412
-        ok412 = (st["count"] > 0 or span < HEARTBEAT_LD2412_S * 2) and not self.ld2412_silences
+        ok412 = (st["count"] > 0 or span < HEARTBEAT_LD2412_S * 2 or self._ld2412_none()) and not self.ld2412_silences
         lines.append(f"{'PASS' if ok412 else 'FAIL'} LD2412 legacy: {st['count']} messages, {st['changes']} changes, "
                      f"longest silence {st['max_gap']:.0f} s, {self.ld2412_silences} silences over "
                      f"{LD2412_SILENCE_MAX_S:.0f} s while online, retained value at start "
@@ -639,8 +683,10 @@ def main(argv=None):
     ap.add_argument("--node-prefix", default="led_matrix_node")
     ap.add_argument("--device-id", default="Led_Matrix_Node")
     ap.add_argument("--discovery-prefix", default="homeassistant")
-    ap.add_argument("--phase", choices=("p1", "any"), default="p1",
-                    help="p1: also require pw 3, sm 'A' and a silent legacy LD2454 topic")
+    ap.add_argument("--phase", choices=("p1", "any", "p2"), default="p1",
+                    help="p1: also require pw 3, sm 'A' and a silent legacy LD2454 topic; "
+                         "p2: board revision 2 (radars off at night: 30 s heartbeat, pw 0, mt / p2 only with their pw "
+                         "bit, LD2412 None)")
     ap.add_argument("--gap-log", help="append every gap, failure and warning to this file as JSON lines")
     args, unknown = ap.parse_known_args(argv)
     if unknown:

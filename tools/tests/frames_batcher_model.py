@@ -5,6 +5,12 @@ batcher (Ld2454FrameBatcher), the payload format (formatLd2454Frames) and the Mq
 simulated radar, LD2454Task and MqttTask. Every published payload also goes through
 tools/frames_checker.py, so the checker is tested against the same stream.
 
+P2 (board revision 2, -D BOARD_REV2) adds three things, all off by default so that the P1 tests above stay as they
+were: Batcher.poll(now, idle_ms) (the heartbeat interval of the radar phase: 5 s, but 30 s while the phase is OFF,
+LD2454_STREAM_OFF_IDLE_MS), format_frames(..., rev2=True) (mt only while pw bit0 is set, p2 only while bit1 is set), and
+the tests test_rev2_format / test_rev2_off_heartbeat (a night with the radars off: 30 s heartbeats, a contiguous seq, 5 s
+again from the first loop of POWERING, every payload accepted by tools/frames_checker.py).
+
 Run: python -I tools/tests/frames_batcher_model.py      (no third-party modules; exit code 0 = all passed)
 """
 
@@ -14,6 +20,7 @@ import io
 import json
 import os
 import random
+import re
 import sys
 
 sys.dont_write_bytecode = True   # loading the checker must not leave tools/__pycache__ in the repo
@@ -28,6 +35,7 @@ LD2454_SENSOR_INTERVAL = 50
 MQTT_LOOP_DELAY_MS = 40
 FRAMES_DRAIN_CHUNK = 16
 LD2454_FRAMES_JSON_MAX = 2048
+LD2454_STREAM_OFF_IDLE_MS = 30000   # radar_constants.h (P2, BOARD_REV2): the heartbeat while the radar phase is OFF
 U32 = 0xFFFFFFFF
 
 
@@ -122,14 +130,14 @@ class Batcher:
                 closed = self.close(now_ms)
         return closed
 
-    def poll(self, now_ms):
+    def poll(self, now_ms, idle_ms=LD2454_STREAM_IDLE_MS):   # idle_ms: the two-argument poll() of BOARD_REV2
         if not self.target_gate_open and ((now_ms - self.last_target_close_ms) & U32) >= LD2454_STREAM_BATCH_MS:
             self.target_gate_open = True
         if self.pending.f and self.target_gate_open:
             return self.close(now_ms)
         if self.prev_had_targets and ((now_ms - self.last_close_ms) & U32) >= LD2454_STREAM_BATCH_MS:
             return self.close(now_ms)
-        if ((now_ms - self.last_close_ms) & U32) >= LD2454_STREAM_IDLE_MS:
+        if ((now_ms - self.last_close_ms) & U32) >= idle_ms:
             return self.close(now_ms)
         return None
 
@@ -146,13 +154,21 @@ class Batcher:
         return closed
 
 
-def format_frames(batch, t_ms, boot_id, mt, p2, pw, sm):
-    """formatLd2454Frames: the same text, character for character."""
+def format_frames(batch, t_ms, boot_id, mt, p2, pw, sm, rev2=False):
+    """formatLd2454Frames: the same text, character for character. rev2: the BOARD_REV2 build leaves mt out while pw
+    bit0 is 0 and p2 out while pw bit1 is 0 (P1: both always present)."""
     t32 = t_ms & U32
     out = '{"v":1,"b":"%s","t":%d,"s":%d,"n":%d' % (boot_id, t_ms, batch.s, batch.n)
     if batch.n > 0:
         out += ',"a0":%d,"a1":%d' % ((t32 - batch.first_ms) & U32, (t32 - batch.last_ms) & U32)
-    out += ',"mt":%d,"p2":%d,"pw":%d,"sm":"%s"' % (1 if mt else 0, 1 if p2 else 0, pw, sm)
+    if rev2:
+        if pw & 1:
+            out += ',"mt":%d' % (1 if mt else 0)
+        if pw & 2:
+            out += ',"p2":%d' % (1 if p2 else 0)
+        out += ',"pw":%d,"sm":"%s"' % (pw, sm)
+    else:
+        out += ',"mt":%d,"p2":%d,"pw":%d,"sm":"%s"' % (1 if mt else 0, 1 if p2 else 0, pw, sm)
     if batch.f:
         out += ',"f":['
         for i, fr in enumerate(batch.f):
@@ -663,6 +679,316 @@ def test_checker_silences_and_cadence(checker_mod):
         check(rc == 2 and secret not in err.getvalue(), f"exit 2, value not echoed: {shown}")
 
 
+# ------------------------------------------------------------------ P2 (board revision 2)
+def _cpp_constant(name):
+    """static const <type> NAME = <int>; from include/radar_constants.h (the model's constants are tied to the C++)."""
+    root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    with open(os.path.join(root, "include", "radar_constants.h"), encoding="utf-8") as fh:
+        m = re.search(r"static\s+const\s+\w+\s+" + name + r"\s*=\s*(\d+)", fh.read())
+    return int(m.group(1)) if m else None
+
+
+def test_rev2_format(checker_mod):
+    print("P2 format: mt / p2 omission, pw, sm")
+    check(_cpp_constant("LD2454_STREAM_OFF_IDLE_MS") == LD2454_STREAM_OFF_IDLE_MS == 30000,
+          "LD2454_STREAM_OFF_IDLE_MS is 30000 ms in radar_constants.h and in the model")
+    b = Batch()
+    b.s, b.n = 1234560, 5
+    b.first_ms, b.last_ms = 81234567 - 480, 81234567 - 40
+    b.f = [Frame(1234560, 81234567 - 480, 1, [-15, 0, 0], [1193, 0, 0], [55, 0, 0]),
+           Frame(1234564, 81234567 - 40, 1, [-761, 0, 0], [5446, 0, 0], [58, 0, 0])]
+    both = format_frames(b, 81234567, "9f3c21aa", True, True, 3, "A", rev2=True)
+    check(both == ('{"v":1,"b":"9f3c21aa","t":81234567,"s":1234560,"n":5,"a0":480,"a1":40,"mt":1,"p2":1,'
+                   '"pw":3,"sm":"A","f":[[0,480,0,-15,1193,55],[4,40,0,-761,5446,58]]}'),
+          "pw 3: the design's observing example, identical to the P1 form")
+    check(both == format_frames(b, 81234567, "9f3c21aa", True, True, 3, "A"), "pw 3 equals the P1 text, character for character")
+    only_mt = format_frames(b, 81234567, "9f3c21aa", True, True, 1, "S", rev2=True)
+    check(',"mt":1,"pw":1,"sm":"S"' in only_mt and '"p2"' not in only_mt, "pw 1 (LD2454 observing only): mt, no p2")
+    only_p2 = format_frames(b, 81234567, "9f3c21aa", True, True, 2, "A", rev2=True)
+    check(',"p2":1,"pw":2,"sm":"A"' in only_p2 and '"mt"' not in only_p2, "pw 2 (LD2412 observing only): p2, no mt")
+    e = Batch()
+    e.s = 1234615
+    off = format_frames(e, 81244567, "9f3c21aa", True, True, 0, "X", rev2=True)
+    check(off == '{"v":1,"b":"9f3c21aa","t":81244567,"s":1234615,"n":0,"pw":0,"sm":"X"}', "the OFF heartbeat is the design's exact string")
+    night = format_frames(e, 81244567, "9f3c21aa", True, True, 0, "N", rev2=True)
+    check(night == '{"v":1,"b":"9f3c21aa","t":81244567,"s":1234615,"n":0,"pw":0,"sm":"N"}', "night heartbeat: sm N")
+    for text in (both, only_mt, only_p2, off, night):
+        check(checker_mod.validate_frames(json.loads(text), "any") == [], "the checker accepts (--phase any): %s" % text[:70])
+    check(checker_mod.validate_frames(json.loads(off), "p1") != [], "the P1 checker (default phase) rejects the P2 heartbeat, as it should")
+    # P1 behaviour of the default arguments is unchanged
+    check(format_frames(e, 81244567, "9f3c21aa", True, False, 3, "A") ==
+          '{"v":1,"b":"9f3c21aa","t":81244567,"s":1234615,"n":0,"mt":1,"p2":0,"pw":3,"sm":"A"}', "default (P1) form: mt and p2 always present")
+    # worst case stays at the P1 figure
+    t_ms = (2 ** 63 - 1) // 1000
+    old_ms = ((t_ms & U32) + 1) & U32
+    w = Batch()
+    w.s, w.n, w.first_ms, w.last_ms = U32, U32, old_ms, old_ms
+    for _ in range(LD2454_STREAM_MAX_FRAMES):
+        w.f.append(Frame((U32 + U32) & U32, old_ms, 0b111, [-32767] * 3, [-32767] * 3, [-32767] * 3))
+    lens = [len(format_frames(w, t_ms, "ffffffff", True, True, pw, "A", rev2=True)) for pw in (3, 2, 1, 0)]
+    check(lens[0] == 2001 and lens == sorted(lens, reverse=True), f"worst case {lens}: pw 3 is the P1 figure (2001 B), the others are shorter")
+
+
+PERSON = [(300, 2000, 30)]
+
+
+class Rev2Sim:
+    """MqttTask loop (40 ms) over a night of the radar phase machine: the batcher is polled with the 30 s heartbeat while
+    the phase is OFF; pw and sm are sampled when the payload is built (MqttManager::sendFrameBatch under REV2)."""
+
+    def __init__(self, seed, timeline, windows, end_ms):
+        self.rng = random.Random(seed)
+        self.timeline = sorted(timeline)    # [(start_ms, phase, pw, sm)]
+        self.windows = windows              # [(a, b, targets)]: the LD2454 streams 10 frames/s in these windows
+        self.end = end_ms
+        self.ring, self.batcher = Ring(), Batcher()
+        self.boot_id = "9f3c21aa"
+        self.published = []                 # (time, payload, batch, phase)
+        self.pushed = 0
+
+    def state_at(self, ms):
+        cur = self.timeline[0]
+        for e in self.timeline:
+            if e[0] <= ms:
+                cur = e
+        return cur
+
+    def run(self):
+        events = []
+        for a, b, targets in self.windows:
+            t = a
+            while t < b:
+                events.append((t + self.rng.randint(-3, 3), 0, "frame", targets))
+                t += 100
+        t = 0
+        while t < self.end:
+            events.append((t, 1, "mqtt", None))
+            t += MQTT_LOOP_DELAY_MS + self.rng.randint(0, 6)
+        events.sort(key=lambda e: (e[0], e[1]))
+        for now, _, kind, targets in events:
+            if kind == "frame":
+                slots = [(True, x, y, v) for (x, y, v) in targets[:3]]
+                slots += [(False, 0, 0, 0)] * (3 - len(slots))
+                self.ring.push(slots, now)
+                self.pushed += 1
+            else:
+                self.service(now)
+        return self
+
+    def service(self, now):
+        drained = 0
+        while drained < LD2454_RING_FRAMES:
+            got = self.ring.pop(FRAMES_DRAIN_CHUNK)
+            if not got:
+                break
+            drained += len(got)
+            for fr in got:
+                closed = self.batcher.add(fr, now)
+                if closed is not None:
+                    self.send(closed, now)
+        _, phase, _, _ = self.state_at(now)
+        idle = LD2454_STREAM_OFF_IDLE_MS if phase == "OFF" else LD2454_STREAM_IDLE_MS   # serviceFrameStream() under REV2
+        closed = self.batcher.poll(now, idle)
+        if closed is not None:
+            self.send(closed, now)
+
+    def send(self, batch, now):
+        _, phase, pw, sm = self.state_at(now)
+        payload = format_frames(batch, now, self.boot_id, True, True, pw, sm, rev2=True)
+        self.published.append((now, payload, batch, phase))
+
+
+NIGHT = [(0, "ON", 3, "A"), (60000, "PARKING", 0, "A"), (60300, "OFF_SETTLING", 0, "N"), (60350, "OFF", 0, "N"),
+         (660350, "POWERING", 0, "A"), (660355, "ON", 0, "A"), (672355, "ON", 3, "A")]
+
+
+def test_rev2_off_heartbeat(checker_mod):
+    print("P2 night: radars off for 10 min (30 s heartbeats), power-up, observing again")
+    sim = Rev2Sim(7, NIGHT, [(10000, 60000, PERSON), (663000, 700000, [])], 700000).run()
+    pubs = sim.published
+    parsed = [json.loads(p) for _, p, _, _ in pubs]
+    check(all(checker_mod.validate_frames(o, "any") == [] for o in parsed), f"all {len(pubs)} payloads pass the checker (--phase any)")
+    check(max(len(p) for _, p, _, _ in pubs) + 1 <= LD2454_FRAMES_JSON_MAX, "every payload fits the 2048 B buffer")
+    # the seq stays contiguous across the park, the off period and the power-up: the ring is not reset, nothing is dropped
+    contiguous = all(b2["s"] == b1["s"] + b1["n"] for b1, b2 in zip(parsed, parsed[1:]))
+    check(contiguous and sim.ring.overwritten == 0, "seq contiguous across park, off period and power-up (s == previous s + n)")
+    # while the phase is OFF: heartbeats 30.0-30.1 s apart, no frames, no mt / p2, pw 0, sm N
+    off = [(t, o) for (t, _, _, ph), o in zip(pubs, parsed) if ph == "OFF"]
+    gaps = [b[0] - a[0] for a, b in zip(off[1:], off[2:])]
+    check(len(off) >= 19 and gaps and all(30000 <= g <= 30100 for g in gaps), f"{len(off)} messages while OFF, heartbeats {min(gaps)}-{max(gaps)} ms apart")
+    check(all(o["n"] == 0 and "f" not in o and "mt" not in o and "p2" not in o and o["pw"] == 0 and o["sm"] == "N" for _, o in off[1:]),
+          "OFF heartbeats: n 0, no mt, no p2, pw 0, sm N")
+    first_gap = off[0][0] - [t for (t, _, _, ph) in pubs if ph != "OFF" and t < off[0][0]][-1]
+    check(first_gap < 1000 or 30000 <= first_gap <= 30100, f"the first message in OFF follows the park (a trailing batch, {first_gap} ms) or a 30 s heartbeat")
+    # the 5 s heartbeat is back from the first MqttTask loop of POWERING
+    after = [(t, o) for (t, _, _, _), o in zip(pubs, parsed) if t >= 660350]
+    check(after and after[0][0] - 660350 <= 2 * (MQTT_LOOP_DELAY_MS + 6),
+          f"the first message after the power-up comes {after[0][0] - 660350} ms into POWERING (5 s heartbeat applies again)")
+    during = [(t, o) for t, o in after if t < 672355]
+    check(during and all("mt" not in o and "p2" not in o and o["pw"] == 0 and o["sm"] == "A" for _, o in during),
+          f"between the power-up and the 12 s warm-up ({len(during)} messages): pw 0, sm A, no mt / p2")
+    spacing = [b[0] - a[0] for a, b in zip(after, after[1:])]
+    check(all(5000 <= g <= 5060 for g in spacing if g > 1000), f"5 s heartbeats after the power-up ({sorted(set(spacing))[:3]} ms)")
+    done = [o for t, o in after if t >= 672355]
+    check(done and all(o["mt"] == 1 and o["p2"] == 1 and o["pw"] == 3 for o in done), "observing again: pw 3 with mt and p2")
+    # before the park: targets, 500 ms batches, pw 3, sm A, both fields
+    before = [o for (t, _, _, ph), o in zip(pubs, parsed) if t < 60000]
+    check(before and all(o["pw"] == 3 and o["mt"] == 1 and o["p2"] == 1 for o in before), "observing with a target: mt and p2 present")
+    # the frames accounting: every frame pushed is covered by exactly one message (or still pending)
+    covered = sum(o["n"] for o in parsed)
+    check(covered + sim.batcher.pending.n == sim.pushed, f"frame accounting {covered} + {sim.batcher.pending.n} == {sim.pushed} pushed")
+    # 24 h of OFF would be 2880 messages instead of 17280 at 5 s: the point of the 30 s heartbeat
+    check(len(off) <= 600 // 30 + 1, "10 min off: at most 21 messages (5 s heartbeats would be 120)")
+
+
+def _p2_msg(boot, t_ms, s, n, pw, sm, **override):
+    """A BOARD_REV2 frames payload: mt only with pw bit0, p2 only with pw bit1 (override adds / changes keys)."""
+    obj = {"v": 1, "b": boot, "t": t_ms, "s": s, "n": n}
+    if n:
+        obj.update(a0=4990, a1=40)
+    if pw & 1:
+        obj["mt"] = 1
+    if pw & 2:
+        obj["p2"] = 0
+    obj.update(pw=pw, sm=sm)
+    obj.update(override)
+    return json.dumps(obj, separators=(",", ":")).encode()
+
+
+def test_rev2_checker_p2(checker_mod):
+    print("P2 checker (--phase p2): a night with the radars off, and the rules one by one")
+    F = "led_matrix_node/radar/ld2454/frames"
+    L = "led_matrix_node/radar/ld2412"
+    ST = "led_matrix_node/sensors/status"
+
+    def feed(chk, t, topic, payload, retain=False):
+        return chk.on_message(topic, payload, retain, 0, 1.7e9 + t, float(t))
+
+    # the whole simulated night through the p2 checker
+    sim = Rev2Sim(7, NIGHT, [(10000, 60000, PERSON), (663000, 700000, [])], 700000).run()
+    chk = checker_mod.FrameStreamChecker(phase="p2")
+    chk.on_connect(1.7e9, 0.0)
+    msgs = [(t, F, p.encode(), False) for t, p, _, _ in sim.published]
+    msgs += [(0, ST, b"online", False)]
+    msgs += [(0, topic, payload, True)
+             for topic, payload in checker_mod.EXPECTED_SENSOR_CONFIGS.items()]
+    # LD2412 topic: 0 while ABSENT, one retained None at the park, nothing while off, 0 again 12 s after the power-up
+    msgs += [(1000, L, b"0", False), (60040, L, b"None", False), (672400, L, b"0", False)]
+    msgs.sort(key=lambda m: m[0])
+    lines = []
+    sec = 0
+    for t, topic, payload, retain in msgs:
+        while sec * 1000 < t:
+            sec += 1
+            lines += chk.tick(1.7e9 + sec, float(sec))
+        lines += feed(chk, t / 1000.0, topic, payload, retain)
+    while sec < 705:
+        sec += 1
+        lines += chk.tick(1.7e9 + sec, float(sec))
+    text, ok = chk.report()
+    check(ok and chk.failure_count == 0 and chk.frames_silences == 0 and chk.ld2412_silences == 0,
+          f"the simulated night ({len(sim.published)} messages) passes --phase p2: no cadence, silence or field failure")
+    if not ok:
+        print(text)
+    check(chk.frames_silence_max > 29.9, f"the checker saw the 30 s heartbeat silences ({chk.frames_silence_max:.0f} s) without a failure")
+
+    # the same stream fails in the default (P1) phase and in --phase any
+    for phase in ("p1", "any"):
+        chk1 = checker_mod.FrameStreamChecker(phase=phase)
+        chk1.on_connect(1.7e9, 0.0)
+        sec = 0
+        for t, topic, payload, retain in msgs:
+            if topic != F:
+                continue
+            while sec * 1000 < t:
+                sec += 1
+                chk1.tick(1.7e9 + sec, float(sec))
+            feed(chk1, t / 1000.0, topic, payload, retain)
+        check(chk1.failure_count > 0, f"--phase {phase} does not accept the P2 stream (the 30 s heartbeat and the omitted fields are P2 only)")
+
+    # field rules
+    b = "9f3c21aa"
+    check(checker_mod.validate_frames(json.loads(_p2_msg(b, 1000, 5, 0, 0, "N")), "p2") == [], "p2: pw 0, sm N, no mt / p2")
+    check(checker_mod.validate_frames(json.loads(_p2_msg(b, 1000, 5, 0, 3, "A")), "p2") == [], "p2: pw 3 with mt and p2")
+    check(checker_mod.validate_frames(json.loads(_p2_msg(b, 1000, 5, 0, 1, "S")), "p2") == [], "p2: pw 1 with mt only")
+    check(checker_mod.validate_frames(json.loads(_p2_msg(b, 1000, 5, 0, 0, "A")), "p2") == [], "p2: pw 0, sm A (warming up) is fine")
+    check(checker_mod.validate_frames(json.loads(_p2_msg(b, 1000, 5, 0, 0, "N", mt=1)), "p2") != [], "p2: mt present with pw bit0 = 0 is rejected")
+    check(checker_mod.validate_frames(json.loads(_p2_msg(b, 1000, 5, 0, 2, "A", mt=1)), "p2") != [], "p2: mt present with pw 2 is rejected")
+    obj = json.loads(_p2_msg(b, 1000, 5, 0, 3, "A"))
+    del obj["mt"]
+    check(checker_mod.validate_frames(obj, "p2") != [], "p2: mt missing with pw bit0 = 1 is rejected")
+    obj = json.loads(_p2_msg(b, 1000, 5, 0, 1, "S"))
+    obj["p2"] = 1
+    check(checker_mod.validate_frames(obj, "p2") != [], "p2: p2 present with pw bit1 = 0 is rejected")
+    check(checker_mod.validate_frames(json.loads(_p2_msg(b, 1000, 5, 0, 3, "X")), "p2") != [], "p2: sm X with pw 3 is rejected")
+    check(checker_mod.validate_frames(json.loads(_p2_msg(b, 1000, 5, 0, 1, "N")), "p2") != [], "p2: sm N with pw 1 is rejected")
+    check(checker_mod.validate_frames(json.loads(_p2_msg(b, 1000, 5, 0, 0, "Z")), "p2") != [], "p2: an unknown sm code is rejected")
+
+    # spacing by the node's t
+    def spacing_fails(pw1, pw2, gap_ms):
+        c = checker_mod.FrameStreamChecker(phase="p2")
+        c.on_connect(1.7e9, 0.0)
+        feed(c, 5, F, _p2_msg(b, 5000, 0, 0, pw1, "N" if pw1 == 0 else "A"))
+        feed(c, 5 + gap_ms / 1000.0, F, _p2_msg(b, 5000 + gap_ms, 0, 0, pw2, "N" if pw2 == 0 else "A"))
+        return c.frames_spacing_fails
+    check(spacing_fails(0, 0, 30040) == 0, "spacing: 30.04 s between two pw 0 heartbeats is fine")
+    check(spacing_fails(0, 0, 32000) == 1, "spacing: 32 s between two pw 0 messages fails (limit 31 s)")
+    check(spacing_fails(3, 0, 20000) == 0 and spacing_fails(0, 3, 20000) == 0, "spacing: up to 31 s around a pw 0 message")
+    check(spacing_fails(3, 3, 8000) == 1, "spacing: 8 s between two pw 3 messages still fails (limit 6 s)")
+
+    # silence by the checker's clock
+    def silence_failures(pw, quiet_s):
+        c = checker_mod.FrameStreamChecker(phase="p2")
+        c.on_connect(1.7e9, 0.0)
+        feed(c, 1, L, b"0")
+        feed(c, 5, F, _p2_msg(b, 5000, 0, 0, pw, "N" if pw == 0 else "A"))
+        for t in range(6, 6 + quiet_s):
+            c.tick(1.7e9 + t, float(t))
+            if t % 50 == 0:
+                feed(c, t, L, b"0")
+        return c.frames_silences
+    check(silence_failures(0, 40) == 0, "silence: 40 s after a pw 0 message is fine (limit 45 s)")
+    check(silence_failures(0, 50) == 1, "silence: 50 s after a pw 0 message fails")
+    check(silence_failures(3, 25) == 0 and silence_failures(3, 35) == 1, "silence: after a pw 3 message the limit stays 30 s")
+    c = checker_mod.FrameStreamChecker(phase="p2")
+    c.on_connect(1.7e9, 0.0)
+    feed(c, 0, L, b"0")
+    for t in range(1, 40):
+        c.tick(1.7e9 + t, float(t))
+    check(c.frames_silences == 0, "silence: 40 s without any message after the connect is fine in p2 (the node may be off)")
+
+    # the LD2412 topic: None
+    c = checker_mod.FrameStreamChecker(phase="p2")
+    c.on_connect(1.7e9, 0.0)
+    out = feed(c, 0, L, b"None", retain=True)
+    out += feed(c, 10, L, b"0")
+    out += feed(c, 20, L, b"None")
+    for t in range(21, 400):
+        out += c.tick(1.7e9 + t, float(t))
+        if t % 30 == 0:
+            feed(c, t, F, _p2_msg(b, t * 1000, 0, 0, 0, "N"))
+    check(c.ld2412_silences == 0 and not any("LD2412" in l for l in out), "LD2412: a retained and a live None are accepted, and no heartbeat is required while it is None")
+    out = feed(c, 400, L, b"0")
+    check(not any("FAIL" in l for l in out), "LD2412: the change back to 0 after a long None is no silence failure")
+    c1 = checker_mod.FrameStreamChecker()
+    c1.on_connect(1.7e9, 0.0)
+    check(any("FAIL" in l for l in feed(c1, 1, L, b"None")), "LD2412 None is rejected in the default (P1) phase")
+    c1 = checker_mod.FrameStreamChecker()
+    c1.on_connect(1.7e9, 0.0)
+    check(any("FAIL" in l for l in feed(c1, 1, L, b"None", retain=True)), "a retained LD2412 None is rejected in the default (P1) phase")
+    # a node (re)connect while the radars are off: the first message may take up to 30 s
+    c = checker_mod.FrameStreamChecker(phase="p2")
+    c.on_connect(1.7e9, 0.0)
+    feed(c, 0, L, b"None")
+    feed(c, 5, F, _p2_msg(b, 5000, 0, 0, 0, "N"))
+    feed(c, 40, ST, b"offline")
+    feed(c, 100, ST, b"online")
+    for t in range(101, 131):
+        c.tick(1.7e9 + t, float(t))
+    feed(c, 130.5, F, _p2_msg(b, 130500, 0, 0, 0, "N"))
+    check(c.frames_silences == 0, "a node reconnect while off: up to 45 s to the first heartbeat is no silence failure")
+
+
 def main():
     checker_mod = _load_checker()
     test_worst_case()
@@ -672,6 +998,9 @@ def main():
     test_outages(checker_mod)
     test_checker_discovery_and_legacy(checker_mod)
     test_checker_silences_and_cadence(checker_mod)
+    test_rev2_format(checker_mod)
+    test_rev2_off_heartbeat(checker_mod)
+    test_rev2_checker_p2(checker_mod)
     print()
     print("ALL PASSED" if not FAILS else f"{len(FAILS)} FAILED")
     return 0 if not FAILS else 1

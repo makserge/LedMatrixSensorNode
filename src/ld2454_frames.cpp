@@ -68,6 +68,15 @@ uint32_t Ld2454FrameRing::overwritten() const {
     return count;
 }
 
+#ifdef BOARD_REV2
+uint32_t Ld2454FrameRing::pushed() const {
+    portENTER_CRITICAL(&_mux);
+    uint32_t count = _head;
+    portEXIT_CRITICAL(&_mux);
+    return count;
+}
+#endif
+
 const Ld2454Batch* Ld2454FrameBatcher::add(const Ld2454Frame& frame, uint32_t nowMs) {
     const Ld2454Batch* closed = nullptr;
     uint32_t expected = _pending.s + _pending.n;
@@ -92,7 +101,11 @@ const Ld2454Batch* Ld2454FrameBatcher::add(const Ld2454Frame& frame, uint32_t no
     return closed;
 }
 
+#ifdef BOARD_REV2
+const Ld2454Batch* Ld2454FrameBatcher::poll(uint32_t nowMs, uint32_t idleMs) {
+#else
 const Ld2454Batch* Ld2454FrameBatcher::poll(uint32_t nowMs) {
+#endif
     if (!_targetGateOpen && nowMs - _lastTargetCloseMs >= LD2454_STREAM_BATCH_MS) {
         _targetGateOpen = true;
     }
@@ -100,7 +113,11 @@ const Ld2454Batch* Ld2454FrameBatcher::poll(uint32_t nowMs) {
     if (_prevHadTargets && nowMs - _lastCloseMs >= LD2454_STREAM_BATCH_MS) {     // targets gone: one more
         return close(nowMs);
     }
+#ifdef BOARD_REV2
+    if (nowMs - _lastCloseMs >= idleMs) return close(nowMs);                    // heartbeat (5 s; 30 s while the radars are off)
+#else
     if (nowMs - _lastCloseMs >= LD2454_STREAM_IDLE_MS) return close(nowMs);     // heartbeat
+#endif
     return nullptr;
 }
 
@@ -155,8 +172,15 @@ size_t formatLd2454Frames(char* out, size_t cap, const Ld2454Batch& batch, uint6
         o.add(",\"a0\":%lu,\"a1\":%lu", (unsigned long)(t32 - batch.firstMs),
               (unsigned long)(t32 - batch.lastMs));
     }
+#ifdef BOARD_REV2
+    // mt only while the LD2454 observes (pw bit0), p2 only while the LD2412 does (pw bit1)
+    if (observingMask & 1u) o.add(",\"mt\":%u", multiTarget ? 1u : 0u);
+    if (observingMask & 2u) o.add(",\"p2\":%u", ld2412Present ? 1u : 0u);
+    o.add(",\"pw\":%u,\"sm\":\"%c\"", (unsigned)observingMask, stateCode);
+#else
     o.add(",\"mt\":%u,\"p2\":%u,\"pw\":%u,\"sm\":\"%c\"", multiTarget ? 1u : 0u, ld2412Present ? 1u : 0u,
           (unsigned)observingMask, stateCode);
+#endif
     if (batch.listed > 0) {
         o.add(",\"f\":[");
         for (uint8_t i = 0; i < batch.listed; i++) {

@@ -27,6 +27,9 @@ public:
     void push(const Ld2454TargetData* targets, uint32_t ms);   // targets: LD2454_MAX_TARGETS entries
     size_t pop(Ld2454Frame* out, size_t maxFrames);             // oldest first; returns how many
     uint32_t overwritten() const;                               // frames lost to overflow since boot
+#ifdef BOARD_REV2
+    uint32_t pushed() const;                                    // frames pushed since boot (= _head): the status JSON's seq
+#endif
     // LD2454Task only, the producer (push() runs on it, so no lock): frames pushed between beginMute()
     // and endMute() are dropped without a seq. endMute() returns how many.
     void beginMute();
@@ -61,7 +64,11 @@ struct Ld2454Batch {
 class Ld2454FrameBatcher {
 public:
     const Ld2454Batch* add(const Ld2454Frame& frame, uint32_t nowMs);
+#ifdef BOARD_REV2
+    const Ld2454Batch* poll(uint32_t nowMs, uint32_t idleMs);   // idleMs: the heartbeat interval of the radar phase
+#else
     const Ld2454Batch* poll(uint32_t nowMs);
+#endif
     uint32_t seqGapFrames() const { return _seqGapFrames; }    // frames missing between ring reads
 
 private:

@@ -26,6 +26,12 @@ public:
     bool hasAnyTarget() const;
     // True once the radar has ACKed multi-target mode; reset whenever it may have rebooted.
     bool isMultiTargetEnabled() const { return _multiTargetEnabled; }
+#ifdef BOARD_REV2
+    // Board revision 2: the link follows the radar power (park / open handshake with RadarPower, spec 5).
+    void openLink();
+    void parkLink();
+    bool isLinkOpen() const { return _linkOpen; }
+#endif
 
 private:
     void beginRadarLink();
@@ -59,6 +65,16 @@ private:
     uint32_t _lastFrameMs = 0; // 0 = no frame since the last configuration attempt
     uint32_t _configEndMs = 0;
     uint32_t _frameCount = 0;
+
+#ifdef BOARD_REV2
+    void syncReady();
+    bool _linkOpen = false;
+    bool _awaitFirstFrame = false;
+    bool _firstFrameSeen = false;
+    bool _noFramesFault = false;
+    uint32_t _openedMs = 0;
+    uint8_t _framesSinceConfigEnd = 0;
+#endif
 };
 
 extern Ld2454Sensor ld2454Sensor;

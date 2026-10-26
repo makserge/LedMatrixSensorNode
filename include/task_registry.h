@@ -10,4 +10,9 @@ void resumeBackgroundTasksAfterOta();
 // call in flight). Blocks while an OTA update is running; returns true if it waited.
 bool waitWhileOtaPaused();
 
+#ifdef BOARD_REV2
+// True while an OTA update is pending or running (RadarPower unsubscribes from the task watchdog around the wait).
+bool isOtaPauseRequested();
+#endif
+
 #endif

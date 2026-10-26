@@ -22,8 +22,13 @@
 
 // UI Elements
 #define BEEPER_PIN          13
+#ifdef BOARD_REV2
+#define BUTTON_LADDER_PIN   D9   // GPIO8, ADC1_CH7: both buttons as a ladder (idle ~3.3 V, mode 0 V, power / LED off ~1.65 V)
+#define RADAR_PWR_EN_PIN    D10  // GPIO9: HIGH = both radars powered (Q2 -> Q1); R7 keeps them ON while the pin is not driven
+#else
 #define MODE_BUTTON_PIN     D9 // D9
 #define SWITCH_OFF_LED_PIN  D10 // D10
+#endif
 
 #define RADAR_PRESENCE_PIN   D1
 
