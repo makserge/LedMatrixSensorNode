@@ -5,10 +5,14 @@ only from event timestamps and tick(now_ms); "core now" is the largest of them.
 """
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import date
 from typing import Optional
 
 from . import labels as labels_mod
+from . import where as where_mod
+from . import zones as zones_mod
+from .advanced import advanced_entries
 from .behaviours import Behaviours
 from .covis import Covis
 from .extraction import PLACE_TYPES, NightState, cid_key, refresh_places_now, run_nightly
@@ -16,20 +20,26 @@ from .frames import parse_frames
 from .grids import GridGeom, Grids, rate
 from .night import NightModel
 from .nightlearn import NightLearning
+from .notify import PushPlanner
 from .observation import MIN_BOOT_WALL_MS, Censor, Observation
-from .params import DEFAULT_PARAMS, Params
+from .p5state import P5State
+from .params import DEFAULT_P5, DEFAULT_PARAMS, P5Params, Params
 from .review import ReviewModel, hhmm
 from .state import export_state, load_state
 from .tracker import Tracker
-from .types import (APP_VERSION, SCHEMA_VERSION, CandidateView, CommandResult, ContextState, DebugMapChanged,
-                    DebugMapData, FixedOffsetTime, FramesMessage, Label, LuxSample, MarkPress, MarkResult,
-                    NameEcho, NightLearningChanged, NightLearningSwitch, NightlyDone, NightlyFailed, NodeCommand,
-                    NodeStatus, PayloadError, ReviewAnswer, ReviewChanged, ReviewSelect, SaveRequested,
-                    ScheduleState, SpotName, StatusChanged, StayView, Suggestion, TimeModel)
+from .types import (APP_VERSION, ITEM_IDS, SCHEMA_VERSION, SETTING_NAMES, AdvancedChanged, AnswerIgnored,
+                    CandidateView, CommandResult, ContextState, DebugMapChanged, DebugMapData, FixedOffsetTime,
+                    FramesMessage, Label, LuxSample, MarkPress, MarkResult, NameEcho, NightLearningChanged,
+                    NightLearningSwitch, NightlyDone, NightlyFailed, NightTimeEdit, NodeCommand, NodeStatus,
+                    PayloadError, PushAck, PushRequest, ReviewAnswer, ReviewChanged, ReviewSelect, SaveRequested,
+                    ScheduleState, SettingSwitch, SpotName, StatusChanged, StayView, Suggestion, TimeModel,
+                    WhereView)
 
+# P5 (spec A.3): the only place a new output class can be lost (an unlisted class is silently dropped)
 _OUTPUT_ORDER = (MarkResult, NameEcho, NightlyDone, NightlyFailed, NodeCommand, NightLearningChanged,
-                 ReviewChanged, StatusChanged, DebugMapChanged, SaveRequested)
-_REASON_PRIORITY = {"nightly": 0, "label": 1, "name": 2, "review": 3, "night_learning": 4, "start": 5}
+                 AnswerIgnored, ReviewChanged, AdvancedChanged, PushRequest, StatusChanged, DebugMapChanged,
+                 SaveRequested)
+_REASON_PRIORITY = {"nightly": 0, "label": 1, "name": 2, "review": 3, "push": 3, "night_learning": 4, "start": 5}
 P4_STEP_MS = 1000                # night evidence, Night learning timers and the review are looked at this often
 MARK_MIN_INTERVAL_MS = 10000     # a second accepted press within this time is refused ('too_soon')
 
@@ -53,8 +63,9 @@ def _hhmm(minute: Optional[int]) -> Optional[str]:
 
 class Learner:
     def __init__(self, params: Params = DEFAULT_PARAMS, time_model: TimeModel = FixedOffsetTime(0),
-                 state: Optional[dict] = None) -> None:
+                 state: Optional[dict] = None, p5params: P5Params = DEFAULT_P5) -> None:
         p = self.p = params
+        self.p5params = p5params                            # P5 parameters (a separate dataclass, spec D4)
         self.tm = time_model
         self.geom = GridGeom(p)
         self.grids = Grids(p, self.geom)
@@ -66,7 +77,10 @@ class Learner:
         self.label_list: list = []
         self.window = {"start": p.default_window_min[0], "end": p.default_window_min[1], "sched": None}
         self.night_m = NightModel(p, time_model)           # P4: onsets, wakes, the night-window proposal
-        self.review = ReviewModel(p, time_model)           # P4: review items, suppressions, zones
+        self.p5 = P5State(p5params.later_max, p5params.tags_max)   # P5: the persisted `p5` section (spec 9.2)
+        self.review = ReviewModel(p, time_model, p5params, self.p5)   # P4/P5: review items, suppressions, zones
+        self.planner = PushPlanner(self.p5, p5params)      # P5: when a push request is due (spec 6.2)
+        self.guests_ctx: Optional[bool] = None             # the `guests` context (RAM, as before); spec 7.3
         self.nl = NightLearning(p, time_model)             # P4: Night learning (off by default)
         self.bh.on_walk = self._on_walk
         self.bh.on_death = self.night_m.note_death
@@ -92,6 +106,11 @@ class Learner:
         self.last_mark_ms: Optional[int] = None      # core time of the last accepted press
         self.nightly_errors = 0                      # nightly runs that raised (RAM, since start)
         self._nl_next: Optional[int] = None          # next core time to check for the nightly run
+        self._paused_on = False                      # the guests pause as applied to the evidence (spec 7.3)
+        self._pause_init = False                     # the pause is applied at the first event (also after a load)
+        self.adv_sig: tuple = ()                     # the AdvancedChanged signature last emitted (default: none)
+        self._adv_cache: Optional[tuple] = None      # (key, entries) for the per-second Advanced check
+        self.items_now: list = []                    # the review items of the last check (RAM)
         if state is not None:
             load_state(self, state)
 
@@ -128,6 +147,7 @@ class Learner:
             # a stale boot clock before the first NTP sync, would date everything from 1970)
             self.created_ms = now
             self.created_ord = self.tm.local(now).date_ord
+        self._pause_sync(now)
         force = self._maybe_nightly(outs)
         if isinstance(event, FramesMessage):
             try:
@@ -147,16 +167,21 @@ class Learner:
                 if type(v) is int and 0 <= v < 1440:
                     self.window[key] = v
             self.nl.on_schedule(self, now, outs, event.sched is not None)
+            self.review.touch()                              # zones freeze while the schedule is ON (the proposals read it)
             p4_now = True
         elif isinstance(event, ContextState):
             if event.name == "home_empty":
                 self.obs.set_context(None if event.value is None else bool(event.value), now)
             elif event.name in ("lights_off", "sleep_hint", "guests"):
-                self.night_m.on_context(event.name, None if event.value is None else bool(event.value), now)
+                val = None if event.value is None else bool(event.value)
+                self.night_m.on_context(event.name, val, now)
+                if event.name == "guests":
+                    self.guests_ctx = val                      # P5: learning is paused while this or the switch is on
+                    self._apply_pause(now)
         elif isinstance(event, LuxSample):
             self.night_m.on_lux(event.lux, now)
         elif isinstance(event, ReviewSelect):
-            if event.item in (None, "night_window", "bed_needs_data"):
+            if event.item is None or event.item in ITEM_IDS or self.review.open_tier2(self, event.item):
                 if (event.item, True) != (self.review.select, self.review.select_chosen):
                     self.review.select = event.item
                     self.review.select_chosen = True
@@ -165,9 +190,26 @@ class Learner:
         elif isinstance(event, ReviewAnswer):
             if self.review.answer(self, event, outs, now):
                 refresh_places_now(self)
+                self.review.touch()                        # the refresh changed suggestions the item list reads
                 self.rv_dirty = True
                 outs.append(SaveRequested("review"))
             force = p4_now = True
+        elif isinstance(event, NightTimeEdit):
+            self.review.night_edit(self, event, outs)
+            p4_now = True
+        elif isinstance(event, SettingSwitch):
+            if event.name in SETTING_NAMES:
+                if self.p5.set_setting(event.name, event.on):
+                    self.review.touch()
+                    outs.append(SaveRequested("review"))
+                if event.name == "guests_pause":
+                    self._apply_pause(now)
+                self.rv_dirty = True                       # the night-window item shows the switch-on box
+                force = p4_now = True                      # the status attributes carry the settings
+        elif isinstance(event, PushAck):
+            if self.planner.ack(event.seq, event.target):
+                outs.append(SaveRequested("push"))
+            p4_now = True
         elif isinstance(event, NightLearningSwitch):
             self.nl.switch(self, bool(event.on), now, outs)
             force = p4_now = True
@@ -175,6 +217,8 @@ class Learner:
             if not self.nl.on_result(self, event, now, outs):
                 if self.review.window_result(event):
                     self.rv_dirty = True
+                    if event.ok:
+                        outs.append(SaveRequested("review"))   # p5.nw_applied changed
             force = p4_now = True
         elif isinstance(event, MarkPress):
             self._mark(outs)
@@ -194,6 +238,7 @@ class Learner:
         if self.created_ms is None:
             return []                        # fresh learner: nothing before the first event
         outs: list = []
+        self._pause_sync(now)
         force = self._maybe_nightly(outs)
         self._run(self.obs.tick(now))
         force = self._p4_step(outs, now, False) or force
@@ -208,7 +253,43 @@ class Learner:
         self.night_m.step(self, now)
         self.nl.tick(self, now, outs)
         self.rv_dirty = False
-        return self.review.check(self, outs)
+        changed = self.review.check(self, outs)
+        items = self.items_now = self.review.items(self)
+        adv = self._advanced_cached()
+        if adv != self.adv_sig:
+            self.adv_sig = adv
+            outs.append(AdvancedChanged(adv))
+            changed = True
+        self.planner.step(self, items, now, outs)
+        return changed
+
+    def _advanced_cached(self) -> tuple:
+        """The Advanced entries for the per-second check: cached by what they depend on (every change through the
+        review model bumps ``review.ver``; a label made by 'Mark spot here' calls ``review.touch()``)."""
+        rv = self.review
+        key = (rv.ver, self.night, rv._today(self), len(self.label_list), len(rv.zones), len(rv.suppressions),
+               len(self.ns.suggestions), len(self.p5.real))
+        c = self._adv_cache
+        if c is not None and c[0] == key:
+            return c[1]
+        adv = advanced_entries(self)
+        self._adv_cache = (key, adv)
+        return adv
+
+    # ------------------------------------------------------------ the guests pause (spec 7.3)
+    def _pause_sync(self, now_ms: int) -> None:
+        if not self._pause_init:
+            self._pause_init = True
+            self._apply_pause(now_ms)
+
+    def _apply_pause(self, now_ms: int) -> None:
+        """Learning is paused while the switch 'Guests present - pause learning' or the `guests` context is on. The
+        evidence guards judge the pause at the time of the evidence (``Behaviours.paused_in``), not at commit time."""
+        on = bool(self.p5.setting("guests_pause")) or self.guests_ctx is True
+        if on != self._paused_on:
+            self._paused_on = on
+            self.obs.set_paused(on)
+            self.bh.set_paused(on, now_ms / 1000.0)
 
     def export_state(self) -> dict:
         return export_state(self)
@@ -222,7 +303,92 @@ class Learner:
         shadow = [s for s in self.suggestions() if s.state == "shadow"]
         doors = tuple((s.cx_m, s.cy_m) for s in shadow if s.type == "entry_zone")
         return DebugMapData(g.nx, g.ny, g.cell, g.x0, g.y0, tuple(dr), frozenset(self.ns.envelope),
-                            self.candidates(), tuple(shadow), self.labels(), doors, 60.0)
+                            self.candidates(), tuple(shadow), self.labels(), doors, 60.0, self._map_zones())
+
+    def _map_zones(self) -> tuple:
+        """((cells, is_bed), ...) of the confirmed zone records and labels (spec A.6)."""
+        out = [(frozenset(z["cells"]), z["kind"] == "bed") for z in sorted(self.review.zones, key=lambda r: r["zid"])]
+        out += [(frozenset(lb["cells"]), lb["kind"] == "bed") for lb in sorted(self.label_list, key=lambda d: d["id"])]
+        return tuple(out)
+
+    # ------------------------------------------------------------ P5 interface (spec A.8)
+    def zones(self) -> tuple:
+        """ZoneView of every confirmed zone: the records (ordered by zid), then the labels (ordered by id)."""
+        return zones_mod.zone_views(self)
+
+    def advanced(self) -> tuple:
+        """AdvancedEntry, in the order of spec 2.10; empty until the setup review is ready."""
+        return advanced_entries(self)
+
+    def review_map(self, selected: Optional[str] = None, live: bool = False) -> DebugMapData:
+        """The debug map data with the five P5 fields (spec 2.9, A.6). ``selected`` is an item id, a zone or label id
+        (the highlight is then that zone) or None (the learner's own selection); ``live`` adds the live markers."""
+        base = self.debug_map()
+        sel = selected if selected is not None else self.review.selected(self)
+        items = [i for i in self.review.items(self) if i.tier == 2]
+        hl = self._highlight_cells(sel)
+        others = tuple(c for c, i in ((self._item_cells(i), i) for i in items) if c and i.id != sel)
+        focus = None
+        if hl:
+            focus = zones_mod.cells_centroid(self, hl)
+        return replace(base, others=others, highlight=hl if hl else frozenset(), focus=focus,
+                       live=self.live_view() if live else ())
+
+    def _item_cells(self, item) -> Optional[frozenset]:
+        return where_mod.item_cells(self, item)
+
+    def _highlight_cells(self, sel: Optional[str]) -> Optional[frozenset]:
+        """The cells of the selected item: a place, merge or modify item shows its suggestion; a zone or a label its own
+        cells; the night-window item, the bed item and None highlight nothing. A suggestion id that is not an open item
+        any more (a push head that was answered) is still drawn."""
+        if sel is None or sel in ITEM_IDS:
+            return None
+        if sel.startswith("mrg-"):
+            s = zones_mod.suggestion_of(self, sel[4:])
+        elif sel.startswith("mod-"):
+            z = zones_mod.find_record(self, sel[4:])
+            s = zones_mod.suggestion_of(self, z["ref"]) if z is not None else None
+        else:
+            s = zones_mod.suggestion_of(self, sel)
+            if s is None:
+                z = zones_mod.find_record(self, sel)
+                if z is not None:
+                    return frozenset(z["cells"])
+                lb = zones_mod.find_label(self, sel)
+                return frozenset(lb["cells"]) if lb is not None else None
+        return frozenset(s["cells"]) if s is not None else None
+
+    def where_am_i(self, selected: Optional[str] = None) -> WhereView:
+        """Where the single confirmed track is (spec 2.7)."""
+        return where_mod.where_am_i(self, selected)
+
+    def live_view(self) -> tuple:
+        """((x_m, y_m, stay), ...) of the confirmed live tracks while "learning", else ()."""
+        return where_mod.live_view(self)
+
+    def reset(self) -> "Learner":
+        """Forget all (spec 7.2 step 2, D40): a new learner that carries over exactly the node's window mirror, the four
+        settings and the push counters ``seq`` and ``acked``; everything else is fresh."""
+        fresh = Learner(self.p, self.tm, None, self.p5params)
+        fresh.window = dict(self.window)
+        kept = self.p5.reset_for_forget()
+        fresh.p5.settings = kept.settings
+        fresh.p5.push = kept.push
+        fresh.review.touch()
+        return fresh
+
+    def review_state(self) -> tuple:
+        """(items: tuple of ReviewItem, selected: Optional[str]) as of now, also before the first step."""
+        items = self.review.items(self)
+        return tuple(items), self.review.selected(self, items)
+
+    def push_request(self) -> PushRequest:
+        """The current push request (spec 6.2): the stored counters and head, ``count`` = the open items now."""
+        return self.planner.request(self.review.items(self))
+
+    def paused_stays(self) -> int:
+        """Stays dropped by the guests pause (spec 7.3). ``counters()`` is not changed by it."""
+        return self.bh.paused_stays
 
     def suggestions(self) -> tuple:
         out = []
@@ -330,6 +496,7 @@ class Learner:
         except Exception as exc:
             # contained: the event that triggered the run is processed, the run is not retried every
             # minute, and the next night tries again; the shell logs where it failed
+            self.review.touch()
             self.nightly_errors += 1
             self.last_run_ord = lt.date_ord
             self.night = night
@@ -372,6 +539,7 @@ class Learner:
                         labels_mod.link_one(s, self.label_list, self.geom)
                     if lb["kind"] == "bed":
                         refresh_places_now(self)               # the OA 7.4 freeze applies at once
+                    self.review.touch()
                     self.rv_dirty = True
                 # else the spot is marked already: the press changes nothing
                 self.last_mark_ms = now
@@ -425,6 +593,7 @@ class Learner:
                                                         self.p.label_match_m)
         today = self.tm.local(now).date_ord if self.now is not None else None
         covered = len(obs.covered_dates(today)[-self.p.retention_covered_days:]) if today is not None else 0
+        rv = self.review.attributes(self)
         return {
             "version": APP_VERSION, "schema": SCHEMA_VERSION, "mode": "shadow",
             "state_since": _utc_min(self.state_since_ms),
@@ -449,11 +618,17 @@ class Learner:
             "nightly_errors": self.nightly_errors,
             "radar_valid": self._state_now() == "learning",
             "night": self._night_attributes(),
-            "review": self.review.attributes(self),
+            "review": rv,
             "night_learning": {"active": self.nl.active, "set_by_learner": self.nl.set_by,
                                "until": date.fromordinal(self.nl.until_ord).isoformat()
                                if self.nl.until_ord is not None else None,
                                "phase": self.nl.phase, "last_event": self.nl.last_event},
+            # P5 (spec A.9): counts and switches only, no name, no time, no coordinate
+            "zones_total": len(self.review.zones) + len(self.label_list),
+            "pending_places": rv["tier2"],
+            "learning_paused": self._paused_on,
+            "settings": {name: bool(self.p5.settings.get(name, False)) for name in SETTING_NAMES},
+            "pet_spots": sum(1 for s in shadow if s["kind"] == "pet"),
         }
 
     def _night_attributes(self) -> dict:

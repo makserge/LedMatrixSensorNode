@@ -19,6 +19,11 @@ automation) that acts at simulated times, like the P3 ``LabelPlanner``:
 
 Every actor records what it did and what the learner showed right after (``summary``); ``replay.evaluate_p4`` turns
 that into the numbered P4 checks.
+
+P5 (``replay.p5_scenarios``): the actors of the P5 jobs are built on the same ``Actor`` interface; ``make_actors`` hands a
+job whose script starts with ``p5`` to ``p5_scenarios.make_actors``. ``Actor.readback`` also gives the P5 view of the
+learner (``zone_views``, ``advanced``, ``push``) and the 'mark' script records the kinds of the confirmed zones after
+each press (``zone_kinds``), which P5-5b and P5-5c read.
 """
 from __future__ import annotations
 
@@ -165,9 +170,20 @@ class Actor:
         except Exception:
             return {}
         rv = a.get("review") or {}
-        return {"night": a.get("nights"), "items": rv.get("items"), "selected": rv.get("selected"),
-                "bed_item": rv.get("bed_item"), "bed": rv.get("bed"), "zones": rv.get("zones"), "labels": nl,
-                "bed_places": sugg}
+        out = {"night": a.get("nights"), "items": rv.get("items"), "selected": rv.get("selected"),
+               "bed_item": rv.get("bed_item"), "bed": rv.get("bed"), "zones": rv.get("zones"), "labels": nl,
+               "bed_places": sugg}
+        # P5 (spec 11.6): the confirmed zones as plain dicts (records, then labels), the Advanced entry ids and the
+        # push request. ``zones`` above keeps its P4 meaning (the number of zone records), so the view is
+        # ``zone_views``. A learner without the P5 accessors (a stub) leaves these keys out.
+        try:
+            from .p5_scenarios import push_dict, zone_dict
+            out["zone_views"] = [zone_dict(v) for v in L.zones()]
+            out["advanced"] = [e.id for e in L.advanced()]
+            out["push"] = push_dict(L.push_request())
+        except Exception:
+            pass
+        return out
 
     def zones(self) -> list:
         try:
@@ -384,7 +400,9 @@ class MarkScript(Actor):
             rb = self.readback()
             rec = {"t": t, "ok": o.ok, "reason": o.reason, "kind": o.kind, "labels_before": nlabels,
                    "labels_after": rb.get("labels"), "bed_item": rb.get("bed_item"), "bed": rb.get("bed"),
-                   "night": rb.get("night")}
+                   "night": rb.get("night"),
+                   # P5-5b/5c: the kinds of the confirmed zones right after the press (None: no P5 accessor)
+                   "zone_kinds": ([v["kind"] for v in rb["zone_views"]] if "zone_views" in rb else None)}
             st.results.append(rec)
             if (st.stop == "first" or (st.stop == "ok" and o.ok)
                     or (st.stop.startswith("reason:") and o.reason == st.stop[7:])):
@@ -527,6 +545,9 @@ class PlaceUser(Actor):
 def make_actors(job) -> list:
     """The actors of a job's scenario (none for a P3 job and for 'base')."""
     s = job.script
+    if s.startswith("p5"):
+        from . import p5_scenarios
+        return p5_scenarios.make_actors(job)
     if s in ("nl", "nop2"):
         return [NightLearningUser()]
     if s == "mark":

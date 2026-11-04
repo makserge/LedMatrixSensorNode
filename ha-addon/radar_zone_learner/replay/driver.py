@@ -18,6 +18,13 @@ samples (``JobSpec.lux``) and a scenario (``JobSpec.script``): actors such as th
 'Mark spot here' presses and the answers to place suggestions act like the label planner below. After every
 nightly run a P4 job also records the learner's night evidence, proposal, review state and zones (``p4``).
 
+P5 additions (P5 spec 11.6; ``replay.p5_scenarios``): the default learner factory is ``LearnerFactory`` (a module-level
+class, so a job crosses the spawn boundary of the worker pool as it is): it builds ``Learner(params, time_model, state,
+P5Params(zone_change_items=job.zone_change_items))``. ``Run.restart_learner()`` is an add-on restart (export, JSON round
+trip, a new learner from the state, the node's retained topics fed again). A P5 job also records, after every nightly
+run, the review items, the zones, the Advanced ids, the push request, the suppressions and the ``p5`` section
+(``rec["p5"]``), and over the whole run the push requests, the refused answers and the restarts (``result["p5"]``).
+
 Labels (D37): a desk label in both worlds (``SpotName("Desk")`` at the start of the first desk session of
 >= 20 min on a work-from-home day, then ``MarkPress`` every 30 s from 60 s after its start until a
 ``MarkResult(ok=True)`` or the session ends, then on later such sessions until success), and in the bedroom a
@@ -29,6 +36,7 @@ from __future__ import annotations
 
 import datetime
 import heapq
+import json
 import time
 import traceback
 from dataclasses import asdict
@@ -41,6 +49,7 @@ from radar_zone_learner.core.types import (ContextState, FixedOffsetTime, MarkPr
                                            SpotName)
 
 from . import p4_scenarios as P4
+from . import p5_scenarios as P5
 from . import world as W
 from .framegen import BASE_MS, DAY_MS, OBSERVE_MS, RunStream
 from .jobs import JobSpec
@@ -181,6 +190,30 @@ class LabelPlanner:
             st["fails"][res.reason] = st["fails"].get(res.reason, 0) + 1
 
 
+class LearnerFactory:
+    """The default learner of a job: ``Learner(params, time_model, state, P5Params(...))`` with the job's P5 parameters.
+
+    A class at module level (not a lambda or a closure), so that it is picklable: the job crosses the process boundary
+    of the worker pool (``run_task``) and the factory is built from it in the worker. ``state`` is None for a new run
+    and the exported state of a restart (``Run.restart_learner``).
+    """
+
+    def __init__(self, zone_change_items: bool = False):
+        self.zone_change_items = bool(zone_change_items)
+
+    @classmethod
+    def for_job(cls, job: JobSpec) -> "LearnerFactory":
+        return cls(job.zone_change_items)
+
+    def p5params(self):
+        from radar_zone_learner.core.params import P5Params
+        return P5Params(zone_change_items=self.zone_change_items)
+
+    def __call__(self, params, time_model, state=None):
+        from radar_zone_learner.core.learner import Learner
+        return Learner(params, time_model, state, self.p5params())
+
+
 class Run:
     """One replay run of (job, seed). ``run()`` feeds the learner until night ``stop_night``."""
 
@@ -210,12 +243,9 @@ class Run:
         self.inject = []                 # heap of (abs_ms, seq, event): the node's echoes and results
         self.inject_seq = 0
         self.review_items = {}           # id -> ReviewItem of the last ReviewChanged
-        if learner_factory is None:
-            from radar_zone_learner.core.learner import Learner
-
-            def learner_factory(p, tm):
-                return Learner(p, tm)
-        self.learner = learner_factory(params, FixedOffsetTime(0))
+        # the factory takes (params, time_model) for a new learner and a third argument, the exported state, for a restart
+        self.factory = learner_factory if learner_factory is not None else LearnerFactory.for_job(job)
+        self.learner = self._new_learner(None)
         self.nights = []
         self.status = "running"
         self.core_errors = 0
@@ -229,6 +259,28 @@ class Run:
         self.cpu0 = None
         self.wall0 = None
         self.counts = {"handle": 0, "tick": 0, "presses": 0}
+        # P5: what the node and the contexts said last (fed again after a restart), the recorder, the restarts
+        self.node_online = True
+        self.home_empty = False
+        self.restarts = []
+        self.p5 = P5.P5Recorder() if job.is_p5 else None
+
+    def _new_learner(self, state: Optional[dict]):
+        if state is None:
+            return self.factory(self.params, FixedOffsetTime(0))
+        return self.factory(self.params, FixedOffsetTime(0), state)
+
+    def restart_learner(self) -> None:
+        """The add-on restarts (P5 spec 11.6): the learner's state goes through a JSON round trip into a new learner
+        with the same parameters and time model, and what the broker keeps retained for it (the node's status and
+        schedule, the ``home_empty`` context) is fed again, as the shell does after a connect. Everything that lives
+        in the learner's RAM only (the selected review item, the spot name, pending commands, the tracker) is lost."""
+        state = json.loads(json.dumps(self.learner.export_state(), separators=(",", ":")))
+        self.learner = self._new_learner(state)
+        self.restarts.append({"t": self.now - BASE_MS, "night": self.last_night})
+        self.feed(NodeStatus(self.node_online, self.now))
+        self.feed(ScheduleState(self.node.sched, self.node.start_min, self.node.end_min, self.now))
+        self.feed(ContextState("home_empty", self.home_empty, self.now))
 
     # ------------------------------------------------------------ feeding
     def _process(self, outs) -> None:
@@ -245,6 +297,8 @@ class Run:
                     heapq.heappush(self.inject, (t, self.inject_seq, ev))
             elif isinstance(o, ReviewChanged):
                 self.review_items = {i.id: i for i in o.items}
+            if self.p5 is not None:
+                self.p5.on_output(o, self.now - BASE_MS)
             for a in self.actors:
                 a.on_output(o)
 
@@ -271,6 +325,10 @@ class Run:
         self.counts["handle"] += 1
         if isinstance(ev, MarkPress):
             self.counts["presses"] += 1
+        elif isinstance(ev, NodeStatus):
+            self.node_online = bool(ev.online)
+        elif isinstance(ev, ContextState) and ev.name == "home_empty":
+            self.home_empty = ev.value
         self._call(self.learner.handle, ev)
 
     def _tick(self, t: int) -> None:
@@ -413,6 +471,8 @@ class Run:
                "counters": self._counters()}
         if self.job.is_p4:
             rec["p4"] = self._p4_night(rec)
+        if self.job.is_p5:
+            rec["p5"] = self._p5_night(rec)
         self.nights.append(rec)
         self.truth.forget_regions_before(night - 1)
         for a in self.actors:
@@ -451,6 +511,58 @@ class Run:
             "suppressions": [s.get("type") for s in st.get("suppressions", [])],
             "bed_named": bed_named,
         }
+
+    def _p5_night(self, rec: dict) -> dict:
+        """What the learner shows after a nightly run for the P5 checks: the open items with their revisions, the
+        zones, the Advanced ids, the push request, the suppressions and the ``p5`` section, a few status values (the
+        accessors are the learner's own; a missing one leaves its key out)."""
+        L = self.learner
+        out = {}
+        try:
+            items, sel = L.review_state()
+            out["items"] = []
+            for i in items:
+                it = {"id": i.id, "rev": i.rev, "type": i.type, "tier": i.tier, "tag": i.data.get("tag", "")}
+                if i.tier == 1:                  # the texts and times of the two fixed items (P5-5 a and h)
+                    it["data"] = {k: v for k, v in i.data.items() if v is None or isinstance(v, (str, int, float, bool))}
+                out["items"].append(it)
+            out["selected"] = sel
+        except Exception:
+            pass
+        try:
+            out["zones"] = [P5.zone_dict(v) for v in L.zones()]
+            out["advanced"] = [e.id for e in L.advanced()]
+            out["push_request"] = P5.push_dict(L.push_request())
+            out["paused_stays"] = L.paused_stays()
+        except Exception:
+            pass
+        try:
+            st = L.export_state()
+            p5 = st.get("p5") or {}
+            out["suppressions"] = [dict(x) for x in st.get("suppressions", [])]
+            out["next_zone_n"] = (st.get("review") or {}).get("next_zone_n")
+            out["p5"] = {"masks": p5.get("masks", {}), "push": p5.get("push"), "settings": p5.get("settings"),
+                         "later": len(p5.get("later", {})), "tags_n": (p5.get("tags") or {}).get("n"),
+                         "real": len(p5.get("real", [])), "nw_applied": p5.get("nw_applied")}
+        except Exception:
+            pass
+        try:
+            stat = L.status()
+            a = stat.attributes
+            rv = a.get("review") or {}
+            out["status"] = {"state": stat.state, "radar_valid": a.get("radar_valid"),
+                             "covered_days": a.get("covered_days"), "observed_h_24h": a.get("observed_h_24h"),
+                             "learning_paused": a.get("learning_paused"), "zones_total": a.get("zones_total"),
+                             "pending_places": a.get("pending_places"), "pet_spots": a.get("pet_spots"),
+                             "stale_answers": rv.get("stale_answers"), "tier2": rv.get("tier2"),
+                             "advanced": rv.get("advanced"), "more": rv.get("more"),
+                             "command_pending": rv.get("command_pending"), "settings": a.get("settings")}
+            if self.job.script == "p5rej":       # the rejected suggestion is absent from both once it is stale
+                out["status_sugg_ids"] = [x["id"] for x in a.get("suggestions", [])]
+                out["map_sugg_ids"] = [x.id for x in L.debug_map().suggestions]
+        except Exception:
+            pass
+        return out
 
     def _p4_result(self) -> dict:
         tl = self.stream.timeline
@@ -516,6 +628,8 @@ class Run:
         }
         if self.job.is_p4:
             res["p4"] = self._p4_result()
+        if self.p5 is not None:
+            res["p5"] = self.p5.result(self.restarts)
         return res
 
     def _seated_capture(self, n_last: int):

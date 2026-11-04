@@ -3,6 +3,10 @@
 Schema 4 adds the top-level sections ``zones``, ``suppressions`` and ``review`` and fills ``night`` (night_lux,
 onsets, wakes, activity bins, proposal_rev, night_learning). A v3 file loads through ``migrate_3_to_4``.
 
+P5 adds no schema version (D2): an optional top-level section ``p5`` after ``settings`` (written only when it differs
+from the defaults, see ``core/p5state.py``) and optional keys in zone records (``poly_cm``, ``rev``, ``upd``, ``srev``,
+``also``); a P4 file loads with the defaults, a P5 file loads in 0.4.0 (which keeps unknown sections).
+
 export_state() builds a fresh JSON-serialisable dict (it never shares mutable objects with the
 learner); load_state() validates a dict and loads it into a fresh learner, raising StateError.
 Tracks, pending stays, fragment buffers, the 24 h fragment list, timelines and epochs are RAM only.
@@ -13,12 +17,15 @@ import copy
 import math
 from datetime import date
 
+from . import geometry
 from . import nightlearn as nightlearn_mod
 from . import night as night_mod
+from . import rejections
 from . import review as review_mod
 from .covis import Covis
 from .extraction import NightState
 from .grids import GRID_NAMES, decode_array, encode_array, rle_decode, rle_encode
+from .p5state import P5State
 from .params import DEFAULT_PARAMS, params_digest
 from .types import APP_VERSION, MIN_SCHEMA_VERSION, SCHEMA_VERSION, StateError
 
@@ -27,7 +34,8 @@ TOP_KEYS = (("schema", int), ("writer", str), ("phase", str), ("params", str), (
             ("stays", list), ("door_events", list), ("ghost_events", list), ("candidates", list),
             ("doors_prev", list), ("outline", dict), ("suggestions", list), ("labels", list),
             ("zones", list), ("suppressions", list), ("review", dict), ("night", dict), ("settings", dict))
-TOP_NAMES = tuple(k for k, _ in TOP_KEYS)
+OPTIONAL_KEYS = (("p5", dict),)                                 # present only when P5 data exists (spec 9.1)
+TOP_NAMES = tuple(k for k, _ in TOP_KEYS) + tuple(k for k, _ in OPTIONAL_KEYS)
 
 STAY_KEYS = (("t0", int), ("t1", int), ("dur", int), ("x", int), ("y", int), ("sd", int), ("nf", int),
              ("ld", (int, float)), ("he", (int, float)), ("exit", str), ("arr", str), ("day", str))
@@ -103,7 +111,7 @@ def export_state(L) -> dict:
     out = {
         "schema": SCHEMA_VERSION,
         "writer": "radar_zone_learner " + APP_VERSION,
-        "phase": "p4",
+        "phase": "p5",
         "params": params_digest(L.p),
         "meta": {"created_date": _iso(L.created_ord), "created_ms": L.created_ms,
                  "last_extraction_date": _iso(L.last_run_ord), "night": L.night,
@@ -133,6 +141,8 @@ def export_state(L) -> dict:
         "night": night,
         "settings": {"spot_name": L.spot_name},
     }
+    if not L.p5.is_default():                          # a fresh learner exports exactly what P4 exported
+        out["p5"] = L.p5.export()
     for k, v in L.extra.items():
         out[k] = copy.deepcopy(v)
     return out
@@ -227,6 +237,9 @@ def load_state(L, d: dict) -> None:
         if k not in d:
             _fail("missing " + k)
         if not _is_type(d[k], t):
+            _fail("bad type of " + k)
+    for k, t in OPTIONAL_KEYS:
+        if k in d and not _is_type(d[k], t):
             _fail("bad type of " + k)
     nc = L.geom.nc
     G = L.grids
@@ -399,10 +412,22 @@ def load_state(L, d: dict) -> None:
     night_mod.validate(night, L.p)
     nightlearn_mod.validate(night.get("night_learning"), L.p)
     review_mod.validate_sections(d["zones"], d["suppressions"], d["review"], nc, T_MIN_S, T_MAX_S)
+    if "p5" in d:
+        P5State.validate(d["p5"], nc)
+    # P4 zone records get the P5 defaults (spec 9.3): rev 0, upd = night, no also, the polygon of the cells, and srev =
+    # the current rev of the ref suggestion, so that upgrading never makes a modify proposal appear
+    sug_rev = {s["id"]: s["rev"] for s in suggestions}
     zones = []
     for z in d["zones"]:
         rec = dict(z)
         rec["cells"] = _cells(z["cells"], nc, "zone")
+        rec.setdefault("rev", 0)
+        rec.setdefault("upd", rec["night"])
+        rec.setdefault("also", [])
+        if "poly_cm" not in rec:
+            rec["poly_cm"] = geometry.polygon_cm(rec["cells"], L.geom, 0.1, L.p.poly_max_vertices) \
+                if rec["cells"] else []
+        rec.setdefault("srev", sug_rev.get(rec["ref"], 0))
         zones.append(rec)
 
     # all checks passed: load
@@ -441,4 +466,8 @@ def load_state(L, d: dict) -> None:
     L.night_m.load(night)
     L.nl.load(night["night_learning"])
     L.review.load(zones, d["suppressions"], d["review"])
+    if "p5" in d:
+        L.p5.load(d["p5"], nc)
+    rejections.fill_masks(L)                           # a P4 place suppression gets the mask of its suggestion
+    L.review.touch()
     L.extra = {k: copy.deepcopy(v) for k, v in d.items() if k not in TOP_NAMES}

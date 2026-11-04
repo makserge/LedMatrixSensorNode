@@ -189,6 +189,36 @@ class Params:
 DEFAULT_PARAMS = Params()
 
 
+@dataclass(frozen=True, slots=True)
+class P5Params:
+    """P5 parameters (P5 spec A.7). A separate dataclass on purpose: ``Params``, its ``repr`` and ``params_digest``
+    (written into every state file) do not change (D4). Times of day are minutes of the local day."""
+    review_max_places: int = 12           # tier-2 items shown at once (spec 2.2)
+    later_max: int = 400                  # snoozed items and tags kept (spec 9.3)
+    tags_max: int = 400
+    zones_also_max: int = 8               # suggestion ids merged into one zone (spec 4.1)
+    zone_change_items: bool = False       # merge and modify sources of spec 4.7 (D14): off in production until P7
+    merge_min_r: float = 0.6
+    modify_max_iou: float = 0.6
+    reject_reask_factor: float = 2.0      # spec 5.2
+    reject_reask_nights: int = 30
+    real_place_max: int = 50              # spec 5.4
+    advanced_max: int = 60                # spec 2.10
+    advanced_max_rejections: int = 20
+    advanced_max_reflections: int = 10
+    push_after_min: int = 480             # 08:00 local (D19)
+    push_before_min: int = 1260           # 21:00 local
+    push_min_items: int = 2               # OA 7.9: the setup push needs at least 2 items
+    anchor_min_minutes: float = 5.0       # spec 2.11
+    anchor_frac: float = 0.25
+    anchor_max_ranges: int = 3
+    pet_min_days: int = 4                 # spec 7.4
+    pet_he_share: float = 0.5
+
+
+DEFAULT_P5 = P5Params()
+
+
 def params_digest(p: Params) -> str:
     """First 12 hex digits of sha256(repr(p)); stored in the state for diagnostics."""
     return hashlib.sha256(repr(p).encode("utf-8")).hexdigest()[:12]

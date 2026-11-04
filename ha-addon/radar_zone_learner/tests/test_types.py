@@ -10,7 +10,7 @@ BASE_MS = 1767571200000      # 2026-01-05 00:00 UTC, a Monday (spec 4.4)
 class TypesTest(unittest.TestCase):
     def test_constants(self):
         self.assertEqual((T.SCHEMA_VERSION, T.MIN_SCHEMA_VERSION), (4, 3))
-        self.assertEqual(T.APP_VERSION, "0.4.0")
+        self.assertEqual(T.APP_VERSION, "0.5.0")
         self.assertEqual(T.STATUS_STATES, ("starting", "learning", "not_observing", "no_data"))
         self.assertEqual(T.MARK_FAIL_REASONS, ("not_observing", "no_stay", "several_stays", "too_soon"))
         self.assertEqual(len(T.SUGGESTION_TYPES), 6)

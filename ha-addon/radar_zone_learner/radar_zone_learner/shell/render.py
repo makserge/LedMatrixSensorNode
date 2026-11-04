@@ -2,8 +2,14 @@
 
 70 x 40 cells at ``SCALE`` 4 give 280 x 160 px. The image has y up: row 0 is the far edge (y = 8 m), the
 radar sits at the bottom centre (x = 0, y = 0) with its +-60 degree field-of-view lines.
-Drawing order: heat, envelope edge, failed candidates, suggestions (cell-edge outlines), door and label
-markers (5 x 5 px), radar marker and field-of-view lines.
+Drawing order: heat, envelope edge, failed candidates, suggestions (cell-edge outlines), then (P5, only
+when the data carry them) the confirmed zones, the other open review items, the highlighted item with a 5 x 5
+marker at its centre, then door and label markers (5 x 5 px), radar marker and field-of-view lines, and last
+the live markers (7 x 7 px).
+
+``render_review`` is ``render`` under the name the review map uses; ``draw_live`` draws the live markers on a
+copy of an already rendered base, so that a live frame costs the markers and the PNG encode only
+(P5 spec 2.8, 2.9).
 """
 from __future__ import annotations
 
@@ -23,6 +29,13 @@ DOOR = 23
 LABEL_MANUAL = 24
 LABEL_BED = 25
 RADAR = 26
+ZONE = 27                                # P5: a confirmed zone (or a label) outline
+HIGHLIGHT = 28                           # P5: the selected review item
+LIVE = 29                                # P5: a live position
+LIVE_STAY = 30                           # P5: a live position that has been still for a while
+ITEM_OTHER = 31                          # P5: an open review item that is not selected
+
+LIVE_HALF = 3                            # 7 x 7 px
 
 _HEAT_STOPS = ((24, 32, 110), (40, 90, 160), (30, 150, 140), (110, 200, 80), (255, 230, 40))
 
@@ -46,8 +59,9 @@ def _heat_ramp() -> list:
 
 PALETTE = ([_hex("#1e1e1e")] + _heat_ramp()
            + [_hex(c) for c in ("#4a4a4a", "#7a7a7a", "#00c8ff", "#ff6ec7", "#a070ff", "#ff8c00",
-                                "#00ff7f", "#ffffff", "#ff6ec7", "#c0c0c0")])
-assert len(PALETTE) == 27
+                                "#00ff7f", "#ffffff", "#ff6ec7", "#c0c0c0",
+                                "#32cd32", "#ffff00", "#ff2a2a", "#ff9f1a", "#6b8cae")])
+assert len(PALETTE) == 32
 
 
 class _Canvas:
@@ -163,6 +177,18 @@ def render(data) -> tuple:
     for s in suggestions:
         cv.outline(s.cells, _suggestion_colour(s))
 
+    # 4b. P5 layers: confirmed zones, the other open items, the highlighted item
+    for cells, is_bed in getattr(data, "zones", ()):
+        cv.outline(cells, BED if is_bed else ZONE)
+    for cells in getattr(data, "others", ()):
+        cv.outline(cells, ITEM_OTHER)
+    highlight = getattr(data, "highlight", None)
+    if highlight:
+        cv.outline(highlight, HIGHLIGHT)
+    focus = getattr(data, "focus", None)
+    if focus is not None:
+        cv.marker(float(focus[0]), float(focus[1]), HIGHLIGHT)
+
     # 5. markers: doors, then labels
     for door in data.doors:
         cv.marker(float(door[0]), float(door[1]), DOOR)
@@ -188,4 +214,31 @@ def render(data) -> tuple:
         cv.line(rc, rr, ec, er, RADAR)
     cv.marker(0.0, 0.0, RADAR)
 
+    # 7. P5: the live positions, on top of everything
+    _draw_live(cv, getattr(data, "live", ()))
+
     return cv.w, cv.h, list(PALETTE), bytes(cv.px)
+
+
+def _draw_live(cv: "_Canvas", live) -> None:
+    for point in live:
+        x, y, stay = point[0], point[1], bool(point[2]) if len(point) > 2 else False
+        cv.marker(float(x), float(y), LIVE_STAY if stay else LIVE, LIVE_HALF)
+
+
+def render_review(data) -> tuple:
+    """``render`` for the review map (P5 spec 2.9): the same raster, drawn under the name the review code uses."""
+    return render(data)
+
+
+def draw_live(base: tuple, data, live) -> tuple:
+    """``(width, height, palette, pixels)`` of ``base`` (a result of ``render``/``render_review`` of ``data`` without
+    live markers) with ``live`` markers drawn on a copy: ``((x_m, y_m, stay), ...)``. ``render`` of data that carry the
+    same markers gives the same pixels."""
+    width, height, palette, pixels = base
+    cv = _Canvas(data)
+    if (cv.w, cv.h) != (width, height):
+        raise ValueError("the base image does not belong to these map data")
+    cv.px = bytearray(pixels)
+    _draw_live(cv, live)
+    return width, height, palette, bytes(cv.px)

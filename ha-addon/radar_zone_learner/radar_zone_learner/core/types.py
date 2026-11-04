@@ -11,18 +11,29 @@ from typing import Optional, Protocol, Union
 
 SCHEMA_VERSION = 4
 MIN_SCHEMA_VERSION = 3            # older files are migrated on load (state.migrate_3_to_4)
-APP_VERSION = "0.4.0"
+APP_VERSION = "0.5.0"
 STATUS_STATES = ("starting", "learning", "not_observing", "no_data")
 SUGGESTION_TYPES = ("dwell_zone", "short_task_zone", "reflection", "ignore_zone", "room_outline", "entry_zone")
-KINDS = ("dwell", "short_task", "bed", "reflection", "ignore", "entry", "outline")
+KINDS = ("dwell", "short_task", "bed", "reflection", "ignore", "entry", "outline", "pet")   # documentation only
 MARK_FAIL_REASONS = ("not_observing", "no_stay", "several_stays", "too_soon")
 
-# P4 review items (OA 7.8): the two that exist before P5, and the ops of ReviewAnswer
+# P4 review items (OA 7.8): the two that exist before P5 (tier 1), and the ops of ReviewAnswer
 ITEM_NIGHT_WINDOW = "night_window"
 ITEM_BED = "bed_needs_data"
 ITEM_IDS = (ITEM_NIGHT_WINDOW, ITEM_BED)
-ANSWER_OPS = ("approve", "reject", "later", "rename", "undo", "forget")   # the shell sends the first three
+ANSWER_OPS = ("approve", "reject", "later", "rename", "undo", "forget", "advanced")   # P4's six + "advanced" (P5)
 NODE_COMMAND_KINDS = ("schedule", "window")
+
+# P5 (spec Appendix A.1): why an answer changed nothing, push request kinds, persistent settings, zone sources and the
+# id grammars (the shell's parser and the core use these same expressions)
+ANSWER_IGNORED_REASONS = ("no_item", "no_such_item", "stale", "not_pending", "not_applicable", "name_needed",
+                          "zone_limit", "times_invalid")
+PUSH_KINDS = ("none", "setup", "daily")
+SETTING_NAMES = ("approve_sched", "guests_pause", "pets", "detail_text")
+ZONE_SRC = ("approve", "mark")           # a record made by approval (merge and modify included) / a label
+ITEM_ID_RE = r"^(night_window|bed_needs_data|s[0-9]{4,}-[0-9]+|mrg-s[0-9]{4,}-[0-9]+|mod-z[0-9]{4,})$"
+ADV_ID_RE = r"^adv:(undo|real|rename|remove):[A-Za-z0-9_-]{1,24}$"
+PUSH_TARGET_RE = r"^[A-Za-z0-9]{1,12}$"  # the blueprint's phone id in the push ack and in PushRequest.acks
 
 
 # ---------------------------------------------------------------- inputs (shell or replay -> core)
@@ -78,12 +89,15 @@ class ReviewSelect:
 
 @dataclass(frozen=True, slots=True)
 class ReviewAnswer:
-    item: Optional[str]       # ITEM_IDS member, a place suggestion id ("s0005-1") or a zone id ("z0001");
-                              # None = the selected item
+    item: Optional[str]       # an item id (ITEM_ID_RE), an Advanced entry id (ADV_ID_RE), a zone id ("z0001") or a
+                              # label id; None = the selected item
     op: str                   # one of ANSWER_OPS
     rev: Optional[int]        # the item's revision the answer was made on; None = not checked
     sched: bool               # night_window approve: also switch the schedule ON ('the box ticked')
     recv_ms: int
+    name: Optional[str] = None   # P5: a name given with the answer (the push's RZ_RENAME, a hand-written message)
+    aid: Optional[str] = None    # P5: answer id; the shell's ring drops a repeat; the core reads only whether it is
+                                 # present (an answer with an aid never uses the name text)
 
 
 @dataclass(frozen=True, slots=True)
@@ -102,8 +116,30 @@ class CommandResult:
     recv_ms: int
 
 
+@dataclass(frozen=True, slots=True)
+class NightTimeEdit:
+    field: str                # "start" | "end": the two time entities of the review device (P5 spec 3.4)
+    minute: int               # 0..1439
+    recv_ms: int
+
+
+@dataclass(frozen=True, slots=True)
+class SettingSwitch:
+    name: str                 # one of SETTING_NAMES: the four persistent switches (P5 spec 3.4, 7.3-7.5)
+    on: bool
+    recv_ms: int
+
+
+@dataclass(frozen=True, slots=True)
+class PushAck:
+    seq: int                  # the blueprint's acknowledgement of a push request (P5 spec 6.4)
+    recv_ms: int
+    target: str = ""          # the phone's id (PUSH_TARGET_RE); "" for a plain "<seq>"
+
+
 InputEvent = Union[FramesMessage, NodeStatus, ScheduleState, ContextState, MarkPress, SpotName, LuxSample,
-                   ReviewSelect, ReviewAnswer, NightLearningSwitch, CommandResult]
+                   ReviewSelect, ReviewAnswer, NightLearningSwitch, CommandResult, NightTimeEdit, SettingSwitch,
+                   PushAck]
 
 
 # ---------------------------------------------------------------- decoded frames batch (core.frames)
@@ -150,7 +186,7 @@ class StatusChanged:
 
 @dataclass(frozen=True, slots=True)
 class DebugMapChanged:
-    reason: str               # "start" | "nightly" | "label"
+    reason: str               # "start" | "nightly" | "label" | "review"
 
 
 @dataclass(frozen=True, slots=True)
@@ -182,7 +218,7 @@ class NightlyFailed:
 
 @dataclass(frozen=True, slots=True)
 class SaveRequested:
-    reason: str               # "nightly" | "label" | "name" | "review" | "night_learning"
+    reason: str               # "nightly" | "label" | "name" | "review" | "push" | "night_learning"
 
 
 @dataclass(frozen=True, slots=True)
@@ -199,12 +235,14 @@ class NodeCommand:
 
 @dataclass(frozen=True, slots=True)
 class ReviewItem:
-    id: str                   # ITEM_IDS member
+    id: str                   # an item id (ITEM_ID_RE): night_window, bed_needs_data, "s0005-1", "mrg-s0005-1", ...
     rev: int
-    type: str                 # same as id before P5
-    data: dict                # night_window: start_min, end_min, saving_pct, current_saving_pct, late_nights,
-                              # late_of, from_lights_off, basis, text; bed_needs_data: start_min, end_min,
-                              # sched, show_window, text
+    type: str                 # night_window | bed_needs_data | dwell_zone | short_task_zone | merge_into | modify_zone
+    data: dict                # flat, hashable values only (P5 spec 2.4). night_window: start_min, end_min, saving_pct,
+                              # current_saving_pct, late_nights, late_of, from_lights_off, basis, text (P5 adds
+                              # edit_start, edit_end, sched_box); bed_needs_data: start_min, end_min, sched,
+                              # show_window, text
+    tier: int = 1             # P5: 1 = night_window, bed_needs_data; 2 = place, merge, modify
 
 
 @dataclass(frozen=True, slots=True)
@@ -222,8 +260,31 @@ class NightLearningChanged:
                                             # review event ``restore_failed`` for restore_failed / restore_overdue
 
 
+@dataclass(frozen=True, slots=True)
+class AnswerIgnored:
+    item: Optional[str]       # P5: why an answer changed nothing; the shell turns it into the review event
+    op: str
+    reason: str               # one of ANSWER_IGNORED_REASONS
+
+
+@dataclass(frozen=True, slots=True)
+class AdvancedChanged:
+    entries: tuple            # AdvancedEntry, in the order of P5 spec 2.10
+
+
+@dataclass(frozen=True, slots=True)
+class PushRequest:            # P5 spec 6.2; no text field by design
+    seq: int
+    acked: int
+    kind: str                 # one of PUSH_KINDS
+    count: int                # open items, tier 1 and 2
+    head_id: Optional[str]    # the first tier-2 item when the request was created, fixed per seq, or None
+    head_rev: Optional[int]
+    acks: tuple = ()          # the targets that acknowledged this seq (at most 8)
+
+
 Output = Union[StatusChanged, DebugMapChanged, MarkResult, NameEcho, NightlyDone, NightlyFailed, SaveRequested,
-               NodeCommand, ReviewChanged, NightLearningChanged]
+               NodeCommand, ReviewChanged, NightLearningChanged, AnswerIgnored, AdvancedChanged, PushRequest]
 
 
 # ---------------------------------------------------------------- read-only views
@@ -297,6 +358,44 @@ class StayView:
 
 
 @dataclass(frozen=True, slots=True)
+class ZoneView:               # Learner.zones(): records (ordered by zid) then labels (ordered by id)
+    id: str                   # "z0001" or "l0001"; stable
+    name: str                 # a label with no name: ""
+    kind: str                 # "bed" | "dwell" | "short_task" | "manual"
+    src: str                  # one of ZONE_SRC: "approve" (a record) | "mark" (a label)
+    ref: Optional[str]        # source suggestion id of a record, else None
+    rev: int                  # record revision; 0 for a label
+    cx_m: float
+    cy_m: float
+    cells: frozenset
+    poly_cm: tuple            # ((x_cm, y_cm), ...), at most 12 vertices; computed for a label
+    created_s: int
+    night: int
+    frozen: bool              # the OA 7.4 predicate
+
+
+@dataclass(frozen=True, slots=True)
+class AdvancedEntry:
+    id: str                   # "adv:<verb>:<target>" (ADV_ID_RE)
+    verb: str                 # "undo" | "real" | "rename" | "remove"
+    kind: str                 # "bed" | "night_window" | "place" | "reflection" | "zone" | "label"
+    target: str               # "bed", "nw", a suggestion id, a zid or a label id
+    name: str                 # zone or label name, else ""
+    tag: str                  # tier-2 tag of the suggestion (kind place or reflection), else ""
+    until: str                # ISO date for night_window, else ""
+    rev: int                  # zone record revision, else 0
+
+
+@dataclass(frozen=True, slots=True)
+class WhereView:              # Learner.where_am_i() (P5 spec 2.7)
+    observing: bool           # the learner state is "learning"
+    people: int               # confirmed live tracks
+    stay_ready: bool          # exactly one stay of >= mark_min_stay_s is in progress (a press would succeed)
+    item: Optional[str]       # an open tier-2 item id, a zone id or a label id, else None
+    item_kind: Optional[str]  # "place" | "zone" | "label" | None
+
+
+@dataclass(frozen=True, slots=True)
 class DebugMapData:
     nx: int                   # 70
     ny: int                   # 40
@@ -310,6 +409,12 @@ class DebugMapData:
     labels: tuple             # Label
     doors: tuple              # ((x_m, y_m), ...)
     fov_deg: float            # 60.0: draws +-60 degree lines from (0, 0)
+    # P5 (spec A.6): trailing defaulted fields. Learner.debug_map() fills only `zones`, Learner.review_map() all five.
+    zones: tuple = ()         # ((cells: frozenset, is_bed: bool), ...) of the confirmed zones and labels
+    others: tuple = ()        # (cells: frozenset, ...) of the open tier-2 items that are not selected
+    highlight: frozenset = frozenset()   # cells of the selected item
+    focus: Optional[tuple] = None        # (x_m, y_m) centroid of the highlight
+    live: tuple = ()          # ((x_m, y_m, stay: bool), ...), only with live=True and the radars observing
 
 
 # ---------------------------------------------------------------- time

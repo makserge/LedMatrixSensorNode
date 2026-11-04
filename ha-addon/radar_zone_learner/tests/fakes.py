@@ -9,7 +9,7 @@ import logging
 from dataclasses import dataclass
 from typing import Optional
 
-from radar_zone_learner.core.types import (DebugMapData, DebugMapChanged, StatusChanged)
+from radar_zone_learner.core.types import (DebugMapData, DebugMapChanged, PushRequest, StatusChanged, WhereView)
 
 
 @dataclass
@@ -168,7 +168,10 @@ def empty_debug_map(**changes) -> DebugMapData:
 
 
 class FakeLearner:
-    """Implements the ``Learner`` signatures of spec 5.3 with scripted outputs."""
+    """Implements the ``Learner`` signatures of spec 5.3 and the P5 accessors (P5 spec A.8) with scripted outputs.
+
+    The P5 accessors return what the test put into the ``p5_*`` attributes (empty by default) and record their
+    calls, so that ``P5Layer`` tests can run without the real core."""
 
     def __init__(self, state: Optional[dict] = None) -> None:
         self.state_in = state
@@ -181,6 +184,20 @@ class FakeLearner:
         self.spot_name = (state or {}).get("settings", {}).get("spot_name", "")
         self.responder = None               # optional callable(event) -> list of outputs (P4 tests)
         self.attributes: dict = {}          # extra keys of status().attributes
+        # P5 accessors (spec A.8): scripted values and call records
+        self.p5_items: tuple = ()           # review_state()[0]: ReviewItem, in review order
+        self.p5_selected: Optional[str] = None   # review_state()[1]
+        self.p5_advanced: tuple = ()        # advanced(): AdvancedEntry
+        self.p5_zones: tuple = ()           # zones(): ZoneView
+        self.p5_where = WhereView(False, 0, False, None, None)   # where_am_i()
+        self.p5_live: tuple = ()            # live_view(): ((x_m, y_m, stay), ...)
+        self.p5_push = PushRequest(0, 0, "none", 0, None, None, ())   # push_request()
+        self.p5_paused_stays = 0            # paused_stays()
+        self.p5_map = None                  # review_map(): a DebugMapData, else empty_debug_map()
+        self.p5_reset_result = None         # reset(): the learner returned, else a new FakeLearner
+        self.map_calls: list = []           # (selected, live) of every review_map() call
+        self.where_calls: list = []         # selected of every where_am_i() call
+        self.resets = 0                     # reset() calls
 
     def handle(self, event) -> list:
         self.events.append(event)
@@ -220,6 +237,37 @@ class FakeLearner:
 
     def counters(self) -> dict:
         return {}
+
+    # --- P5 accessors (spec A.8)
+    def review_map(self, selected: Optional[str] = None, live: bool = False) -> DebugMapData:
+        self.map_calls.append((selected, live))
+        return self.p5_map if self.p5_map is not None else empty_debug_map()
+
+    def where_am_i(self, selected: Optional[str] = None) -> WhereView:
+        self.where_calls.append(selected)
+        return self.p5_where
+
+    def zones(self) -> tuple:
+        return tuple(self.p5_zones)
+
+    def advanced(self) -> tuple:
+        return tuple(self.p5_advanced)
+
+    def live_view(self) -> tuple:
+        return tuple(self.p5_live)
+
+    def review_state(self) -> tuple:
+        return tuple(self.p5_items), self.p5_selected
+
+    def push_request(self) -> PushRequest:
+        return self.p5_push
+
+    def paused_stays(self) -> int:
+        return self.p5_paused_stays
+
+    def reset(self) -> "FakeLearner":
+        self.resets += 1
+        return self.p5_reset_result if self.p5_reset_result is not None else FakeLearner()
 
 
 class FakeNode:

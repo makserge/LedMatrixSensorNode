@@ -47,8 +47,18 @@ VARIANTS = {
     "p4rej": dict(lux=True, script="rej", labels=False),
     "p4names": dict(lux=True, script="names", labels=False),
     "p4nop2": dict(lux=True, script="nop2", labels=False, p2=False),
+    "p5setup": dict(lux=True, script="p5setup", labels=False),
+    "p5ans": dict(lux=True, script="p5ans", labels=False),
+    "p5push": dict(lux=True, script="p5push", labels=False),
+    "p5adv": dict(lux=True, script="p5adv", labels=False),
+    "p5rej": dict(lux=True, script="p5rej", labels=False),
+    "p5zone": dict(lux=True, script="p5zone", labels=False, zone_change_items=True),
+    "p5guests": dict(lux=True, script="p5guests", labels=False),
+    "p5guestsc": dict(lux=True, script="p5guestsc", labels=False),        # the control: no pause
+    "p5pets": dict(lux=True, script="p5pets", labels=False, pet=1),
 }
 P4_VARIANTS = ("p4", "p4nl", "p4mark", "p4app", "p4rej", "p4names", "p4nop2")
+P5_VARIANTS = ("p5setup", "p5ans", "p5push", "p5adv", "p5rej", "p5zone", "p5guests", "p5guestsc", "p5pets")
 ALL_SEEDS = (1, 2, 3, 4, 5)
 MAX_NIGHTS = 28
 NIGHTLY_DAY_FRACTION = 3.5 / 24.0          # the night-N run happens at 03:30 of day N
@@ -73,24 +83,37 @@ class JobSpec:
     script: str = ""           # P4 scenario (replay.p4_scenarios): base nl mark app rej names nop2
     labels: bool = True        # False: no P3 'Mark spot here' labels (desk, bed)
     p2: bool = True            # False: a node without the P2 firmware (no schedule topics)
+    pet: int = 0               # P5: 1 = the world has a dog (``W.make_cfg(pet=1)``)
+    zone_change_items: bool = False    # P5: ``P5Params.zone_change_items`` of the job's learner (merge and modify items)
 
     def cfg(self) -> dict:
         """The simulator world config of this job."""
         return W.make_cfg(bed=1 if self.world == "bed" else 0, Vm=self.vm, Hm=self.hm, gw=self.gw, gs=self.gs,
-                          gi=self.gi, nw=self.window or "", nl=self.nl)
+                          gi=self.gi, pet=self.pet, nw=self.window or "", nl=self.nl)
 
     def extras(self) -> list:
-        """Scripted extra people ``(agent, x, y, t0_s, t1_s)`` for the stream (the 'mark' scenario's two people in
-        bed, OA 12 P4): at 21:00-21:25 of day 8, before the 00:00 window start."""
-        if self.script != "mark":
-            return []
-        t0 = 8 * W.DAY + 21 * 3600
+        """Scripted extra people ``(agent, x, y, t0_s, t1_s)`` for the stream.
+
+        ``mark`` (OA 12 P4): the two people in bed, at 21:00-21:25 of day 8, before the 00:00 window start.
+        ``p5setup`` (P5-4): one person awake in bed (OA 7.6: the user who presses 'Mark spot here' is awake in bed, which
+        the simulator's sleeper is not: it is visible about 5 s in every 600 s, so a press almost never finds a stay), at
+        22:00-23:58 of days 6 to 9, before the 00:00 window start and covering the evening stay of P1, which starts as
+        early as about 22:40. The first setup of the replay is on day 7 in every seed."""
         bx, by = W.SPOT["bed"]
-        return [("X1", bx, by, t0, t0 + 1500), ("X2", round(bx + 0.8, 3), by, t0, t0 + 1500)]
+        if self.script == "mark":
+            t0 = 8 * W.DAY + 21 * 3600
+            return [("X1", bx, by, t0, t0 + 1500), ("X2", round(bx + 0.8, 3), by, t0, t0 + 1500)]
+        if self.script == "p5setup":
+            return [("X1", bx, by, d * W.DAY + 22 * 3600, d * W.DAY + 23 * 3600 + 58 * 60) for d in range(6, 10)]
+        return []
 
     @property
     def is_p4(self) -> bool:
         return bool(self.script)
+
+    @property
+    def is_p5(self) -> bool:
+        return self.script.startswith("p5")
 
     @property
     def window_key(self) -> str:
@@ -148,6 +171,7 @@ PROFILES: dict = {
     "smoke": _jobs(["bed_w0000_0600"], 8, (1,)),
     "quick": _jobs(["bed_w0000_0600", "liv_w0000_0600"], 14, (1, 2, 3)),
     "p4smoke": _jobs(["bed_w0000_0600_p4"], 9, (1,)),
+    "p5smoke": _jobs(["bed_w0000_0600_p5setup"], 9, (1,)),
     "p4": (_jobs(["bed_w0000_0600_p4"], 21, ALL_SEEDS)
            + _jobs(["bed_w2200_0600_p4", "bed_w2300_0700_p4"], 14, ALL_SEEDS)
            + _jobs(["bed_%s_p4nl" % k for k in ("w0000_0600", "w2200_0600", "w2300_0700", "w0000_0700")],
@@ -155,6 +179,16 @@ PROFILES: dict = {
            + _jobs(["bed_w0000_0600_p4mark", "bed_w0000_0600_p4app", "bed_w0000_0600_p4rej"], 16, (1, 2, 3))
            + _jobs(["bed_w0000_0600_p4names"], 14, (1, 2))
            + _jobs(["bed_none_p4nop2"], 3, (1,))),
+    "p5": (_jobs(["bed_w0000_0600_p5setup"], 14, ALL_SEEDS)
+           + _jobs(["bed_w0000_0600_p5ans"], 14, (1, 2, 3))
+           + _jobs(["bed_w0000_0600_p5push"], 16, (1, 2))
+           + _jobs(["bed_w0000_0600_p5adv"], 16, (1, 2, 3))
+           + _jobs(["bed_w0000_0600_p5rej"], 21, (1, 2))
+           + _jobs(["bed_w0000_0600_p5zone"], 16, (1, 2))
+           + _jobs(["bed_w0000_0600_p5guests", "bed_w0000_0600_p5guestsc"], 21, (1, 2))
+           + _jobs(["bed_w0000_0600_p5pets"], 21, (1, 2))
+           + _jobs(["bed_none_p5setup"], 9, (1,))
+           + _jobs(["bed_w0000_0600_p4mark", "bed_w0000_0600_p4app", "bed_w0000_0600_p4rej"], 16, (1, 2, 3))),
     "p3": (_jobs(["%s_%s" % (w, k) for w in ("bed", "liv") for k in MAIN_WINDOWS], 21, ALL_SEEDS)
            + _jobs(["bed_w0000_0600_ghost"], 21, ALL_SEEDS)
            + _jobs(["bed_w0000_0600_h300", "bed_w0000_0600_h900", "bed_w0000_0600_v3h300"], 14, (1, 2, 3))

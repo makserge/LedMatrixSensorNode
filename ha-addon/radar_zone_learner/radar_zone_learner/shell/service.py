@@ -27,14 +27,14 @@ from .discovery import discovery_messages
 from .health import HealthServer, StallWatchdog
 from .mqtt_io import MqttIO
 from .options import SettingsError, configure_logging, load_settings
-from .p4 import P4Layer
+from .p5 import P5Layer
 from .persistence import StateStore
 from .png import encode_png
 from .render import render
 from .resources import CpuMeter, rss_mb
 from .timemodel import ZoneInfoTime
 from .topics import HaBirth, Republish, build_topics
-from .topics_p4 import build_topics_p4
+from .topics_p5 import build_topics_p5
 
 QUEUE_SIZE = 2000                 # D28
 TICK_PERIOD_S = 1.0               # spec 4.2: at least once a second
@@ -80,7 +80,9 @@ class Service:
         self.cpu = cpu if cpu is not None else CpuMeter()
         self.rss = rss
         self.time_model = time_model if time_model is not None else FixedOffsetTime(0)
-        self.p4 = p4                     # shell.p4.P4Layer, or None: then the app is the P3 app
+        self.p4 = p4                     # shell.p4.P4Layer (P5: shell.p5.P5Layer, the one layer object), or None:
+                                         # then the app is the P3 app. The P5 hooks are looked up with getattr, so a
+                                         # plain P4Layer and None keep working.
 
         self.learner = None
         self.core_errors = 0
@@ -109,6 +111,9 @@ class Service:
     def start(self) -> None:
         """Loads the state, builds the learner, starts health, watchdog and MQTT, publishes the start state."""
         self.learner = self._load_learner()
+        bind = getattr(self.p4, "bind", None)
+        if bind is not None:
+            self._p4_call(bind, self._core, self.learner)    # the layer's mirrors are seeded before the first publish
         self.health.start()
         self.watchdog.start()
         self.mqtt.start()
@@ -219,6 +224,9 @@ class Service:
         for out in outs:
             self._execute(out)
         self._drain_p4()
+        take_forget = getattr(self.p4, "take_forget_request", None)
+        if take_forget is not None and self._p4_call(take_forget):
+            self.forget_all()
         take = getattr(self.mqtt, "take_republish_request", None)
         if take is not None and take():
             self._republish()
@@ -232,6 +240,9 @@ class Service:
         if self._map_at is not None and now >= self._map_at:
             self._map_at = None
             self._publish_map()
+            second = getattr(self.p4, "second_pass", None)
+            if second is not None:
+                self._p4_call(second, self.clock_ms())
         refused = getattr(self.mqtt, "refused_for_s", None)
         if refused is not None and self._exit_code is None and refused() >= REFUSED_EXIT_S:
             log.critical("the broker has refused every connection for %d s: exiting with %d so that the "
@@ -399,6 +410,58 @@ class Service:
         self._publish_map()
         self._map_at = self.monotonic() + MAP_REPUBLISH_DELAY_S      # the first copy may be lost, see above
 
+    # ------------------------------------------------------------ Forget all learned data (P5 spec 7.2)
+    def forget_all(self) -> None:
+        """Resets the learner and everything it stored, in one worker step: the cached inputs are kept, the core makes a
+        new learner (``Learner.reset``), the state files and the raw-frame capture are deleted, the fresh state is saved
+        at once, the layer's mirrors are cleared and bound to the new learner, the cached inputs are fed to it, every
+        state is published again (the retained learner and review topics are overwritten by their empty versions) and
+        the review event ``forgotten`` is raised. Not deleted: ``rf_stats.json`` and ``options.json``."""
+        layer = self.p4
+        if layer is None or self.learner is None:
+            return
+        cached = self._p4_call(getattr(layer, "cached_inputs", list)) or []
+        fresh = self._core(self.learner.reset)
+        if fresh is None:
+            log.error("Forget all: the learner could not be reset, nothing was changed")
+            return
+        purge = getattr(layer, "purge_capture", None)
+        if purge is not None:
+            self._p4_call(purge)
+        wipe = getattr(self.store, "wipe", None)
+        removed = 0
+        if wipe is not None:
+            try:
+                removed = wipe()
+            except Exception:
+                self.shell_errors += 1
+                log.exception("Forget all: deleting the state files failed")
+        self.learner = fresh
+        self._status = None
+        self._published_state = None
+        self._png = None
+        self._map_dirty = True
+        self._spot_name = ""
+        self._last_nightly_date = None
+        reset = getattr(layer, "reset", None)
+        if reset is not None:
+            self._p4_call(reset)
+        bind = getattr(layer, "bind", None)
+        if bind is not None:
+            self._p4_call(bind, self._core, fresh)
+        self._save("forget")
+        now = self.clock_ms()
+        for ev in cached:
+            # the cached events keep their meaning but not their time: day 0 of the new learner is now
+            outs = self._core(fresh.handle, replace(ev, recv_ms=now)) or ()
+            for out in outs:
+                self._execute(out)
+        log.info("all learned data forgotten (%d state files deleted)", removed)
+        self._republish()
+        notify = getattr(layer, "notify_forgotten", None)
+        if notify is not None:
+            self._p4_call(notify)
+
     # ------------------------------------------------------------ persistence
     def _save(self, reason: str) -> None:
         now = self.monotonic()
@@ -441,7 +504,7 @@ class Service:
 
 def main(argv: Optional[list] = None) -> int:
     parser = argparse.ArgumentParser(prog="radar_zone_learner",
-                                     description="Radar zone learner app (P3 shadow mode).")
+                                     description="Radar zone learner app (shadow mode).")
     parser.add_argument("--options", default="/data/options.json",
                         help="options file; its folder holds the state (default /data/options.json)")
     parser.add_argument("--health-port", type=int, default=8099, help="TCP health port (default 8099)")
@@ -453,7 +516,7 @@ def main(argv: Optional[list] = None) -> int:
         log.error("invalid options: %s", exc)
         return EXIT_SETUP
     configure_logging(settings.log_level)
-    log.info("radar_zone_learner %s starting (P3 shadow mode)", APP_VERSION)
+    log.info("radar_zone_learner %s starting (shadow mode)", APP_VERSION)
 
     from ..core.learner import Learner
     from ..core.params import DEFAULT_PARAMS
@@ -467,11 +530,11 @@ def main(argv: Optional[list] = None) -> int:
     def learner_factory(state):
         return Learner(params, time_model, state)
 
-    topics = build_topics_p4(settings)
+    topics = build_topics_p5(settings)
     events: queue.Queue = queue.Queue(maxsize=QUEUE_SIZE)
     mqtt = MqttIO(settings, topics, events)
     store = StateStore(settings.data_dir, validate=learner_factory)
-    p4 = P4Layer(topics, mqtt.publish, settings.data_dir)
+    p4 = P5Layer(topics, mqtt.publish, settings.data_dir, debug_map=settings.debug_map)   # the one layer object
     service = Service(settings, learner_factory, mqtt, store, HealthServer(args.health_port), StallWatchdog(),
                       clock_ms=lambda: time.time_ns() // 1_000_000, monotonic=time.monotonic,
                       topics=topics, events=events, time_model=time_model, p4=p4)

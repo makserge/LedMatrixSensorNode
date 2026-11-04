@@ -12,7 +12,7 @@ import statistics
 from datetime import date
 from typing import Optional
 
-from . import geometry, profiles
+from . import geometry, profiles, rejections
 from .grids import rate
 
 PLACE_TYPES = ("dwell_zone", "short_task_zone")
@@ -225,11 +225,14 @@ def run_nightly(L, run_ord: int, night: int) -> tuple:
         g["g4_covis"] = c.covis < p.covis_thr
         g["g5_stable"] = c.streak >= p.stable_nights
         g["g6_move"] = move_check(c) is None
-        g["g7_suppression"] = True          # no suppressions exist in P3 (P5 adds rejections)
+        g["g7_suppression"] = not rejections.blocks_candidate(L, c, night)   # P5: a rejected region (OA 7.3, 7.9)
         base = (1.0 - math.exp(-c.n / p.conf_n_scale)) * min(1.0, c.core_days / p.conf_days) \
             * min(1.0, c.streak / p.stable_nights) * (1.0 - c.gsh)
         c.conf_base = base
         c.conf = base * (1.0 - c.covis) if p.conf_includes_covis else base
+        if L.p5.real and not g["g4_covis"] and rejections.real_matches(L, c.cells, c.cx, c.cy):
+            g["g4_covis"] = True            # P5 'It's a real place' (spec 5.4): as if gate 4 passed
+            c.conf = base                   # without the (1 - covis) factor; every other gate still applies
         g["conf"] = c.conf >= p.conf_min
         others = g["g1_class"] and g["g2_core_days"] and g["g3_ld_ghost"] and g["g5_stable"] and \
             g["g6_move"] and g["g7_suppression"]
@@ -251,9 +254,14 @@ def run_nightly(L, run_ord: int, night: int) -> tuple:
     created = []
     dirty = set()                          # suggestions whose cells changed (geometry needed)
     writes = []                            # (cand, suggestion)
+    # P5 (spec 5.2): a suggestion the user rejected is never updated by a candidate that gate 7 let through, so it
+    # never gets a rev change after the answer; one whose rejection the re-ask rule releases in this run is matched
+    # (and updated) like any other and its rejection is deleted below
+    released = rejections.release_due(L, cands, night) if L.p5.masks else set()
+    rejected = rejections.rejected_ids(L) - released
 
     def dedupe(c, types, typ) -> None:
-        pool = [s for s in sugg if s["type"] in types]
+        pool = [s for s in sugg if s["type"] in types and s["id"] not in rejected]
         cc = geom.cell_of(c.cx, c.cy)
         hits = []
         for s in pool:
@@ -311,6 +319,8 @@ def run_nightly(L, run_ord: int, night: int) -> tuple:
         ev.setdefault("hours_at_suggestion", None)
         s["evidence"] = ev
         s["conf"] = r3(c.conf if s["type"] != "reflection" else c.conf_base)
+    if released:
+        rejections.apply_release(L, released)
 
     # 10. doors, room outline, ignore zones (7.8.10)
     _doors(L, night, d14_set, E, new_id, created, dirty)
@@ -549,6 +559,13 @@ def _ignore(L, night, d14_set, new_id, created, dirty) -> None:
         cx = sum(e[2]["x"] * e[2]["dur"] for e in evs) / tot / 100.0
         cy = sum(e[2]["y"] * e[2]["dur"] for e in evs) / tot / 100.0
         ev = {"share": r3(share), "days": days, "ld": r3(ld), "static_share": r3(static), "events": len(evs)}
+        # P5 (spec 7.4): the share of the ghost events that happened while the home was empty. With 'Pets in home' on, a
+        # silent ignore zone that was used mostly while the home was empty gets the kind 'pet'.
+        he_evs = [e for e in evs if e[2]["why"] == "home_empty"]
+        he_days = len({e[1] for e in he_evs})
+        he_share = len(he_evs) / len(evs) if evs else 0.0
+        ev["he_share"] = r3(he_share)
+        pet = L.p5.setting("pets") and he_days >= L.p5params.pet_min_days and he_share >= L.p5params.pet_he_share
         cc = geom.cell_of(cx, cy)
         hits = []
         for s in ns.suggestions:
@@ -572,11 +589,14 @@ def _ignore(L, night, d14_set, new_id, created, dirty) -> None:
             s["state"] = "shadow"
             s["conf"] = r3(share)
             s["evidence"] = ev
+            s["kind"] = "pet" if pet else "ignore"
             continue
         s = _new_suggestion(new_id(), "ignore_zone", night, cells, cx, cy)
         s["_touched"] = True
         s["conf"] = r3(share)
         s["evidence"] = ev
+        if pet:
+            s["kind"] = "pet"
         ns.suggestions.append(s)
         created.append(s)
         dirty.add(s["id"])

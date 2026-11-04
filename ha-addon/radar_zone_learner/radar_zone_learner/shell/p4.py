@@ -62,6 +62,7 @@ class P4Layer:
         self.node_online: Optional[bool] = None
         self.radar_state: Optional[str] = None
         self.nl_active = False                         # Night learning: OFF by default (OA 7.6)
+        self.nl_restoring = False                      # the learner's own OFF of the node's schedule is not put back yet
         self.nl_until: Optional[str] = None
         self.items: dict = {}                          # review items by id
         self.item_order: tuple = ()
@@ -170,7 +171,8 @@ class P4Layer:
             attrs = out.attributes if isinstance(out.attributes, dict) else {}
             nl = attrs.get("night_learning")
             if isinstance(nl, dict) and isinstance(nl.get("active"), bool):
-                self._set_night_learning(nl["active"], nl.get("until") if isinstance(nl.get("until"), str) else None)
+                self._set_night_learning(nl["active"], nl.get("until") if isinstance(nl.get("until"), str) else None,
+                                         nl.get("set_by_learner") is False)
             self._update_valid(now_ms)
             return False
         if isinstance(out, MarkResult):
@@ -184,7 +186,7 @@ class P4Layer:
             self._review_changed(out)
             return True
         if isinstance(out, NightLearningChanged):
-            self._set_night_learning(out.active, out.until)
+            self._set_night_learning(out.active, out.until, out.set_by_learner is False)
             reason = NL_FAILURES.get(out.event) if out.event else None
             if reason is not None:
                 log.warning("Night learning could not put the node's schedule back (%s): switch 'Radar night "
@@ -218,10 +220,14 @@ class P4Layer:
         self._pub(self.topics.radar_valid, "online" if self._valid() else "offline")
 
     # ------------------------------------------------------------ night learning
-    def _set_night_learning(self, active: bool, until: Optional[str]) -> None:
+    def _set_night_learning(self, active: bool, until: Optional[str], restoring: bool = False) -> None:
+        """``restoring``: the learner wrote OFF to the node's schedule and has not seen it ON again (``set_by_learner``
+        False). It outlives ``active``: the user switching Night learning off, or its 7th night ending, only starts
+        the restore, which can wait days for an offline node."""
         if active != self.nl_active:
             log.info("Night learning %s", "started" if active else "ended")
         self.nl_active = active
+        self.nl_restoring = restoring
         self.nl_until = until
         self._publish_night_learning()
 

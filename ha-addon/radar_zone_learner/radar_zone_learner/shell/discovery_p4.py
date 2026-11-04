@@ -106,14 +106,16 @@ def night_learning_config(topics) -> dict:
     }
 
 
-def select_config(topics) -> dict:
+def select_config(topics, options=None) -> dict:
+    """The 'Review item' select. ``options`` is the current option list (P5: it changes with the open items); the default
+    is the fixed P4 list."""
     return {
         "name": "Review item",
         "unique_id": SELECT_ID,
         "default_entity_id": "select." + SELECT_ID,
         "command_topic": topics.review_select_set,
         "state_topic": topics.review_select_state,
-        "options": list(SELECT_OPTIONS),
+        "options": list(SELECT_OPTIONS if options is None else options),
         "optimistic": False,
         "qos": 1,
         "retain": False,
@@ -167,13 +169,13 @@ def _answer_button(topics, uid: str, name: str, op: str, icon: str) -> dict:
     }
 
 
-def event_config(topics) -> dict:
+def event_config(topics, event_types=None) -> dict:
     return {
         "name": "Review event",
         "unique_id": EVENT_ID,
         "default_entity_id": "event." + EVENT_ID,
         "state_topic": topics.review_event,
-        "event_types": list(EVENT_TYPES),
+        "event_types": list(EVENT_TYPES if event_types is None else event_types),
         "icon": "mdi:alert-circle-outline",
         "availability_topic": topics.learner_status,
         "device": _device_review(),
@@ -181,15 +183,18 @@ def event_config(topics) -> dict:
     }
 
 
-def p4_discovery_messages(topics) -> list:
-    """(topic, payload bytes) of every P4 config, learner device first."""
+def p4_discovery_messages(topics, select_options=None, event_types=None) -> list:
+    """(topic, payload bytes) of every P4 config, learner device first.
+
+    ``select_options`` and ``event_types`` (P5) replace the fixed option list of the 'Review item' select and the event
+    types of the 'Review event' entity; with the defaults the output is byte for byte the P4 one."""
     return [
         (topics.discovery("binary_sensor", VALID_ID), _dumps(valid_config(topics))),
         (topics.discovery("sensor", RF_ON_ID), _dumps(rf_on_config(topics))),
         (topics.discovery("sensor", RF_SAVING_ID), _dumps(rf_saving_config(topics))),
         (topics.discovery("sensor", COVERAGE_ID), _dumps(coverage_config(topics))),
         (topics.discovery("switch", NIGHT_LEARNING_ID), _dumps(night_learning_config(topics))),
-        (topics.discovery("select", SELECT_ID), _dumps(select_config(topics))),
+        (topics.discovery("select", SELECT_ID), _dumps(select_config(topics, select_options))),
         (topics.discovery("sensor", PENDING_ID), _dumps(pending_config(topics))),
         (topics.discovery("sensor", ITEM_TEXT_ID), _dumps(item_text_config(topics))),
         (topics.discovery("button", APPROVE_ID), _dumps(_answer_button(topics, APPROVE_ID, "Approve", "approve",
@@ -198,5 +203,5 @@ def p4_discovery_messages(topics) -> list:
                                                                         "mdi:close"))),
         (topics.discovery("button", LATER_ID), _dumps(_answer_button(topics, LATER_ID, "Later", "later",
                                                                        "mdi:clock-outline"))),
-        (topics.discovery("event", EVENT_ID), _dumps(event_config(topics))),
+        (topics.discovery("event", EVENT_ID), _dumps(event_config(topics, event_types))),
     ]

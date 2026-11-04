@@ -1,0 +1,191 @@
+# Radar Zone Learner: review notifications (design 7.9, P5 spec 6).
+#
+# Copy this file to  <config>/blueprints/automation/radar_zone_learner/radar_zone_review_push.yaml  in Home
+# Assistant (Samba share or Terminal & SSH app), then Settings > Automations & scenes > Blueprints > Create
+# automation. Create one automation per phone. It is not an entity and not part of the app.
+#
+# The app decides when a notification is due (once for the setup review, then at most one a day) and
+# publishes a retained request on the sensor 'Review push request'. This automation turns the request into
+# a notification and acknowledges it for ITS phone (the field 'acks' of the request lists the phones that
+# have acknowledged), so that a restart of Home Assistant neither loses it nor repeats it and several phones
+# do not hide the request from each other (the notification has a fixed tag: a second copy replaces the
+# first). Taps on Approve, Rename and Reject are sent back to the app on radar_zones/review/answer with the
+# item and its revision.
+#
+# The text is generic: it says how many items are waiting and nothing else. The item text is used only when
+# BOTH this blueprint's 'Show the item text' and the app's switch 'Detailed review text' are on.
+#
+# This blueprint has not been loaded by Home Assistant yet (neither has radar_zone_context.yaml): check the first run
+# of the automation in its trace, for the request (the push sensor changes) and for a tap on an action.
+blueprint:
+  name: Radar zone learner - review notifications
+  description: >-
+    Sends one generic notification when the Radar Zone Learner has places to review, with a map of the item as
+    image and the actions Approve, Rename and Reject, and passes your taps back to the app.
+  domain: automation
+  homeassistant:
+    min_version: 2024.10.0
+  input:
+    notify_device:
+      name: Phone (Companion app)
+      description: The phone that gets the notification. Create one automation per phone.
+      selector:
+        device:
+          filter:
+            - integration: mobile_app
+    push_entity:
+      name: Review push request
+      description: The sensor of the app that carries the push request. Leave the default.
+      default: sensor.radar_zones_review_push
+      selector:
+        entity:
+          domain: sensor
+    map_entity:
+      name: Push map
+      description: The image of the item the notification is about. Leave the default.
+      default: image.radar_zones_review_push_map
+      selector:
+        entity:
+          domain: image
+    open_path:
+      name: Page that opens when the notification is tapped
+      description: A path in Home Assistant, for example the page of the Radar zone review device.
+      default: /config/devices/dashboard
+      selector:
+        text:
+    detailed_text:
+      name: Show the item text in the notification (opt-in)
+      description: >-
+        Off: the notification says only how many items wait. On: it shows the text of the item, which can
+        contain hours of use and a place name, and which travels through the push service of your phone
+        (Google or Apple). Needs the app's switch 'Detailed review text' on as well.
+      default: false
+      selector:
+        boolean:
+
+mode: queued
+max: 10
+max_exceeded: silent
+
+variables:
+  push_entity: !input push_entity
+  map_entity: !input map_entity
+  open_path: !input open_path
+  detailed_text: !input detailed_text
+  notify_device_id: !input notify_device
+  me: "{{ 'p' ~ notify_device_id[:7] }}"
+  tag: radar_zone_review
+
+triggers:
+  - trigger: state
+    entity_id: !input push_entity
+    id: request
+  - trigger: event
+    event_type: mobile_app_notification_action
+    id: action
+
+actions:
+  - choose:
+      - conditions:
+          - condition: trigger
+            id: request
+        sequence:
+          - variables:
+              snap: "{{ (trigger.to_state.state if trigger.to_state is not none else '').split('|') }}"
+          - condition: template
+            value_template: "{{ snap | length == 8 and snap[0] | int(-1) >= 0 and snap[1] | int(-1) >= 0 and snap[3] | int(-1) >= 0 }}"
+          - choose:
+              - conditions:
+                  - condition: template
+                    value_template: "{{ snap[3] | int == 0 and snap[0] | int > 0 }}"
+                sequence:
+                  - device_id: !input notify_device
+                    domain: mobile_app
+                    type: notify
+                    message: clear_notification
+                    data:
+                      tag: "{{ tag }}"
+              - conditions:
+                  - condition: template
+                    value_template: "{{ snap[0] | int > 0 and snap[2] in ['setup', 'daily'] and snap[3] | int > 0 and me not in snap[6].split(',') }}"
+                sequence:
+                  - delay: "00:00:15"
+                  - variables:
+                      cur: "{{ states(push_entity).split('|') }}"
+                  - condition: template
+                    value_template: "{{ cur | length == 8 and cur[0] == snap[0] and cur[2] in ['setup', 'daily'] and cur[3] | int(0) > 0 and me not in cur[6].split(',') }}"
+                  - variables:
+                      seq: "{{ cur[0] | int }}"
+                      kind: "{{ cur[2] }}"
+                      count: "{{ cur[3] | int }}"
+                      rev: "{{ cur[4] }}"
+                      item: "{{ cur[5] }}"
+                      # BEGIN generic message
+                      message_generic: "{{ 'Radar setup review is ready (' ~ count ~ ' items)' if kind == 'setup' else 'Radar zone review: ' ~ count ~ ' item(s) to look at' }}"
+                      # END generic message
+                      message: "{{ cur[7] if detailed_text and cur[7] | length > 0 else message_generic }}"
+                  - choose:
+                      - conditions:
+                          - condition: template
+                            value_template: "{{ item != '' and rev != '' }}"
+                        sequence:
+                          - device_id: !input notify_device
+                            domain: mobile_app
+                            type: notify
+                            title: Radar zone review
+                            message: "{{ message }}"
+                            data:
+                              tag: "{{ tag }}"
+                              group: radar_zone_review
+                              alert_once: true
+                              clickAction: "{{ open_path }}"
+                              url: "{{ open_path }}"
+                              image: "/api/image_proxy/{{ map_entity }}"
+                              actions:
+                                - action: "RZ_APPROVE_{{ rev }}_{{ item }}"
+                                  title: Approve
+                                - action: "RZ_RENAME_{{ rev }}_{{ item }}"
+                                  title: Rename
+                                  behavior: textInput
+                                - action: "RZ_REJECT_{{ rev }}_{{ item }}"
+                                  title: Reject
+                    default:
+                      - device_id: !input notify_device
+                        domain: mobile_app
+                        type: notify
+                        title: Radar zone review
+                        message: "{{ message }}"
+                        data:
+                          tag: "{{ tag }}"
+                          group: radar_zone_review
+                          alert_once: true
+                          clickAction: "{{ open_path }}"
+                          url: "{{ open_path }}"
+                          image: "/api/image_proxy/{{ map_entity }}"
+                  - action: mqtt.publish
+                    data:
+                      topic: radar_zones/review/push_ack
+                      payload: "{{ seq }}:{{ me }}"
+                      qos: 1
+                      retain: false
+      - conditions:
+          - condition: trigger
+            id: action
+          - condition: template
+            value_template: "{{ trigger.event.data.action is string and trigger.event.data.action | regex_match('^RZ_(APPROVE|RENAME|REJECT)_[0-9]+_.+$') }}"
+        sequence:
+          - variables:
+              parts: "{{ trigger.event.data.action.split('_', 3) }}"
+              op: "{{ parts[1] | lower }}"
+              rev: "{{ parts[2] | int }}"
+              item: "{{ parts[3] }}"
+          - action: mqtt.publish
+            data:
+              topic: radar_zones/review/answer
+              qos: 1
+              retain: false
+              payload: >-
+                {%- set d = {'op': op, 'item': item, 'rev': rev, 'aid': trigger.event.context.id} -%}
+                {%- set nm = (trigger.event.data.reply_text | default('', true) | string | trim)[:32] -%}
+                {%- if op == 'rename' and nm != '' -%}{%- set d = dict(d, name=nm) -%}{%- endif -%}
+                {{ d | tojson }}

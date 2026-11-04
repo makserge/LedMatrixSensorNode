@@ -1,7 +1,8 @@
 """Replay CLI: run jobs in parallel (at most 3 workers), evaluate, write the report (P3 spec 11.9).
 
-    python -I -B replay/run_replay.py --out DIR [--profile smoke|quick|p3|p4smoke|p4] [--jobs NAME,...] [--seeds 1-5]
-                                      [--nights N] [--workers N] [--cpu-budget-per-day S] [--params-json FILE]
+    python -I -B replay/run_replay.py --out DIR [--profile smoke|quick|p3|p4smoke|p4|p5smoke|p5] [--jobs NAME,...]
+                                      [--seeds 1-5] [--nights N] [--workers N] [--cpu-budget-per-day S]
+                                      [--params-json FILE]
 
 Output (nothing is written outside ``--out``): ``DIR/runs/<job>_s<seed>.json``, ``DIR/report.json``,
 ``DIR/report.md``, ``DIR/timing.json``, ``DIR/log.txt``.
@@ -11,6 +12,12 @@ simulated days, about 22 min on 3 workers); ``p4`` is the P4 gate (P4-1 to P4-7,
 days, about 12 min) and has NO run of the G1-G6 jobs, so a p4 invocation reports G1-G6 as not run; the two together
 (2,040 days) exceed the 1,500-day limit of one invocation and are run one after the other. The report lists the
 jobs, seeds and night counts a run really used.
+
+``p5`` is the P5 gate (P5-1 to P5-8 and the three P4 re-runs of P5-5: 33 runs, about 550 simulated days, about 8-10
+minutes on 3 workers) and ``p5smoke`` its smoke run (``bed_w0000_0600_p5setup``, 9 nights, seed 1). A p5 invocation
+has its own report (``replay.evaluate_p5``): P5-1 to P5-8, the three P4 re-runs, the unit-test evidence and the
+separate commands of P5-R1 (``replay/dump_run.py`` and ``replay/compare_runs.py``), P5-R2 (``replay/compat_check.py``) and
+P5-R3 (``replay/resource_probe.py --p5``); it says that G1-G6 and P4-1 to P4-7 were not run.
 
 Bounds: ``--workers`` is clamped to ``min(3, cpu_count - 1)``; ``--nights`` <= 28; seeds within 1..5; more than
 1,500 simulated days in one invocation is refused; each run stops when its CPU exceeds
@@ -34,6 +41,7 @@ import time  # noqa: E402
 from radar_zone_learner.core.params import DEFAULT_PARAMS, Params, params_digest  # noqa: E402
 from replay import jobs as J  # noqa: E402
 from replay.driver import run_task  # noqa: E402
+from replay import evaluate_p5 as E5  # noqa: E402
 from replay.evaluate import evaluate, write_report  # noqa: E402
 
 MAX_WORKERS = 3
@@ -198,11 +206,15 @@ def main(argv=None) -> int:
     results = []
     for summ in sorted(summaries, key=lambda s: (s["job"], s["seed"])):
         results.append(json.loads(Path(summ["path"]).read_text(encoding="utf-8")))
-    unit = run_g5b_unit_test()
-    report = evaluate(results, unit_g5b=unit)
+    p5_invocation = any(E5.is_p5_run(r) for r in results)
+    unit = None if p5_invocation else run_g5b_unit_test()
+    report = E5.build_report(results, unit_g5b=unit) if p5_invocation else evaluate(results, unit_g5b=unit)
     report["profile"] = args.profile
     report["wall_s"] = round(wall, 1)
-    write_report(report, out)
+    if p5_invocation:
+        E5.write_report(report, out)
+    else:
+        write_report(report, out)
     cpu_total = sum((r.get("timing") or {}).get("cpu_s") or 0 for r in results)
     sim_total = sum((r.get("timing") or {}).get("sim_days") or 0 for r in results)
     timing = {"workers": workers, "wall_s": round(wall, 1), "cpu_s": round(cpu_total, 1),
@@ -218,6 +230,11 @@ def main(argv=None) -> int:
         log("%-4s %-10s %s" % (c["id"], c["status"], c["title"]))
     for c in (report.get("p4") or {}).get("criteria", []):       # the P4 checks of OA 12 P4 (replay.evaluate_p4)
         log("%-4s %-10s %s" % (c["id"], c["status"], c["title"]))
+    p5 = report.get("p5") or {}
+    for c in p5.get("criteria", []):                              # the P5 checks of OA 12 P5 (replay.evaluate_p5)
+        log("%-4s %-10s %s" % (c["id"], c["status"], c["title"]))
+    if p5.get("p4_reruns"):
+        log("%-4s %-10s %s" % ("P4*", p5["p4_reruns"]["status"], "the three P4 re-runs (P4-3, P4-4, P4-7 sub-checks)"))
     log("gate (%s): %s%s; CPU %.0f s for %.1f simulated days (%.2f s/day); wall %.0f s" % (
         report["scope"], report["gate"], (" (failed %s)" % ",".join(report["failed"])) if report["failed"] else "",
         cpu_total, sim_total, timing["cpu_s_per_day"] or 0, wall))

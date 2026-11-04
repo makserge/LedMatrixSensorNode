@@ -15,6 +15,21 @@
 
 Windows CPython has another baseline than Python on Alpine; the measurement on the CM4 (P3 spec 12.3) is the
 acceptance. Results go to ``DIR/probe.json``.
+
+``--p5`` (check P5-R3, P5 spec 11.2, 0): the cost of the P5 additions on a synthetic full state (200 suggestions, 100 zone
+records, 100 labels, 400 tags and snoozes, 200 suppressions with masks, 50 real-place markers; the learner is made to read
+"learning" and two confirmed tracks are put in its tracker, because the live view needs them):
+
+    python -I -B replay/resource_probe.py --p5 --out DIR
+
+(a) a 1 s ``Learner.tick``: median <= 5 ms, maximum <= 20 ms (the tick that also computes the periodic status, whose label
+precision and recall are P3 code, is timed apart: ``tick_with_status_ms``), and a second ``items()`` call in the same state
+<= 0.2 ms;
+(b) one live frame (``live_view`` + ``where_am_i`` + the markers over the cached base + ``encode_png``): <= 15 ms on average
+over 100 frames, and one base rebuild (``review_map`` + ``render_review``) <= 40 ms; (c) ``export_state`` + an atomic save
+(write to a temporary file, ``os.replace``) <= 80 ms; (d) the memory the P5 data adds to the core (tracemalloc: the full
+state against the same state without the ``p5`` section and the zone extras; the whole state's growth over an empty core is
+reported as ``memory_total_mb``) <= 2 MB. Results go to ``DIR/p5_probe.json``.
 """
 import sys
 from pathlib import Path
@@ -128,8 +143,220 @@ def child(mode: str, state_path: Path, events_path: Path, result_path: Path) -> 
     return 0
 
 
+# ---------------------------------------------------------------- P5-R3: the cost of the P5 additions
+P5_LIMITS = {"tick_median_ms": 5.0, "tick_max_ms": 20.0, "items_cached_ms": 0.2, "live_frame_avg_ms": 15.0,
+             "base_rebuild_ms": 40.0, "export_save_ms": 80.0, "memory_growth_mb": 2.0}
+P5_ZONE_EXTRAS = ("poly_cm", "rev", "upd", "srev", "also")
+
+
+def _blob(i0: int, j0: int, w: int = 3, h: int = 3) -> list:
+    """The cells (row-major index, 70 columns) of a w x h block with its corner at column i0, row j0."""
+    return sorted((j0 + dj) * 70 + i0 + di for dj in range(h) for di in range(w))
+
+
+def heavy_state(night: int = 30) -> dict:
+    """A valid state with every P5 cap near full: 200 suggestions (88 rejected, 100 covered by zone records, 12 open places),
+    100 zone records, 100 labels, 400 tags, 400 snoozes, 200 suppressions with masks (112 of them for suggestions that are
+    gone) and 50 real-place markers. Built from a fresh learner's export so that the file passes the learner's validation."""
+    import datetime
+
+    from radar_zone_learner.core.grids import rle_encode
+    from radar_zone_learner.core.learner import Learner
+    from radar_zone_learner.core.p5state import tag_text
+    from replay.framegen import BASE_MS
+
+    st = Learner().export_state()
+    day0 = datetime.date(2026, 1, 5)
+    last = day0 + datetime.timedelta(days=night)
+    st["meta"].update(created_date=day0.isoformat(), created_ms=BASE_MS, night=night,
+                      last_extraction_date=last.isoformat(), next_label_n=101)
+
+    def xy(i, j):
+        return round(-7.0 + (i + 1.5) * 0.2, 3), round((j + 1.5) * 0.2, 3)
+
+    def sid(k):
+        return "s%04d-1" % (k + 1)
+
+    sugg = []
+    for k in range(200):
+        i, j = 3 + 3 * (k % 20), 3 + 3 * (k // 20)
+        cx, cy = xy(i, j)
+        typ = "dwell_zone" if k < 160 else ("short_task_zone" if k < 180 else ("reflection" if k < 190 else "ignore_zone"))
+        sugg.append({
+            "id": sid(k), "rev": 1, "type": typ, "kind": "dwell" if typ == "dwell_zone" else "short_task"
+            if typ == "short_task_zone" else ("reflection" if typ == "reflection" else "ignore"), "name_hint": None,
+            "state": "shadow", "first_night": 4, "last_night": night, "cx": cx, "cy": cy,
+            "cells": rle_encode(_blob(i, j)), "poly_cm": [[int(cx * 100) - 30, int(cy * 100) - 30],
+                                                         [int(cx * 100) + 30, int(cy * 100) - 30],
+                                                         [int(cx * 100) + 30, int(cy * 100) + 30],
+                                                         [int(cx * 100) - 30, int(cy * 100) + 30]],
+            "conf": round(0.9 - k * 0.003, 3),
+            "evidence": {"n": 12, "hours_wd": [0.0] * 8 + [12.0, 20.0, 15.0, 6.0] + [0.0] * 12,
+                         "hours_we": [0.0] * 24, "hours_at_suggestion": [0.0] * 24, "he_share": 0.0},
+            "variants": [], "variant_evidence_split": False, "variant_share_split": False,
+            "variant_suppressed": False, "frozen": False})
+    st["suggestions"] = sugg
+    st["labels"] = []
+    for k in range(100):
+        i, j = 2 * (k % 35), 32 + 2 * (k // 35)
+        cx, cy = xy(i, j)
+        st["labels"].append({"id": "l%04d" % (k + 1), "created_s": BASE_MS // 1000, "x": cx, "y": cy,
+                             "name": "Spot %d" % k, "kind": "manual", "cells": rle_encode(_blob(i, j, 2, 2))})
+    st["zones"] = []
+    for k in range(100):
+        s = sugg[100 + k]
+        st["zones"].append({"zid": "z%04d" % (k + 1), "name": "Zone %d" % k, "kind": "dwell", "src": "approve",
+                            "ref": s["id"], "cx": s["cx"], "cy": s["cy"], "cells": s["cells"], "night": 9,
+                            "created_s": BASE_MS // 1000, "poly_cm": s["poly_cm"], "rev": 0, "upd": 9, "srev": 1,
+                            "also": []})
+    rejected = [sid(k) for k in range(88)] + [sid(k) for k in range(200, 312)]
+    st["suppressions"] = [{"type": "place", "night": 12, "ref": r} for r in rejected]
+    masks = {}
+    for n, r in enumerate(rejected):
+        k = int(r[1:5]) - 1
+        i, j = 3 + 3 * (k % 20), 3 + 3 * (k // 20)
+        j = min(j, 36)
+        cx, cy = xy(i, j)
+        masks[r] = {"cx": cx, "cy": cy, "cells": rle_encode(_blob(i, j)), "n0": 12}
+    ids = [sid(k) for k in range(200)] + ["mrg-" + sid(k) for k in range(200)]
+    st["p5"] = {
+        "later": {k: "2026-01-01" for k in ids},
+        "tags": {"by_id": {k: tag_text(n) for n, k in enumerate(ids)}, "n": len(ids)},
+        "real": [{"ref": sid(180 + k % 10), "cx": sugg[180 + k % 10]["cx"], "cy": sugg[180 + k % 10]["cy"],
+                  "cells": sugg[180 + k % 10]["cells"], "night": 10} for k in range(50)],
+        "masks": masks, "nw_applied": None,
+        "push": {"seq": 3, "acked": 3, "kind": "daily", "setup_sent": True, "last_day": last.isoformat(),
+                 "sig": [], "acks": [], "head_id": None, "head_rev": None},
+        "settings": {"approve_sched": False, "guests_pause": False, "pets": False, "detail_text": False}}
+    return st
+
+
+class _FakeTrack:
+    """A confirmed live track for the live-view cost (the tracker's RAM objects are not part of any state file)."""
+    confirmed = True
+    bh = None
+
+    def __init__(self, x: float, y: float):
+        self.x, self.y = x, y
+
+
+def _ms(fn, n: int = 1) -> list:
+    pt = time.perf_counter
+    out = []
+    for _ in range(n):
+        a = pt()
+        fn()
+        out.append((pt() - a) * 1000.0)
+    return out
+
+
+def p5_probe(out: Path) -> dict:
+    """The measurements of P5-R3; writes ``out/p5_probe.json`` and returns the report."""
+    import gc
+    import os
+    import statistics
+    import tracemalloc
+
+    from radar_zone_learner.core.learner import Learner
+    from radar_zone_learner.core.params import DEFAULT_P5, DEFAULT_PARAMS
+    from radar_zone_learner.core.types import FixedOffsetTime, StatusChanged
+    from radar_zone_learner.shell.png import encode_png
+    from radar_zone_learner.shell.render import draw_live, render_review
+    from replay.framegen import BASE_MS, DAY_MS
+
+    state = heavy_state()
+
+    def loaded(st: dict):
+        """(Learner loaded from ``st``, the bytes tracemalloc says it added); the state dict itself is dropped first."""
+        gc.collect()
+        tracemalloc.start()
+        a = tracemalloc.get_traced_memory()[0]
+        s = json.loads(json.dumps(st))
+        lr = Learner(DEFAULT_PARAMS, FixedOffsetTime(0), s, DEFAULT_P5)
+        del s
+        gc.collect()
+        b = tracemalloc.get_traced_memory()[0]
+        tracemalloc.stop()
+        return lr, b - a
+
+    # (d) memory: the core with the state of the P4 shape (no p5 section, no zone extras) and with every P5 cap full
+    p4_shape = json.loads(json.dumps(state))
+    p4_shape.pop("p5")
+    for z in p4_shape["zones"]:
+        for k in P5_ZONE_EXTRAS:
+            z.pop(k, None)
+    L4, m4 = loaded(p4_shape)
+    del L4, p4_shape
+    _, m0 = loaded(Learner().export_state())
+    L, m1 = loaded(state)
+    res = {"state_bytes": len(json.dumps(state, separators=(",", ":"))), "limits": dict(P5_LIMITS),
+           "memory_growth_mb": round((m1 - m4) / 1048576.0, 2),
+           "memory_total_mb": round((m1 - m0) / 1048576.0, 2), "memory_p4_shape_mb": round((m4 - m0) / 1048576.0, 2)}
+    # (a) a 1 s tick: the review check, the Advanced list and the push planner on the full state. The periodic status
+    # (every ``status_period_ms``) also computes the label precision and recall (P3 code, labels x suggestions): it is
+    # timed apart and not part of the bound
+    t = BASE_MS + 30 * DAY_MS + 12 * 3600 * 1000
+    L.tick(t)
+    ticks, status_ticks = [], []
+    for k in range(1, 301):
+        a = time.perf_counter()
+        outs = L.tick(t + k * 1000)
+        d = (time.perf_counter() - a) * 1000.0
+        (status_ticks if any(isinstance(o, StatusChanged) for o in outs) else ticks).append(d)
+    ticks = ticks[3:]
+    res["tick_median_ms"] = round(statistics.median(ticks), 3)
+    res["tick_max_ms"] = round(max(ticks), 3)
+    res["tick_with_status_ms"] = round(max(status_ticks), 3) if status_ticks else None
+    res["status_ticks"] = len(status_ticks)
+    items1 = _ms(lambda: L.review.items(L), 1)[0]
+    res["items_first_ms"] = round(items1, 3)
+    res["items_cached_ms"] = round(min(_ms(lambda: L.review.items(L), 20)), 4)
+    res["open_items"] = len(L.review.items(L))
+    # (b) a live frame and a base rebuild
+    L._state_now = lambda: "learning"                  # the probe has no frame stream: say "learning" so the view reads
+    L.tracker.live = [_FakeTrack(1.0, 2.0), _FakeTrack(-2.3, 4.9)]
+    sel = None
+    data = L.review_map(sel)
+    base = render_review(data)
+    live = L.live_view()
+    L.tracker.live = [_FakeTrack(-2.3, 4.9)]           # one person: where_am_i looks up the items and zones
+    frames = []
+    for _ in range(100):
+        a = time.perf_counter()
+        pts = L.live_view()
+        L.where_am_i(sel)
+        w, h, pal, px = draw_live(base, data, pts or live)
+        encode_png(w, h, pal, px)
+        frames.append((time.perf_counter() - a) * 1000.0)
+    res["live_frame_avg_ms"] = round(sum(frames) / len(frames), 3)
+    res["live_frame_max_ms"] = round(max(frames), 3)
+    rebuild = _ms(lambda: render_review(L.review_map(sel)), 5)
+    res["base_rebuild_ms"] = round(statistics.median(rebuild), 3)
+    res["base_rebuild_max_ms"] = round(max(rebuild), 3)
+    res["png_bytes"] = len(encode_png(*draw_live(base, data, live)))
+    # (c) export + an atomic save
+    path = out / "p5_state_probe.json"
+    tmp = out / "p5_state_probe.json.tmp"
+
+    def save():
+        text = json.dumps(L.export_state(), separators=(",", ":"))
+        tmp.write_text(text, encoding="utf-8")
+        os.replace(tmp, path)
+    save()
+    saves = _ms(save, 5)
+    res["export_save_ms"] = round(statistics.median(saves), 3)
+    res["export_save_max_ms"] = round(max(saves), 3)
+    res["saved_bytes"] = path.stat().st_size
+    checks = {k: {"value": res[k], "limit": P5_LIMITS[k], "pass": res[k] <= P5_LIMITS[k]} for k in P5_LIMITS}
+    res["checks"] = checks
+    res["pass"] = all(c["pass"] for c in checks.values())
+    (out / "p5_probe.json").write_text(json.dumps(res, indent=1), encoding="utf-8")
+    return res
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="resource_probe.py", allow_abbrev=False)
+    ap.add_argument("--p5", action="store_true", help="P5-R3: the cost of the P5 additions on a synthetic full state")
     ap.add_argument("--out", help="output folder (required in the parent)")
     ap.add_argument("--nights", type=int, default=18)
     ap.add_argument("--tail-days", type=int, default=3)
@@ -143,6 +370,21 @@ def main(argv=None) -> int:
         return 2 if exc.code else 0
     if args.child:
         return child(args.child, Path(args.state), Path(args.events), Path(args.result))
+    if args.p5:
+        if not args.out:
+            print("usage error: --out is required", file=sys.stderr)
+            return 2
+        out = Path(args.out)
+        out.mkdir(parents=True, exist_ok=True)
+        res = p5_probe(out)
+        print("P5-R3 on a full state of %d bytes (%d open items)" % (res["state_bytes"], res["open_items"]))
+        for k, c in res["checks"].items():
+            print("%-20s %10s  limit %-6s %s" % (k, c["value"], c["limit"], "PASS" if c["pass"] else "FAIL"))
+        print("live frame max %s ms, base rebuild max %s ms, tick max %s ms, saved %d bytes, png %d bytes" % (
+            res["live_frame_max_ms"], res["base_rebuild_max_ms"], res["tick_max_ms"], res["saved_bytes"],
+            res["png_bytes"]))
+        print("probe: %s" % (out / "p5_probe.json"))
+        return 0 if res["pass"] else 1
     if not args.out or not 1 <= args.nights <= 28 or not 1 <= args.tail_days <= 7:
         print("usage error: --out is required; --nights 1..28, --tail-days 1..7", file=sys.stderr)
         return 2

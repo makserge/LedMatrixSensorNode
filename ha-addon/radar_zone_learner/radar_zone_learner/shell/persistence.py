@@ -8,6 +8,8 @@
   never overwritten, and the app starts fresh. A file with an older schema (back to ``MIN_SCHEMA_VERSION``)
   is loaded: the core migrates it (P4: schema 3 -> 4).
 - ``snapshots/state-YYYY-MM-DD.json``: one per date, the 7 newest by date are kept.
+- ``wipe()`` (P5, Forget all learned data) deletes all of them: the state, its temporary and quarantined copies and
+  the snapshots. Nothing else in the data folder is touched.
 """
 from __future__ import annotations
 
@@ -196,6 +198,36 @@ class StateStore:
                 p.unlink()
             except OSError as exc:
                 log.warning("cannot delete old %s: %s", p.name, exc.__class__.__name__)
+
+    # ------------------------------------------------------------ wipe (P5 spec 7.2 step 3)
+    def wipe(self) -> int:
+        """Deletes ``state.json``, ``state.json.tmp``, ``state.json.corrupt-*``, ``state.json.newer-*`` and
+        ``snapshots/state-*.json`` (with a snapshot's temporary file); the folders stay. Returns the number of files
+        removed and never raises: a file that cannot be deleted is logged and left."""
+        doomed: list = [self.state_path, self.state_path.with_name(STATE_NAME + ".tmp")]
+        try:
+            doomed += sorted(self.data_dir.glob(STATE_NAME + ".corrupt-*"))
+            doomed += sorted(self.data_dir.glob(STATE_NAME + ".newer-*"))
+        except OSError as exc:
+            log.error("listing %s failed: %s", self.data_dir, exc.__class__.__name__)
+        try:
+            for name in sorted(os.listdir(self.snapshot_dir)):
+                if SNAPSHOT_RE.match(name) or (name.endswith(".tmp") and SNAPSHOT_RE.match(name[:-4])):
+                    doomed.append(self.snapshot_dir / name)
+        except OSError:
+            pass                                             # no snapshot folder: nothing to delete there
+        removed = 0
+        for path in doomed:
+            try:
+                path.unlink()
+                removed += 1
+            except FileNotFoundError:
+                pass
+            except OSError as exc:
+                log.error("cannot delete %s: %s", path.name, exc.__class__.__name__)
+        self.loaded_from = None
+        self.validated = None
+        return removed
 
     # ------------------------------------------------------------ save
     def save(self, state: dict) -> int:

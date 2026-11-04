@@ -31,7 +31,9 @@ def _origin() -> dict:
 
 
 def _dumps(obj: dict) -> bytes:
-    return json.dumps(obj, separators=(",", ":")).encode("utf-8")
+    """The discovery payload as UTF-8 JSON. Not escaped (``ensure_ascii`` off): a name with an umlaut or a CJK character
+    costs 2 or 3 bytes, not the 6 of a JSON unicode escape; a pure ASCII payload is byte-identical either way."""
+    return json.dumps(obj, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
 
 
 def learner_status_config(topics) -> dict:

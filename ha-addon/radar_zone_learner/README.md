@@ -1,22 +1,26 @@
 # Radar Zone Learner (Home Assistant app)
 
 A local Home Assistant app ("add-on" in older Home Assistant versions) that learns the places people use
-in a room from the LED matrix node's LD2454 radar frames. Version 0.4.0 (phase P4, on top of P3) of the zone-learning
-design: **shadow mode**. The P4 additions (night window, bed item, optional Night learning, RF and coverage
-sensors, the context blueprint) are described in section 9.
+in a room from the LED matrix node's LD2454 radar frames. Version 0.5.0 (phase P5, on top of P3 and P4) of the
+zone-learning design: **shadow mode**. The P4 additions (night window, bed item, optional Night learning, RF and
+coverage sensors, the context blueprint) are described in section 9; the P5 additions (the review of the suggestions on
+a device in Home Assistant, notifications, the privacy controls) in section 10.
 
 ## 1. What it is
 
 The app subscribes to the node's frames stream, tracks the radar targets, finds the places where people
 stay (desk, table, sofa, bed, ...), and every night at 03:30 it works out which of them are reliable enough
-to suggest. In P3 the suggestions are **only written down**: in the app's state, in the attributes of the
-'Learner status' sensor, and on the debug map.
+to suggest. The suggestions are written down in the app's state, in the attributes of the 'Learner status' sensor and
+on the debug map; since P5 you can also approve, rename or reject them on the review device (section 10).
 
-What it does not do in P3:
+What it does not do (shadow mode, until P6):
 
-- no zone entities, no room occupancy, no automations, no notifications;
-- no approval of suggestions (that is P5);
-- no commands to the node: it publishes nothing under `led_matrix_node/`.
+- no zone entities, no room occupancy, no automations of its own; the only notification is the optional review push
+  of section 10.4;
+- approved places become zone **records** in the app's state (a name, a kind and an outline); they are not published
+  as entities, counts or events;
+- the only things it writes to the node are the three schedule topics of the night window (section 9.4: an approved
+  night window; section 9.5: Night learning); it never touches `radar/power`.
 
 Entities (MQTT discovery):
 
@@ -26,6 +30,8 @@ Entities (MQTT discovery):
 | `image.radar_zones_learner_debug_map` ('Learner debug map') | Radar zone learner | the learned map (section 4) |
 | `button.radar_zones_review_mark` ('Mark spot here') | Radar zone review | marks the spot where you are as a label (section 5) |
 | `text.radar_zones_review_name` ('Spot name') | Radar zone review | the name the next mark gets; "Bed" or "Bett" makes it a bed label |
+
+P4 adds the entities of section 9.1, P5 those of sections 10.2 and 10.6.
 
 ## 2. Requirements
 
@@ -51,8 +57,8 @@ Entities (MQTT discovery):
 4. Open it and press Install. The host builds the image, which takes a few minutes and downloads the
    Home Assistant Python base image and paho-mqtt. Then press Start and turn on **Watchdog** on the Info
    tab.
-5. The log shows `connected to core-mosquitto:1883`, `subscribed (18 topics)` (9 before P4) and, once frames
-   arrive, `status learning`. Every later change of the learner status is logged the same way.
+5. The log shows `connected to core-mosquitto:1883`, `subscribed (30 topics)` (18 before P5, 9 before P4) and, once
+   frames arrive, `status learning`. Every later change of the learner status is logged the same way.
 
 ### Updating
 
@@ -74,7 +80,7 @@ offers an update only when `version` in `config.yaml` is higher than the install
 | `log_level` | `info` | `debug`, `info`, `warning` or `error` |
 | `node_prefix` | `led_matrix_node` | MQTT prefix of the LED matrix node |
 | `discovery_prefix` | `homeassistant` | MQTT discovery prefix of Home Assistant (for the discovery config topics only; the app listens for Home Assistant's birth message on `homeassistant/status`, the default birth topic, which does not follow the prefix) |
-| `debug_map` | `true` | publish the debug map image; `false` removes the image entity |
+| `debug_map` | `true` | publish the debug map image; `false` removes the debug map and, since P5, the review map and the push map (the live view and 'You are in' still work as text) |
 | `night_lux` | `5.0` | lux below this counts as dark (lights off) for the night-window proposal, 0.1 to 500; measure the node's lux with the lights off and on, then set a value between the two |
 | `mqtt_host`, `mqtt_port`, `mqtt_username`, `mqtt_password` | unset | optional own broker login instead of the Mosquitto app service; used only when `mqtt_username` is set (host default `core-mosquitto`, port 1883) |
 
@@ -125,6 +131,7 @@ follow the radar's own x axis: check them once with 'Mark spot here'.
 | light grey outline | a candidate that failed a check, or a stale suggestion (not seen for 7 nights) |
 | cyan outline | a place suggestion |
 | pink outline | a place suggestion of kind bed |
+| lime outline | a confirmed zone (P5: a place you approved or renamed; a bed zone is pink) |
 | purple outline | a reflection (a mirror image of a real place, not a place) |
 | orange outline | an ignore-zone suggestion (a radar ghost) |
 | green squares and outlines | doors |
@@ -171,8 +178,9 @@ What is stored where:
 - In memory only: raw tracks and stay fragments (24 h at most), the LD2412 and context timelines. A
   restart forgets them.
 - Nothing is logged with positions at the `info` level.
-- The status attributes contain place centres, kinds and counts, never stay times. The debug map is a
-  place map without times.
+- The status attributes contain place centres, kinds and counts, never stay times (P5 adds only counts: `zones_total`,
+  `pending_places`, `learning_paused` and the on/off state of the four settings). The debug map is a place map without
+  times.
 
 The radar sees everyone in the room. Tell the other people in the household what the radar and this app
 record.
@@ -185,18 +193,34 @@ recorder:
   exclude:
     entities:
       - sensor.radar_zones_learner_status
-      - image.radar_zones_learner_debug_map
+      - sensor.radar_zones_review_you_are_in
+      - sensor.radar_zones_review_item_text
+      - sensor.radar_zones_review_pending
+      - sensor.radar_zones_review_push
+      - event.radar_zones_review_event
+    entity_globs:
+      - image.radar_*
 ```
 
-**Deleting everything in P3**: stop the app and uninstall it; this removes `/data`. Backups made before
-keep their copy. A 'Forget all learned data' button arrives in P5. Uninstalling does not remove what the
-app left outside `/data`:
+P5 adds entities whose history would say more than you want recorded: the three images (every published frame of the
+live view is a new state, up to 150 per session), 'You are in' (a live position while 'Show me live' runs), the review
+texts (which can carry a place name and, with 'Detailed review text', hours of use) and the review events. The README
+sections 10.2 to 10.6 list every entity.
 
-- the retained MQTT messages `radar_zones/learner/state`, `radar_zones/learner/attr` (place centres and
-  counts), `radar_zones/learner/status` and `radar_zones/review/name` (the last spot name you typed)
-  stay in the Mosquitto broker's own storage (and in its backups). Clear them with an empty retained
-  message each, for example `mosquitto_pub -r -n -t radar_zones/learner/attr`, or stop the app first
-  and publish from Developer tools → Actions → `mqtt.publish` with an empty payload and `retain: true`;
+**Deleting everything**: since P5 the learner device has 'Forget all learned data' (section 10.6): it deletes the state,
+its snapshots and the raw-frame capture and starts a fresh learner, and it overwrites the retained topics below with their
+empty versions. To remove the app itself, stop it and uninstall it; this removes `/data`. Backups made before keep their
+copy. Uninstalling does not remove what the app left outside `/data`:
+
+- the retained MQTT messages (QoS 1) `radar_zones/learner/{status,state,attr,coverage_7d,night_learning,guests_pause,pets,
+  detail_text,debug_capture,forget_confirm}`, `radar_zones/radar/valid`, `radar_zones/scan/{rf_on_24h,rf_saving_7d}` and
+  `radar_zones/review/{name,select,pending,pending/attr,item_text,advanced,live,nw_start,nw_end,approve_sched,push}` stay in
+  the Mosquitto broker's own storage (and in its backups). Not retained, so nothing to clear: the discovery configs,
+  `radar_zones/learner/debug_map`, `radar_zones/review/{map,push_map,event,you_are_in,you_are_in/attr}` and the commands
+  to the node. Clear a retained one with an empty retained message, for example
+  `mosquitto_pub -r -n -t radar_zones/learner/attr`, or stop the app first and publish from Developer tools → Actions →
+  `mqtt.publish` with an empty payload and `retain: true`. 'Forget all learned data' already overwrites the ones that
+  carry learned content (`attr`, `pending`, `pending/attr`, `item_text`, `name`, `select`, `push`);
 - the devices 'Radar zone learner' and 'Radar zone review' and their entities stay in Home Assistant's
   entity registry until you delete them (Settings → Devices & services → MQTT → Devices);
 - Home Assistant's database (the recorder) keeps up to 10 days of the status sensor's attributes; purge
@@ -241,13 +265,17 @@ Expected: about 20-25 MB and well under 0.1%.
 | `nightly run ... failed: ...` | The nightly extraction raised an error and was skipped for that night; the app goes on and tries again the next night. The log names the error and where it happened; `nightly_errors` counts them. |
 | `time zone ... not available: using UTC` | The night run then happens at 03:30 UTC and hours are counted in UTC. Check the time zone in Settings → System → General. |
 | `state file unusable ... kept as state.json.corrupt-...` | The state could not be read; the newest valid snapshot was used, or the learner started fresh. The bad file stays in `/data` for inspection. |
+| 'Review item' shows an old list of places, or `unknown` | Home Assistant did not apply the changed option list (section 10.2): reload the MQTT integration or restart Home Assistant once, and if it repeats set `SELECT_MODE = "slots"` in `shell/select_model.py`. |
+| An answer does nothing | Read 'Review event': `answer_ignored` names the reason (`stale`: the item changed after you looked, press again; `no_such_item`: it was answered already). |
+| No notification arrives | The learner makes at most one request a day, between 08:00 and 21:00 local time, and only for something new. Check 'Review push request' (its second field below its first means no phone acknowledged yet), the trace of the automation and that the automation is for this phone. The request is issued again the next day when nobody acknowledged it. |
+| 'Forget all learned data' does nothing | The confirmation text must be `FORGET` and the button pressed within 60 s; read the event `forget_refused` (`not_confirmed`, `night_learning_active` - Night learning runs or has not yet put the node's night schedule back ON, which can take days if the node is offline - or `command_pending`). |
 
 ## 9. P4: night window, bed item, optional Night learning, RF sensors
 
 Still shadow mode: there are no zone entities, no room occupancy and no presence entity (those come with
 P6). The entities below are added by the P4 shell layer; the proposals and the Night learning rules come
-from the learner core. An entity whose source is missing shows `None` (review) or `OFF` (Night learning)
-and does nothing.
+from the learner core. An entity whose source is missing shows `No item` (review; `None` before P5) or `OFF` (Night
+learning) and does nothing.
 
 ### 9.1 New entities
 
@@ -258,7 +286,7 @@ and does nothing.
 | `sensor.radar_zones_scan_rf_saving_7d` ('RF saving 7 d') | Radar zone learner | Share of the last 7 days with the radars off, % |
 | `sensor.radar_zones_learner_coverage_7d` ('Coverage 7 d') | Radar zone learner | Share of the last 7 days (168 h) in which the learner observed, % |
 | `switch.radar_zones_learner_night_learning` ('Night learning') | Radar zone learner | OFF by default (section 9.5) |
-| `select.radar_zones_review_select` ('Review item') | Radar zone review | `None`, `Night window` or `Bed zone`: the item the buttons act on |
+| `select.radar_zones_review_select` ('Review item') | Radar zone review | `No item`, `Night window`, `Bed zone` and since P5 one option per open place (section 10.2): the item the buttons act on |
 | `sensor.radar_zones_review_pending` ('Review pending') | Radar zone review | Number of open items; the attributes list them with their text |
 | `sensor.radar_zones_review_item_text` ('Review item text') | Radar zone review | The text of the selected item |
 | `button.radar_zones_review_approve`, `..._reject`, `..._later` | Radar zone review | Answers for the selected item |
@@ -298,7 +326,8 @@ neither on nor off; a gap of more than 10 minutes in the app's own clock is not 
 
 ### 9.4 The review items (night window and bed zone)
 
-The core proposes two items; the review device shows them (the full review UI comes with P5):
+The core proposes two items first (tier 1); the review device shows them, and since P5 the places after them
+(section 10):
 
 - **Night window**: 'Switch both radars off between 23:30 and 06:45. Radar on-time -30%. No radar detection
   during that time.' It is proposed from the observed onsets and wakes of at least 7 nights and the
@@ -322,16 +351,15 @@ The core proposes two items; the review device shows them (the full review UI co
   whichever item the select shows; every other name gives a manual place. Before the setup review there is no
   item at all, and that rule is how the bed is marked then; a user who typed 'Bed' says what the spot is.
 
-The review buttons send only Approve, Reject and Later in P4. The core also knows `undo` (brings back a bed
-item you answered with [No bed in view], or a denied night window) and `forget`, but they are wired to the
-'Advanced' part of the review in P5 and cannot be sent from MQTT before that. If you pressed [No bed in view]
-by mistake, type `Bed` as the spot name, lie in bed and press 'Mark spot here': that makes the bed zone too.
+`undo` (brings back a bed item you answered with [No bed in view], or a denied night window) and `forget` are
+wired since P5: the 'Advanced item' select with 'Apply advanced', and the buttons 'Re-suggest night window' and
+'Forget rejections' (section 10.3). If you pressed [No bed in view] by mistake, pick 'Undo: No bed in view' there.
 Zones made by 'Mark spot here' are labels (kind bed or manual); the status attribute `review.zones` counts only
-the places you approved or renamed, so it stays 0 after a successful press (P6 reads both).
+the places you approved or renamed, so it stays 0 after a successful press (P6 reads both; `Learner.zones()` lists
+both).
 
-An answer for a stale revision of an item (the item changed after you saw it) is dropped and logged. Answers
-can also be sent by hand: JSON `{"op": "approve" | "reject" | "later", "item"?: "night_window" |
-"bed_needs_data", "rev"?: n, "sched"?: true}` to `radar_zones/review/answer`.
+An answer for a stale revision of an item (the item changed after you saw it) is dropped; since P5 it is also shown as
+the review event `answer_ignored` (section 10.3). Answers can also be sent by hand, see section 10.8.
 
 ### 9.5 Night learning (optional, OFF by default)
 
@@ -377,7 +405,7 @@ scenes > Blueprints > Radar zone learner - home context > Create automation. It 
 | Input | Topic | Meaning |
 |---|---|---|
 | Home is empty | `radar_zones/context/home_empty` | every chosen entity is on, not_home or away: clutter (ignore-zone) learning |
-| Guests are present | `radar_zones/context/guests` | any chosen entity is on: learning is paused for guests |
+| Guests are present | `radar_zones/context/guests` | any chosen entity is on: learning is paused for guests (a real pause since P5, section 10.6) |
 | Lights are off (optional) | `radar_zones/context/lights_off` | every chosen entity is off: night-onset evidence |
 | Household is asleep (optional) | `radar_zones/context/sleep_hint` | any chosen entity is on: night-onset evidence |
 
@@ -398,7 +426,192 @@ command topics is ignored and deleted, as for 'Mark spot here'. New outputs (ret
 `radar_zones/learner/coverage_7d`, `radar_zones/learner/night_learning` and
 `radar_zones/review/{select,pending,pending/attr,item_text}`; not retained: `radar_zones/review/event`.
 Commands to the node (not retained; Night learning and an approved night window only): the three topics of
-section 9.5.
+section 9.5. P5 adds 12 more input topics (30 in all) and the outputs of section 10.7.
+
+## 10. P5: review device, push notifications, privacy controls
+
+Still shadow mode. P5 turns the learner's suggestions into something you can answer: the review device shows what is
+waiting (a night window, the bed, the places) with a map, you approve, rename or reject, and the learner remembers
+what you said. An approved place becomes a **zone record** in the app's state (a name, a kind and an outline); nothing
+about a zone is published as an entity, a count or an event before P6, and the learner publishes no zone name anywhere
+except in the review texts that you asked for (the Advanced labels, the merge and modify texts, 'You are in' while the
+live view runs).
+
+### 10.1 The first setup, in taps
+
+The review starts at night 7 of the learner (a review list is empty before). In the bedroom with the night window
+00:00-06:00 and the schedule ON, do it in the evening, **in bed with the phone** (the radars observe until 00:00):
+
+| # | Tap | What happens |
+|---|---|---|
+| 1 | Approve, with 'Review item' on `Night window` | the node's night window is written (and the schedule switched ON only if 'Approve also switches schedule ON' is on); the item leaves and the select falls to the next item |
+| 2 | 'Mark spot here', with `Bed zone` selected | after 20 s in bed it makes the bed zone (kind bed, frozen while the schedule is ON); the bed item leaves |
+| 3-7 | Approve, once per place | each place becomes a zone record named `Place N` (or `Bed` for the learner's own bed place); to name it, type the name into 'Spot name' first and press Rename instead of Approve |
+
+That is 7 taps for 5 places (6 for 4; 8 if you first have to pick the bed item). If you are not in bed, [Later] on the bed
+item costs one tap and it comes back after the next nightly run. A text entry (the name) is not a tap.
+
+### 10.2 The review device
+
+| Entity | What it shows or does |
+|---|---|
+| `select.radar_zones_review_select` ('Review item') | `No item`, `Night window`, `Bed zone`, then `Place A`, `Place B`, ... (a place), `Extend A` (a place that touches a zone you have and is used at similar hours) and `Moved A` (a zone whose place seems to have moved). The letters are persistent tags: a tag never changes its place while the item exists, and a name never appears in the select. At most 15 options. |
+| `button.radar_zones_review_approve`, `..._rename`, `..._reject`, `..._later` | the answer for the selected item (the app fills in the item and its revision) |
+| `text.radar_zones_review_name` ('Spot name') and `button.radar_zones_review_mark` ('Mark spot here') | as before (section 5); the name is also what Approve and Rename use: **an applied answer consumes the text** (it is cleared), so the next place does not get the same name |
+| `sensor.radar_zones_review_pending` ('Review pending') | the number of open items (tier 1 and tier 2); the attributes list them with `id`, `rev`, `type`, `tier`, `label` and `text`, plus `selected` and `more` (open places that did not fit under the cap of 12) |
+| `sensor.radar_zones_review_item_text` ('Review item text') | the text of the selected item, `No item` when nothing is selected |
+| `image.radar_zones_review_map` ('Review map') | the map of the selected item (section 10.5) |
+| `image.radar_zones_review_push_map` ('Review push map', diagnostic) | the map of the item a notification is about (fixed per request; geometry only, no dwell heat) |
+| `switch.radar_zones_review_show_live` ('Show me live') and `sensor.radar_zones_review_you_are_in` ('You are in') | section 10.5 |
+| `time.radar_zones_review_nw_start`, `time.radar_zones_review_nw_end` ('Night window start/end (edit)') | the times Approve writes for the night-window item. They show the proposal, or your edit, or (with no proposal) the node's current window. An edit counts only for the proposal it was made on; a window outside 1 h to 16 h is refused. |
+| `switch.radar_zones_review_approve_sched` ('Approve also switches schedule ON') | OFF by default; when ON the next night-window approval also switches 'Radar night schedule' ON, and the box then switches itself OFF again |
+| `select.radar_zones_review_advanced` ('Advanced item') and `button.radar_zones_review_apply_advanced` ('Apply advanced') | section 10.3 |
+| `sensor.radar_zones_review_push` ('Review push request', diagnostic) | what the push blueprint reads (section 10.4) |
+| `event.radar_zones_review_event` ('Review event') | `mark_failed`, `device_not_confirmed`, `restore_failed` (section 9), and since P5 `answer_ignored` (with `reason`, `op`, `item`), `forget_refused` (with `reason`) and `forgotten` |
+
+When the list of options changes (a new place, an answered one) the app publishes the select's discovery config again and
+sends the state twice, 2 s apart, because Home Assistant applies a changed option list in a task and drops a state for an
+option it does not know yet. If a real installation still shows a stale list, set `SELECT_MODE = "slots"` in
+`radar_zone_learner/shell/select_model.py`: the options are then fixed (`Place 1` .. `Place 12`, slot k being the k-th place
+in the list) and the app republishes the state at every change.
+
+### 10.3 Answering, Advanced, and what an answer does
+
+| Answer | Night window | Bed zone | Place | Extend (merge) | Moved (modify) |
+|---|---|---|---|---|---|
+| Approve | writes the node's window (the two times of the time entities) | use 'Mark spot here' | a zone record, kind from the name (`bed`/`bett` makes a bed) | the zone grows by the place | the zone takes the new place |
+| Rename | - | - | the same with the name from 'Spot name'; no name: `name_needed` | 'no, it's a new place': a new zone | the old zone stays, a new zone is made |
+| Reject | Deny: not asked again for 30 days | [No bed in view] | rejected: a region that overlaps it by half, or has its centre inside, is not suggested again until its evidence has doubled and 30 nights have passed | the place is rejected as a place | the question is not asked again for this change |
+| Later | comes back after the next nightly run | the same | the same | the same | the same |
+
+Merge and modify items are built and tested, but the learner does not make them in production (P5 ships the answers; the
+detectors are P7, `P5Params.zone_change_items`).
+
+A place whose zone exists, or that a 'Mark spot here' mark covers, is not asked about again. The review event
+`answer_ignored` says why an answer changed nothing: `no_such_item`, `stale`, `not_pending`, `not_applicable`,
+`name_needed`, `zone_limit`, `times_invalid`, `no_item`.
+
+**Advanced** is a separate list that is never counted, never pushed and never auto-selected. It holds what you answered
+and the reflections: 'Undo: No bed in view', 'Undo: Night window denied until <date>', 'Undo: Place A rejected', 'Real
+place: Reflection A' (permanent: the next nightly run may suggest that region as a place), and for each zone and each
+'Mark spot here' mark 'Rename zone/mark: <name>' and 'Remove zone/mark: <name>'. Pick one in 'Advanced item' and press
+'Apply advanced'. Removing a zone brings its place back as an open item; the learner's silent findings (the outline, doors,
+ignore zones, clutter) have no entry because there is nothing to revert in P5.
+
+The buttons 'Forget rejections' (every rejection and every [Later] is cleared; zones, marks, permanent answers and settings
+stay) and 'Re-suggest night window' are on the learner device.
+
+### 10.4 Push notifications
+
+`blueprints/radar_zone_review_push.yaml` is an automation blueprint, not an entity. Copy it to
+`/config/blueprints/automation/radar_zone_learner/radar_zone_review_push.yaml`, then Settings > Automations & scenes >
+Blueprints > Radar zone learner - review notifications > Create automation, and **create one automation per phone** (each
+phone acknowledges separately, so one phone's acknowledgement never hides the request from another). Inputs: the phone
+(a Companion app device), the push sensor and the map image (the defaults are right), the page a tap on the notification
+opens, and 'Show the item text' (off).
+
+- **When**: the learner decides, not Home Assistant. One notification once the setup review is ready (night 7 or later,
+  at least 2 items waiting), then at most one a day, only for an item or a revision that was never announced, and only
+  between 08:00 and 21:00 local time. A [Later] item that comes back is listed again but is not announced a second time.
+  A request that no phone acknowledged is issued again the next day, inside the same window. That covers a notify action
+  that raises (the phone's notify service does not exist) and a blueprint that was installed after the request was made.
+  The acknowledgement means that Home Assistant **accepted the notify call**, not that the phone received it: a push
+  that the Companion app's remote service fails to deliver is only logged by Home Assistant and is not retried. The retry
+  has no upper limit: while no automation acknowledges and an item stays open, one request a day is made (one retained
+  state), and a notify action that always raises leaves one error in the log and one failed trace a day until you fix it.
+- **What it says**: 'Radar setup review is ready (3 items)' or 'Radar zone review: 3 item(s) to look at', the title
+  'Radar zone review', the map of the first place as image (geometry only: the room, the outlines and that place highlighted, **no dwell heat**, because the phone fetches the image from Home Assistant and it may leave your network), and the actions Approve, Rename (with a text prompt) and
+  Reject for that place. Nothing else: no time and no name. The night-window and bed items are never answered from a push
+  (Approve on the window writes the radar schedule, and the bed needs a physical press). A tap on an answer goes back to the
+  app with the item, its revision and the notification's id; a repeated tap is applied once; a tap on a place that was
+  answered meanwhile gives the event `answer_ignored`.
+- **Opt-in**: the item text (typical hours of use, a place name in a merge text) is in the notification only when
+  **both** the app's switch 'Detailed review text' and the blueprint's input are on. With the app's switch off, no hour
+  range exists in any published payload.
+- **Restarts**: the request is a retained sensor state with eight fields (`seq|acked|kind|count|rev|item|acks|text`); the
+  blueprint acknowledges with `<seq>:<phone>` after the notify call returned. A restart of Home Assistant or of the app neither loses a
+  request nor repeats one that was acknowledged; the notification has a fixed tag, so a repeat replaces the first copy.
+- Reserved for later: the `retire_zone` item and its 'Keep' answer (P7).
+
+The blueprint has never been loaded by Home Assistant: check the first trace (the request, a tap, the clear), see 10.9.
+
+### 10.5 'Show me live', 'You are in' and the maps
+
+'Show me live' (switch) makes the review map follow the radar: a frame every 2 s with a red 7 x 7 px marker for each
+confirmed person (orange when the person has stayed still), and 'You are in' names the place at your position (`Place A`,
+a zone's name, `Marked spot`, `In no known place`, `No one in view`, `Several people in view`, `Radar not observing`).
+It switches itself off after 5 minutes (a second ON extends it to 5 minutes from then), says `Live view off` otherwise, and
+publishes no coordinate and logs none. While the live view runs, 'Mark spot here' still needs exactly one stay of at
+least 20 s: the attribute `stay_ready` of 'You are in' says when a press would work.
+
+The review map is 280 x 160 px like the debug map and has the same radar, heat and walking envelope. Extra colours: yellow
+outline plus a small square = the selected item; steel blue = the other open items; lime = a confirmed zone (pink for a
+bed); red and orange squares = the live positions. It follows the option `debug_map`.
+
+### 10.6 Privacy controls (learner device)
+
+| Control | What it does |
+|---|---|
+| `button.radar_zones_learner_forget_all` ('Forget all learned data') and `text.radar_zones_learner_forget_confirm` | Deletes the state, its snapshots and quarantined copies, the zone records and marks, the rejections, **the sleep log (onsets and wakes)** and the raw-frame capture, and starts a fresh learner. It does nothing unless 'Forget all confirmation' was set to `FORGET` (any case) **within the last 60 s**; every press and the 60 s clear the text. Refused (the event `forget_refused`) without the text, while Night learning runs **or is still putting the node's night schedule back ON** (a reset would drop that bookkeeping and leave the schedule OFF), and while an approved night window waits for the node's echo. Kept: the node's window, the four settings below, the push counters, `rf_stats.json` (what the node's own 'Radar state' history shows) and `options.json`. |
+| `switch.radar_zones_learner_guests_pause` ('Guests present - pause learning') | While ON, **or** while the guests context (section 9.6) is on, nothing from the paused time feeds the model: no coverage, no stays, no walking, no doors. Tracking, the status, 'Radar data valid' and 'Mark spot here' go on. It is judged at the time of the evidence, so a stay that is committed later is still dropped. The status attribute `learning_paused` shows it. |
+| `switch.radar_zones_learner_pets` ('Pets in home') | OFF by default. With it ON a silent ignore-zone suggestion that was used mostly while the home was empty gets the kind `pet` (counted in `pet_spots`); nothing else changes. |
+| `switch.radar_zones_learner_detail_text` ('Detailed review text') | OFF by default. ON adds 'Used mostly 09-12 h and 13-17 h.' to a place text; it is the app's half of the push opt-in. |
+| `switch.radar_zones_learner_debug_capture` ('Debug capture') | OFF at every start, never resumed after a restart. ON writes the frames topic (raw positions) to `/data/capture/capture-<UTC date-hour>.jsonl`, one line per message, for `replay/capture_replay.py`; no other topic is recorded. It switches itself off after 48 h or 100 MiB, the files are deleted after 72 h, 'Forget all learned data' deletes them, and `config.yaml` excludes `capture/*` (relative to the app's data folder) from backups. The status attribute `capture` counts files and bytes. |
+| `button.radar_zones_learner_forget_rejections`, `button.radar_zones_learner_resuggest_night_window` | section 10.3 |
+
+All switches here persist in the state (the capture does not) and are published retained. 'Forget all learned data' cannot
+reach Home Assistant's recorder history, the entity registry, backups that contain an earlier `state.json`, and the
+broker's own persistence file (Mosquitto rewrites it on its own schedule). The household consent text of section 6 applies
+as before.
+
+### 10.7 New topics
+
+The 12 new inputs (QoS 1, all commands: a retained message on one is ignored and deleted):
+`radar_zones/review/{advanced,live,nw_start,nw_end,approve_sched}/set`, `radar_zones/review/push_ack`,
+`radar_zones/learner/{guests_pause,pets,detail_text,debug_capture,forget_confirm}/set` and `radar_zones/learner/forget_all`.
+Outputs: retained `radar_zones/review/{select,advanced,live,nw_start,nw_end,approve_sched,push,pending,pending/attr,
+item_text}` and `radar_zones/learner/{guests_pause,pets,detail_text,debug_capture,forget_confirm}`; not retained
+`radar_zones/review/{map,push_map,you_are_in,you_are_in/attr,event}`. The review `select` and `item_text` say `No item`
+(not `None`) when nothing is selected. 35 discovery messages are published at every connect and 0-10 s after Home
+Assistant's birth message; the maps and the not retained states are sent again 10 s after each burst, because Home
+Assistant creates its entities only after it has read the configs.
+
+### 10.8 Answers by hand
+
+A hand-written automation or a script sends JSON to `radar_zones/review/answer` (QoS 1, not retained, at most 512 bytes):
+
+```json
+{"op": "approve", "item": "s0005-1", "rev": 1, "sched": false, "name": "Desk", "aid": "01HV..."}
+```
+
+`op` is `approve`, `reject`, `later`, `rename`, `undo`, `forget` or `advanced` (an `rz_` prefix and any case are accepted).
+`item` is an item id (`night_window`, `bed_needs_data`, a place `s0005-1`, `mrg-s0005-1`, `mod-z0001`) or an Advanced entry
+id (`adv:undo:bed`, `adv:remove:z0001`, ...); without it the selected item is meant. `rev` is the revision you saw: a
+different one is refused (the event `answer_ignored` / `stale`). `sched` (night window only) also switches the schedule ON.
+`name` is 1 to 32 characters without control characters (a number is accepted and read as text). `aid` is an answer id
+(`[A-Za-z0-9_.-]`, at most 64 characters): an answer with an `aid` that was seen in the last 64 answers is dropped silently
+(a repeated delivery), and an answer with an `aid` never reads the 'Spot name' text (it would not know whether the text
+was meant for it). The seven buttons send fixed messages without item or revision.
+
+### 10.9 What to check once on the real installation
+
+Nothing in P5 could be run against Home Assistant, a broker or a phone. Check, in this order: copy both blueprints and create
+the automation from the review blueprint for one phone, then read the trace of the request and of a tap (A1); restart Home
+Assistant with a request pending and confirm one notification within about 30 s, with its map image (the image is sent
+again 10 s after the entity list, so an image entity that exists later than that gives a notification without the image,
+and nothing else is lost) (A2); add a place while Home Assistant runs and watch the 'Review item' select **and the
+'Advanced item' select**, also after two changes within a second and when Home Assistant is busy (if it needs several
+seconds to apply a new option list, a select can show unknown until the next change: note how long) (A3, else
+`SELECT_MODE = "slots"` for the review select); the notification text, three actions, the map as image and no time or
+name on the phone you use, with the phone away from your network too: the phone itself loads the image from the
+Home Assistant address it is configured with, so it needs a URL that reaches Home Assistant from outside (A4, A7); Rename with its text
+prompt (A5); a tap twice and the same push twice give one zone and one visible notification (A6); 'Show me live' for 5
+minutes with someone walking, and `cpu_pct_1h` of the status sensor afterwards (A8, A10); that the recorder excludes of
+section 6 match all three images (A11); the time entities and the switch-on box (A12); 'Forget all learned data' on a copy of
+the data (A13); a backup with `state.json` in it, and a backup of the app after a capture of one minute, opened to see that no `capture-*.jsonl` is in it (A14,
+A15: the `capture/*` entry of `backup_exclude` is the thing under test); after the setup request, copying the blueprint late or naming a phone that is not registered: within a day, between
+08:00 and 21:00, a new request and the notification (A16); two phones, one automation each, with a restart of Home Assistant
+between the first phone's acknowledgement and the second phone's send: each phone ends with one notification (A17).
 
 ## Development
 
@@ -421,3 +634,25 @@ Night learning, 16 x 3 for the mark, approve and reject scenarios, 14 x 2 for th
 P2). The two profiles together exceed the 1,500-day limit of one invocation, so they are two invocations. Single jobs
 such as `--jobs bed_w0000_0600_p4,bed_w0000_0600_p4nl --seeds 1-3 --nights 21` also work. The report adds a P4 section
 next to the P3 criteria; a check reads INCOMPLETE until all 5 seeds of its jobs have run.
+
+The P5 checks (P5-1 to P5-10 and the regression checks P5-R1 to P5-R3, spec section 11) run with `--profile p5smoke` (one
+9-night run) or `--profile p5`; the checks that need Home Assistant's behaviour (the push flow across restarts, the
+blueprint text) are unit tests: `tests/test_p5_push_flow.py` runs the real shell layer against `tests/fake_ha.py`, a Python
+port of the blueprint (a fake broker keeps the retained messages, an entity exists only after its discovery config was
+seen, Home Assistant can restart), and `tests/test_p5_blueprint.py` checks the blueprint's text. The Python port is what
+the tests trust; the blueprint itself has to be traced once in Home Assistant (section 10.9).
+
+The three regression checks compare this tree with the 0.4.0 baseline, which is read-only and lives outside the
+repository (`git archive 58804fa ha-addon`, extracted into a scratch folder; both trees contain a package named
+`radar_zone_learner`, so each is dumped by its own process). From this folder, with `BASE` the extracted
+`ha-addon/radar_zone_learner` of the baseline:
+
+```
+python -I -B replay/dump_run.py --tree BASE --jobs bed_w0000_0600,liv_w0000_0600 --seeds 1-3 --nights 14 --out OUT/r1_base
+python -I -B replay/dump_run.py --tree BASE --jobs bed_w0000_0600_p4 --seeds 1 --nights 21 --out OUT/r1_base
+python -I -B replay/dump_run.py --tree . --jobs bed_w0000_0600,liv_w0000_0600 --seeds 1-3 --nights 14 --out OUT/r1_p5
+python -I -B replay/dump_run.py --tree . --jobs bed_w0000_0600_p4 --seeds 1 --nights 21 --out OUT/r1_p5
+python -I -B replay/compare_runs.py --a OUT/r1_base --b OUT/r1_p5          P5-R1: learning is unchanged
+python -I -B replay/compat_check.py --base BASE --out OUT/compat           P5-R2: state files load in both directions
+python -I -B replay/resource_probe.py --p5 --out OUT/probe                 P5-R3: the cost of the P5 additions
+```

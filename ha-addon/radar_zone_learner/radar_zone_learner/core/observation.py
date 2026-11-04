@@ -186,6 +186,7 @@ class Observation:
         self.he = Timeline()
         self.he_open: Optional[tuple] = None          # (start_ms, value) of the current home_empty run
         self.censor_walls: list = []                  # wall ms of recent censoring events, ascending
+        self.paused = False                           # P5 guests pause: no coverage is credited (spec 7.3)
 
     # ------------------------------------------------------------ wall clock
     def wall(self, dev_ms: int) -> int:
@@ -423,9 +424,12 @@ class Observation:
         return acts
 
     # ------------------------------------------------------------ coverage (spec 7.1)
+    def set_paused(self, on: bool) -> None:
+        self.paused = bool(on)
+
     def _add_observed(self, a_dev: int, b_dev: int) -> None:
-        if b_dev <= a_dev:
-            return
+        if b_dev <= a_dev or self.paused:
+            return                                    # P5: paused time is not covered time (no decay, no covered date)
         self.add_coverage(self.wall(a_dev), self.wall(b_dev))
 
     def add_coverage(self, a: int, b: int) -> None:

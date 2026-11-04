@@ -7,6 +7,11 @@ design's LD2412 bridging rule), ghost and clutter evidence, door events, grid sp
 
 Times are wall seconds (float). Persisted records are rounded as OA 10 asks (spec 7.5).
 
+P5 guests pause (spec 7.3, D34): while 'Guests present - pause learning' or the guests context is on, what feeds the
+model stops, judged at the time of the evidence: ``paused_spans`` keeps the paused wall-time spans and ``paused_in(t0,
+t1)`` answers whether an interval overlaps one. A stay commits up to ``bridge_gap_s`` after its last fragment, so the
+flag is taken when the fragments arrive (``PendingStay.paused``), never when the stay commits.
+
 Bounds for noisy input (a static ghost can live for days, a noisy sensor can fire all day): a fragment
 buffer longer than FOLD_N samples is folded into running sums (the fragment is still emitted at its break
 or death, with the same values up to rounding), and the persisted event lists keep at most MAX_STAYS,
@@ -57,7 +62,7 @@ class Fragment:
 
 
 class PendingStay:
-    __slots__ = ("cx", "cy", "n", "t0", "t1", "frags", "last", "arr", "sd_sum")
+    __slots__ = ("cx", "cy", "n", "t0", "t1", "frags", "last", "arr", "sd_sum", "paused")
 
     def __init__(self, f: Fragment) -> None:
         self.cx = f.cx
@@ -69,6 +74,7 @@ class PendingStay:
         self.last = f
         self.arr = "static" if f.open_start else "walk"
         self.sd_sum = f.sd * f.n
+        self.paused = False             # P5: a fragment of this stay lies in a guests-pause span
 
 
 class TrackBehaviour:
@@ -134,6 +140,28 @@ class Behaviours:
         self.on_walk: Optional[Callable[[float], None]] = None      # P4: wall s of a walking point (activity)
         self.on_death: Optional[Callable] = None     # P4: (wall s, x, y, class) of a classified track death
         self.counters = {"fragments": 0, "stays": 0, "ghost_stays": 0, "epp": 0, "short_stays": 0}
+        self.paused_spans: list = []    # P5: [start_s, end_s | None] of the guests pause in wall seconds (RAM)
+        self.paused_stays = 0           # P5: stays dropped by the pause (not in ``counters``: the replay compares those)
+
+    # ------------------------------------------------------------ the guests pause (P5 spec 7.3)
+    def set_paused(self, on: bool, now_s: float) -> None:
+        """The pause starts (``on``) or ends at wall second ``now_s``. At most 32 spans are kept; a span that ended more
+        than two days ago is dropped."""
+        spans = self.paused_spans
+        if on:
+            if not spans or spans[-1][1] is not None:
+                spans.append([now_s, None])
+        elif spans and spans[-1][1] is None:
+            spans[-1][1] = now_s
+        keep_from = now_s - 2 * 86400
+        self.paused_spans = [s for s in spans if s[1] is None or s[1] >= keep_from][-32:]
+
+    def paused_in(self, t0: float, t1: float) -> bool:
+        """True when the wall-second interval [t0, t1] overlaps a pause span (an open span reaches infinity)."""
+        for a, b in self.paused_spans:
+            if a <= t1 and (b is None or b >= t0):
+                return True
+        return False
 
     # ------------------------------------------------------------ timelines in wall seconds
     def ld_share(self, a: float, b: float) -> float:
@@ -184,13 +212,15 @@ class Behaviours:
         tb.sp_b = self._speed_birth(tb)
         if tb.sp_b > self.p.moving_mps and not tb.powerup:
             s0 = tb.first[0]
-            self.grids.splat("birth_moving", s0[1], s0[2], 1.0)
-            self._door_event(s0[0], s0[1], s0[2], "b")
+            if not self.paused_in(s0[0], s0[0]):
+                self.grids.splat("birth_moving", s0[1], s0[2], 1.0)
+                self._door_event(s0[0], s0[1], s0[2], "b")
 
     def _process(self, tb: TrackBehaviour, s: tuple) -> None:
         p = self.p
         prev = tb.prev
-        if prev is not None and math.hypot(s[1] - prev[1], s[2] - prev[2]) > p.walk_step_m:
+        if prev is not None and math.hypot(s[1] - prev[1], s[2] - prev[2]) > p.walk_step_m \
+                and not self.paused_in(s[0], s[0]):
             self.grids.add_walk(s[1], s[2])
             self.walk_points_total += 1
             if self.on_walk is not None:
@@ -274,14 +304,17 @@ class Behaviours:
         if not censored:
             sp_d = self._speed_death(tb)
             last = tb.last4[-1]
+            paused = self.paused_in(last[0], last[0])     # P5: judged at the time of the track's last sample
             if sp_d > p.moving_mps:
                 death_class = "moving"
-                self.grids.splat("death_moving", last[1], last[2], 1.0)
-                self._door_event(last[0], last[1], last[2], "d")
+                if not paused:
+                    self.grids.splat("death_moving", last[1], last[2], 1.0)
+                    self._door_event(last[0], last[1], last[2], "d")
             else:
                 death_class = "still"
-                self.grids.splat("death_still", last[1], last[2], 1.0)
-            if self.on_death is not None:
+                if not paused:
+                    self.grids.splat("death_still", last[1], last[2], 1.0)
+            if self.on_death is not None and not paused:
                 self.on_death(last[0], last[1], last[2], death_class)
         B = tb.B
         if tb.F is not None:
@@ -320,13 +353,16 @@ class Behaviours:
         f = Fragment(cx, cy, sd, n, t0, t1, tb.B_start, tb.track_id, end, open_start,
                      end == "death", death_class)
         self.counters["fragments"] += 1
-        self.covis.add(f)
+        paused = self.paused_in(t0, t1)                   # P5: no COVIS and no ghost evidence from paused time
+        if not paused:
+            self.covis.add(f)
         if sd < p.epp_sd_m and f.t1 - f.t0 >= p.epp_min_s:
             dur = f.t1 - f.t0
             self.counters["epp"] += 1
-            self._ghost_event(f.t0, cx, cy, dur, "identical", self.ld_share(f.t0, f.t1),
-                              "static" if open_start else "walk")
-            self.grids.splat("ghost", cx, cy, dur / 60.0)
+            if not paused:
+                self._ghost_event(f.t0, cx, cy, dur, "identical", self.ld_share(f.t0, f.t1),
+                                  "static" if open_start else "walk")
+                self.grids.splat("ghost", cx, cy, dur / 60.0)
             return
         self.on_fragment(f)
 
@@ -347,11 +383,13 @@ class Behaviours:
                     st.frags += 1
                     st.last = f
                     st.sd_sum += f.sd * f.n
+                    st.paused = st.paused or self.paused_in(f.t0, f.t1)
                     if not f.open_end:
                         self.pending.remove(st)
                         self.commit(st)
                     return
         st = PendingStay(f)
+        st.paused = self.paused_in(f.t0, f.t1)
         if f.open_end:
             self.pending.append(st)
         else:
@@ -394,6 +432,9 @@ class Behaviours:
         dur = st.t1 - st.t0
         if dur < p.stay_min_s:
             self.counters["short_stays"] += 1
+            return
+        if st.paused:                                     # P5: evidence from a guests-pause span is not recorded
+            self.paused_stays += 1
             return
         ld_opt = self.ld_share_opt(st.t0, st.t1)         # None: the LD2412 was not observing (unknown)
         ld = 0.0 if ld_opt is None else ld_opt
