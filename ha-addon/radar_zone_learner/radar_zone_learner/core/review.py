@@ -31,9 +31,11 @@ mutation made through this model bumps ``ver``; code that changes a suggestion, 
 """
 from __future__ import annotations
 
+import math
 from datetime import date
 from typing import Optional
 
+from . import drift, moves, movedfrom, tuningagg
 from . import labels as labels_mod
 from . import rejections, zonework
 from . import zones as zones_mod
@@ -44,8 +46,8 @@ from .extraction import cid_key
 from .night import circ_diff, window_len
 from .p5state import P5State
 from .params import DEFAULT_P5, P5Params, Params
-from .types import (ANSWER_OPS, ITEM_BED, ITEM_IDS, ITEM_NIGHT_WINDOW, AnswerIgnored, DebugMapChanged, NodeCommand,
-                    ReviewChanged, ReviewItem, StateError)
+from .types import (ANSWER_OPS, ITEM_BED, ITEM_IDS, ITEM_NIGHT_WINDOW, ITEM_RADAR_MOVED, AnswerIgnored,
+                    DebugMapChanged, NodeCommand, ReviewChanged, ReviewItem, StateError)
 
 PLACE_TYPES = ("dwell_zone", "short_task_zone")
 SUPPRESSION_TYPES = ("bed_needs_data", "night_window", "place")
@@ -84,7 +86,10 @@ class ReviewModel:
         self._t2: Optional[tuple] = None                 # (key, tuple of ReviewItem)
         self._merge_by_sid: dict = {}
         self._mod_by_zid: dict = {}
+        self._ret_by_zid: dict = {}                      # P7: the retire proposals by zone id (incl. snoozed ones)
         self.more = 0                                    # open tier-2 items that did not fit under the cap
+        self.probation_held = 0                          # P7 RAM: places withheld by the probation rule (status count)
+        self.recheck_held = 0                            # P7 RAM: places withheld next to a zone that needs re-check
 
     def touch(self) -> None:
         """Something the tier-2 list depends on changed outside this model: drop the cache."""
@@ -189,7 +194,7 @@ class ReviewModel:
                 continue
             if later.get(s["id"]) == run:
                 continue
-            if s["id"] in covered or s["id"] in rejected or rejections.mask_match(L, s):
+            if s["id"] in covered or s["id"] in rejected or rejections.mask_match(L, s) or movedfrom.mask_match(L, s):
                 continue
             if zones_mod.label_covers(L, s):
                 continue
@@ -217,6 +222,8 @@ class ReviewModel:
         cap = self.p5params.review_max_places
         run = L.last_run_ord or NEVER
         places = self.pending_basic(L)
+        if L.p7on:
+            return self._compute_tier2_p7(L, places, cap, run)
         merges, mods = zonework.proposals(L, places)
         self._merge_by_sid = {m["sid"]: m for m in merges}
         self._mod_by_zid = {m["zid"]: m for m in mods}
@@ -244,6 +251,57 @@ class ReviewModel:
                                        "shift_cm": x["shift_cm"], "dir": x["dir"]}, 2))
         return tuple(out)
 
+    def _compute_tier2_p7(self, L, places: list, cap: int, run: int) -> tuple:
+        """The P7 path (spec 4.3.1, 6.1): ``moves.plan`` supplies the modify, merge and retire proposals and the ids a
+        merge or modify consumes; probation and the 'needs re-check' hiding are applied only to the plain places left
+        (a fresh modify candidate must not be hidden); the order is modify, places, merge, retire."""
+        p5 = self.p5
+        zone7 = L.zone7
+        ctx = drift.context(L) if L.last_run_ord is not None else None
+        merges, mods, retires, consumed = moves.plan(L, places, ctx)
+        self._merge_by_sid = {m["sid"]: m for m in merges}
+        self._mod_by_zid = {m["zid"]: m for m in mods}
+        self._ret_by_zid = {r["zid"]: r for r in retires}
+        plain = []
+        prob = rech = 0
+        for s in places:
+            if s["id"] in consumed:
+                continue
+            if moves.rc_hidden(L, s):
+                rech += 1
+            elif ctx is not None and not moves.probation_ok(L, s, ctx):
+                prob += 1
+            else:
+                plain.append(s)
+        self.probation_held = prob
+        self.recheck_held = rech
+        merges_open = [m for m in merges if p5.later.get("mrg-" + m["sid"]) != run]
+        mods_open = [m for m in mods if p5.later.get("mod-" + m["zid"]) != run]
+        rets_open = [r for r in retires if not zone7.snoozed("ret-" + r["zid"], run)]
+        combined = [("modify", m) for m in mods_open] + [("place", s) for s in plain] + \
+                   [("merge", m) for m in merges_open] + [("retire", r) for r in rets_open]
+        shown = combined[:cap]
+        self.more = len(combined) - len(shown)
+        out = []
+        for kind, x in shown:
+            if kind == "place":
+                out.append(self._place_item(L, x))
+            elif kind == "merge":
+                tag = p5.alloc_tag(x["sid"])
+                out.append(ReviewItem("mrg-" + x["sid"], x["rev"], "merge_into",
+                                      {"tag": tag, "sid": x["sid"], "zid": x["zid"], "zname": x["zname"],
+                                       "ext_cm": x["ext_cm"], "dir": x["dir"], "r": x["r"], "src": x["src"]}, 2))
+            elif kind == "modify":
+                tag = p5.alloc_tag(x["sid"])
+                out.append(ReviewItem("mod-" + x["zid"], x["rev"], "modify_zone",
+                                      {"tag": tag, "sid": x["sid"], "zid": x["zid"], "zname": x["zname"],
+                                       "shift_cm": x["shift_cm"], "dir": x["dir"], "r": x["r"], "src": x["src"]}, 2))
+            else:
+                tag = p5.alloc_tag(x["zid"])
+                out.append(ReviewItem("ret-" + x["zid"], x["rev"], "retire_zone",
+                                      {"tag": tag, "zid": x["zid"], "zname": x["zname"], "weeks": x["weeks"]}, 2))
+        return tuple(out)
+
     def _place_item(self, L, s: dict) -> ReviewItem:
         ev = s.get("evidence") or {}
         p5p = self.p5params
@@ -267,8 +325,29 @@ class ReviewModel:
             out.append(ReviewItem(ITEM_NIGHT_WINDOW, L.night_m.proposal_rev, ITEM_NIGHT_WINDOW, self.nw_data(L)))
         if self.bed_state(L)[0] == "open":
             out.append(ReviewItem(ITEM_BED, self.bed_rev, ITEM_BED, self.bed_data(L)))
+        rm = self.radar_item(L)
+        if rm is not None:
+            out.append(rm)
         out.extend(self.tier2(L))
         return out
+
+    # ------------------------------------------------------------ the radar-moved item (P7 spec 6.1)
+    def radar_item(self, L) -> Optional[ReviewItem]:
+        """The tier-1 ``radar_moved`` item: open while the detector's latched item is open, the user did not ignore this
+        revision and it is not snoozed. Never exists with P7 disabled."""
+        if not L.p7on:
+            return None
+        rm = L.zone7.rm
+        if not rm["open"] or rm["ign"] == rm["rev"] or L.zone7.snoozed(ITEM_RADAR_MOVED, L.last_run_ord or NEVER):
+            return None
+        dx, dy, tdeg = rm["tx"]
+        return ReviewItem(ITEM_RADAR_MOVED, rm["rev"], "radar_moved",
+                          {"shift_cm": int(round(math.hypot(dx, dy))), "deg": round(abs(tdeg) / 10.0, 1),
+                           "streak": rm["st"]}, 1)
+
+    def open_tier1(self, L, item_id) -> bool:
+        """True when ``item_id`` is the open ``radar_moved`` item (the select accepts it, spec 6.3)."""
+        return self.ready(L) and item_id == ITEM_RADAR_MOVED and self.radar_item(L) is not None
 
     def selected(self, L, items: Optional[list] = None) -> Optional[str]:
         items = self.items(L) if items is None else items
@@ -333,11 +412,16 @@ class ReviewModel:
             return "nw", None, L.night_m.proposal_rev
         if item == ITEM_BED:
             return "bed", None, self.bed_rev
-        if item.startswith("mrg-") or item.startswith("mod-"):
+        if item == ITEM_RADAR_MOVED:
+            return ("radar", None, L.zone7.rm["rev"]) if L.p7on else (None, None, None)
+        if item.startswith("mrg-") or item.startswith("mod-") or (L.p7on and item.startswith("ret-")):
             self.tier2(L)                                    # refreshes the proposals
             if item.startswith("mrg-"):
                 m = self._merge_by_sid.get(item[4:])
                 return ("merge", m, m["rev"]) if m is not None else (None, None, None)
+            if item.startswith("ret-"):
+                m = self._ret_by_zid.get(item[4:])
+                return ("retire", m, m["rev"]) if m is not None else (None, None, None)
             m = self._mod_by_zid.get(item[4:])
             return ("modify", m, m["rev"]) if m is not None else (None, None, None)
         s = self._suggestion(L, item)
@@ -408,7 +492,7 @@ class ReviewModel:
 
     def _dispatch(self, L, ev, op: str, outs: list, now_ms: int) -> bool:
         if op == "forget":
-            return self._forget()
+            return self._forget(L)
         if op == "advanced":
             return advanced_apply(L, ev, outs, now_ms)
         item = ev.item if ev.item is not None else self.selected(L)
@@ -434,14 +518,28 @@ class ReviewModel:
             return self._answer_merge(L, ev, item, obj, outs, now_ms)
         if kind == "modify":
             return self._answer_modify(L, ev, item, obj, outs, now_ms)
+        if kind == "retire":
+            return self._answer_retire(L, ev, item, obj, outs)
+        if kind == "radar":
+            return self._answer_radar(L, ev, outs)
         return self._answer_record(L, ev, item, outs)         # a zone record or a label: only 'rename'
 
-    def _forget(self) -> bool:
+    def _forget(self, L) -> bool:
+        """'Forget rejections': every suppression, snooze and mask goes. P7 (DV13): also the moved-from and retired masks,
+        every Keep date, the P7 snoozes and the radar-moved Ignore mark."""
         changed = bool(self.suppressions) or any(v is not None for v in self.later.values()) or bool(self.p5.later)
         self.suppressions = []
         self.later = {ITEM_NIGHT_WINDOW: None, ITEM_BED: None}
         self.p5.later.clear()
         self.p5.masks.clear()
+        z7 = L.zone7
+        if L.p7on and (z7.mf or z7.snz or z7.rm["ign"] or any(e["kp"] for e in z7.z.values())):
+            changed = True
+            movedfrom.clear(L)
+            z7.snz.clear()
+            z7.rm["ign"] = 0
+            for e in z7.z.values():
+                e["kp"] = 0
         if changed:
             self.bed_rev += 1
         return changed
@@ -588,14 +686,38 @@ class ReviewModel:
         if bad is not None:
             return self._ignore(outs, item, op, bad)
         if op == "reject":
+            self._count(L, "place", "reject", s)
             rejections.add_rejection(L, s, L.night)
             return True
         if op == "later":
+            self._count(L, "place", "later")
             self.p5.set_later(item, L.last_run_ord or NEVER)
             return True
         if op in ("approve", "rename"):
-            return self._new_zone(L, ev, s, outs, now_ms, item, empty_is_error=(op == "rename")) is not None
+            made = self._new_zone(L, ev, s, outs, now_ms, item, empty_is_error=(op == "rename")) is not None
+            if made:
+                self._count(L, "place", op, s)
+            return made
         return self._ignore(outs, item, op, "not_applicable")
+
+    # ------------------------------------------------------------ P7 guards and answer counters (spec 6.2)
+    def _count(self, L, kind: str, op: str, obj=None) -> None:
+        if L.p7on:
+            tuningagg.record_answer(L, kind, op, obj)
+
+    @staticmethod
+    def _zone_busy(L, zid: str) -> bool:
+        return any(i == zid and occ and valid for i, occ, valid in L.zone_snapshot())
+
+    def _approval_refusal(self, L, z: dict, guard: bool) -> Optional[str]:
+        """The reason an approval of a merge, modify or retire is refused, or None (spec 6.2, preconditions 2 and 3): a
+        bed or a frozen zone (static predicate or coverage freeze) is ``not_applicable``; with ``guard`` the busy guard
+        refuses (``zone_busy``) while the zone is occupied and valid. Reject and Later are never refused."""
+        if zones_mod.is_frozen(L, z["kind"], z.get("ref"), zid=z["zid"]) or z["kind"] == "bed":
+            return "not_applicable"
+        if guard and L.p7on and L.p7params.busy_guard and self._zone_busy(L, z["zid"]):
+            return "zone_busy"
+        return None
 
     # ------------------------------------------------------------ merge and modify items (spec 3.6)
     def _target_zone(self, L, zid: str) -> Optional[dict]:
@@ -610,22 +732,31 @@ class ReviewModel:
         if op == "approve":
             if z is None:
                 return self._ignore(outs, item, op, "no_such_item")
-            if zones_mod.is_frozen(L, z["kind"], z.get("ref")) or z["kind"] == "bed":
-                return self._ignore(outs, item, op, "not_applicable")   # frozen zones are skipped (OA 7.8)
+            bad = self._approval_refusal(L, z, False)
+            if bad is not None:
+                return self._ignore(outs, item, op, bad)       # frozen zones are skipped (OA 7.8)
+            self._count(L, "merge", "approve")
             zones_mod.merge_into_zone(L, z["zid"], s)
             outs.append(DebugMapChanged("review"))
             return True
         if op == "rename":                                  # "No, it's a new place"
-            return self._new_zone(L, ev, s, outs, now_ms, item, empty_is_error=False) is not None
+            made = self._new_zone(L, ev, s, outs, now_ms, item, empty_is_error=False) is not None
+            if made:
+                self._count(L, "merge", "rename")
+            return made
         if op == "reject":
+            self._count(L, "merge", "reject")
             rejections.add_rejection(L, s, L.night)
             return True
         if op == "later":
+            self._count(L, "merge", "later")
             self.p5.set_later(item, L.last_run_ord or NEVER)
             return True
         return self._ignore(outs, item, op, "not_applicable")
 
     def _answer_modify(self, L, ev, item: str, prop: dict, outs: list, now_ms: int) -> bool:
+        if prop.get("src") is not None:                     # a proposal of the P7 detector (a P5 one has no source)
+            return self._answer_modify_p7(L, ev, item, prop, outs, now_ms)
         op = ev.op
         s = self._suggestion(L, prop["sid"])
         z = self._target_zone(L, prop["zid"])
@@ -650,6 +781,103 @@ class ReviewModel:
             self.p5.set_later(item, L.last_run_ord or NEVER)
             return True
         return self._ignore(outs, item, op, "not_applicable")
+
+    def _answer_modify_p7(self, L, ev, item: str, prop: dict, outs: list, now_ms: int) -> bool:
+        """The modify answers by source (spec 6.2). ``cand``: the proposal's suggestion is a different pending candidate,
+        the zone keeps its own ``ref``: 'No, it's a new place' only creates the new zone and Reject only rejects the
+        candidate. ``own``: the zone's own suggestion moved: both behave as in P5."""
+        op = ev.op
+        src = prop["src"]
+        s = self._suggestion(L, prop["sid"])
+        z = self._target_zone(L, prop["zid"])
+        if s is None or z is None:
+            return self._ignore(outs, item, op, "no_such_item")
+        if op == "approve":
+            bad = self._approval_refusal(L, z, True)
+            if bad is not None:
+                return self._ignore(outs, item, op, bad)
+            self._count(L, "modify", "approve", {"ratio": drift.zone_ratio(L, z["zid"])})
+            zones_mod.move_zone(L, z["zid"], s, src)
+            outs.append(DebugMapChanged("review"))
+            return True
+        e = L.zone7.entry(z["zid"], create=True)
+        if op == "rename":                                  # "No, it's a new place"
+            if self._new_zone(L, ev, s, outs, now_ms, item, empty_is_error=False) is None:
+                return False
+            if src == "own":                                # S passes to the new zone: the old one loses its ref (P5)
+                z["ref"] = None
+                z["srev"] = s["rev"]
+            e["ms"] = ""
+            self._count(L, "modify", "rename")
+            return True
+        if op == "reject":
+            self._count(L, "modify", "reject", {"ratio": drift.zone_ratio(L, z["zid"])})
+            if src == "cand":
+                rejections.add_rejection(L, s, L.night)     # nothing else changes (srev means 'the ref suggestion's rev')
+            else:
+                z["srev"] = s["rev"]                        # asked again only when the suggestion's rev rises
+            e["ms"] = ""
+            return True
+        if op == "later":
+            self._count(L, "modify", "later")
+            self.p5.set_later(item, L.last_run_ord or NEVER)
+            return True
+        return self._ignore(outs, item, op, "not_applicable")
+
+    def _answer_retire(self, L, ev, item: str, prop: dict, outs: list) -> bool:
+        """``ret-<zid>``: Approve removes the zone (and its entities) and leaves a ``retired`` mask, Reject is Keep for
+        ``keep_days`` days, Later snoozes to the next nightly run (spec 4.5, 6.2)."""
+        op = ev.op
+        z = self._target_zone(L, prop["zid"])
+        if z is None:
+            return self._ignore(outs, item, op, "no_such_item")
+        zid = z["zid"]
+        if op == "approve":
+            bad = self._approval_refusal(L, z, True)
+            if bad is not None:
+                return self._ignore(outs, item, op, bad)
+            self._count(L, "retire", "approve", {"ratio": drift.zone_ratio(L, zid)})
+            movedfrom.add(L, "retired", z)
+            zones_mod.remove(L, zid)
+            outs.append(DebugMapChanged("review"))
+            return True
+        if op == "reject":                                  # Keep
+            e = L.zone7.entry(zid, create=True)
+            self._count(L, "retire", "reject", {"ratio": drift.zone_ratio(L, zid)})
+            e["kp"] = self._today(L) + L.p7params.keep_days
+            e["rt"] = 0
+            e["ro"] = False
+            return True
+        if op == "later":
+            self._count(L, "retire", "later")
+            L.zone7.snz["ret-" + zid] = L.last_run_ord or NEVER
+            return True
+        return self._ignore(outs, item, op, "not_applicable")
+
+    def _answer_radar(self, L, ev, outs: list) -> bool:
+        """``radar_moved``: Approve resets the learned maps (spec 4.7), Reject is Ignore, Later snoozes."""
+        op = ev.op
+        rm = L.zone7.rm
+        if not rm["open"] or rm["ign"] == rm["rev"]:
+            return self._ignore(outs, ITEM_RADAR_MOVED, op, "not_pending")
+        if op == "approve":
+            self._count(L, "radar", "approve")
+            L.reset_maps()
+            outs.append(DebugMapChanged("review"))
+            return True
+        if op == "reject":                                  # Ignore
+            self._count(L, "radar", "reject")
+            rm["ign"] = rm["rev"]
+            rm["open"] = False
+            rm["st"] = 0
+            rm["d0"] = 0
+            rm["qt"] = (L.last_run_ord or self._today(L)) + L.p7params.rm_quiet_days
+            return True
+        if op == "later":
+            self._count(L, "radar", "later")
+            L.zone7.snz[ITEM_RADAR_MOVED] = L.last_run_ord or NEVER
+            return True
+        return self._ignore(outs, ITEM_RADAR_MOVED, op, "not_applicable")
 
     # ------------------------------------------------------------ a zone record or a label as the answer's item
     def _answer_record(self, L, ev, item: str, outs: list) -> bool:
@@ -685,22 +913,30 @@ class ReviewModel:
         sids = {s["id"] for s in L.ns.suggestions}
         zids = {z["zid"] for z in self.zones}
         later = self.p5.later
-        for k in [k for k, v in later.items() if v != run or not self._item_exists(k, sids, zids)]:
+        for k in [k for k, v in later.items() if v != run or not self._item_exists(L, k, sids, zids)]:
             del later[k]
+        z7 = L.zone7
+        if L.p7on and z7.snz:                                # P7 snoozes end at the next run, like p5.later
+            for k in [k for k, v in z7.snz.items() if v != run or not self._item_exists(L, k, sids, zids)]:
+                del z7.snz[k]
         rejections.fill_masks(L)
         masks = self.p5.masks
         self.suppressions = [s for s in self.suppressions if s["type"] != "place" or s["ref"] in masks]
         covered = zones_mod.covered_ids(L)
-        self.p5.prune_tags(lambda k: k in sids or k in covered)
-        L.planner.prune_sig(lambda k: self._item_exists(k, sids, zids))      # announced ids that no longer exist
+        self.p5.prune_tags(lambda k: k in sids or k in covered or k in zids)      # P7: a retire item is tagged by its zid
+        L.planner.prune_sig(lambda k: self._item_exists(L, k, sids, zids))      # announced ids that no longer exist
         self.ver += 1
 
-    @staticmethod
-    def _item_exists(item: str, sids: set, zids: set) -> bool:
+    def _item_exists(self, L, item: str, sids: set, zids: set) -> bool:
+        """Does the item an announced signature or a snooze names still exist? P7 (spec 6.1): ``ret-<zid>`` while the
+        record exists, ``radar_moved`` while the detector's item is open; without it the nightly ``prune_sig`` would drop
+        the announced signature and the same unanswered item would be announced again every day."""
         if item.startswith("mrg-"):
             return item[4:] in sids
-        if item.startswith("mod-"):
+        if item.startswith("mod-") or item.startswith("ret-"):
             return item[4:] in zids
+        if item == ITEM_RADAR_MOVED:
+            return bool(L.zone7.rm["open"])
         return item in sids or item in ITEM_IDS
 
     # ------------------------------------------------------------ status

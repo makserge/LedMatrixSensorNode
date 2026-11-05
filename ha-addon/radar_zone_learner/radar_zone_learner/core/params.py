@@ -219,6 +219,109 @@ class P5Params:
 DEFAULT_P5 = P5Params()
 
 
+@dataclass(frozen=True, slots=True)
+class P6Params:
+    """P6 parameters (P6 spec A.5). A separate dataclass on purpose: ``Params`` and its digest do not change (D4).
+    A value marked CD is the design's; PROPOSAL is the spec's where the design is silent."""
+    enter_k: int = 3                  # CD: a track enters after >= 3 of its last 10 detections inside the zone area
+    enter_n: int = 10
+    exit_frames: int = 1              # CD: one detection outside the area is a leave at once
+    margin_cm: int = 25               # CD:data_model/zones
+    margin_min_cm: int = -50          # CD:entities/Zone tuning
+    margin_max_cm: int = 100
+    pass_speed_ms: float = 0.8        # CD: tracks crossing at >= 0.8 m/s are not counted for dwell zones
+    vanish_ms: int = 2000             # CD: the tracker ttl
+    count_max: int = 3                # CD
+    count_publish_min_ms: int = 1000  # CD (the shell rate-limits the count topic)
+    delay_default_s: tuple = (("bed", 600), ("dwell", 300), ("short_task", 60), ("manual", 300))   # PROPOSAL
+    delay_learn_min_s: int = 5        # CD
+    delay_learn_max_s: int = 600      # CD
+    tune_delay_min_s: int = 3         # CD:entities/Zone tuning
+    tune_delay_max_s: int = 900
+    spell_keep: int = 50              # PROPOSAL
+    spell_min_for_learn: int = 10     # PROPOSAL
+    learn_quantile: float = 0.95      # CD (p95); the nearest-rank method is a PROPOSAL
+    late_return_factor: float = 2.0   # PROPOSAL
+    door_radius_m: float = 0.4        # PROPOSAL
+    door_speed_ms: float = 0.35       # CD: moving exit, mean speed above 0.35 m/s over its last 3 s
+    fast_clear_s: int = 3             # CD: a moving death inside a learned door clears after 3 s
+    ldr_min_known_s: int = 3600       # PROPOSAL
+    ldr_min_share: float = 0.8        # CD: LD2412-on share >= 0.8
+    early_absent_s: int = 60          # PROPOSAL
+    episode_budget_day: int = 74      # derived in the spec 7.5; informational counter
+    valve_after_episodes: int = 0     # 0 = valve off (default)
+    zone_entities_max: int = 24       # used by the shell
+    variants_max: int = 6
+
+
+DEFAULT_P6 = P6Params()
+
+
+@dataclass(frozen=True, slots=True)
+class P7Params:
+    """P7 parameters (P7 spec A.4). A separate dataclass on purpose: ``Params``, ``P5Params`` and ``P6Params`` do not
+    change (D3). A value marked CD is the design's; PROPOSAL is the spec's where the design is silent. ``enabled`` is
+    False by default (D4): a learner built without P7Params behaves exactly as the P6 learner; the production factory
+    and the replay's P7 jobs pass True."""
+    enabled: bool = False               # D4: the factory and the replay's P7 jobs pass True
+    fast_dates: int = 3                 # CD
+    slow_dates: int = 14                # CD
+    fast_hl: float = 3.0                # CD (decay); weights per covered date: PROPOSAL
+    slow_hl: float = 14.0
+    cov_min_frac: float = 0.5           # CD
+    frozen_share: float = 0.5           # CD
+    static_freeze: bool = True          # DV3
+    min_zone_age_nights: int = 7        # PROPOSAL
+    min_slow_stays: int = 4             # PROPOSAL
+    ratio_falling: float = 0.6          # CD
+    ratio_flag: float = 0.25            # CD
+    flag_nights: int = 3                # CD
+    ratio_retire: float = 0.1           # CD
+    retire_days: int = 21               # CD
+    retire_clear: float = 0.1           # DV11: = ratio_retire is CD's consecutive rule; 0.25 is the hold band
+    retire_usual_cov: float = 0.5       # CD
+    keep_days: int = 90                 # CD
+    usual_alpha: float = 0.2            # PROPOSAL
+    usual_full_cov: float = 0.9         # PROPOSAL
+    lastuse_min_dwell_s: int = 300      # PROPOSAL
+    move_min_m: float = 0.5             # CD
+    move_max_m: float = 4.0             # CD
+    move_min_r: float = 0.6             # CD
+    succ_far_m: float = 1.5             # CD
+    succ_max_share: float = 0.25        # CD
+    merge_touch_m: float = 0.4          # CD
+    merge_iou: float = 0.2              # CD
+    merge_min_r: float = 0.6            # CD
+    mf_max: int = 50                    # PROPOSAL
+    recheck_days: int = 28              # PROPOSAL
+    rc_overlap: float = 0.5             # PROPOSAL (D36)
+    probation_from_night: int = 14      # PROPOSAL (DV6)
+    probation_min_span: int = 10        # PROPOSAL (DV6); 0 switches the rule off
+    rm_nights: int = 2                  # CD
+    rm_shift_min_m: float = 0.4         # CD reading (grid)
+    rm_rot_min_deg: float = 5.0         # CD reading (grid)
+    rm_corr_min: float = 0.7            # CD (hit rate)
+    rm_gain_min: float = 0.2            # PROPOSAL
+    rm_search_m: float = 1.0            # CD
+    rm_search_step_m: float = 0.2
+    rm_rot_max_deg: float = 10.0        # CD
+    rm_rot_step_deg: float = 2.5        # PROPOSAL
+    rm_recent_max_dates: int = 3        # CD
+    rm_min_recent: int = 10             # PROPOSAL
+    rm_min_ref: int = 30                # PROPOSAL
+    rm_tol_rings: int = 1               # PROPOSAL
+    rm_max_points: int = 200            # PROPOSAL
+    rm_hold_days: int = 14              # PROPOSAL (D35)
+    rm_quiet_days: int = 14             # PROPOSAL (D35)
+    busy_guard: bool = True             # PROPOSAL (Q10)
+    agg_keep_nights: int = 28           # CD (2-4 weeks)
+    agg_night_bytes_max: int = 2048     # PROPOSAL
+    agg_export_bytes_max: int = 16384   # PROPOSAL
+
+
+DEFAULT_P7 = P7Params()
+
+
 def params_digest(p: Params) -> str:
     """First 12 hex digits of sha256(repr(p)); stored in the state for diagnostics."""
     return hashlib.sha256(repr(p).encode("utf-8")).hexdigest()[:12]

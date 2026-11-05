@@ -1,5 +1,339 @@
 # Changelog
 
+## 0.7.0 - P7 drift, moves, retire, radar moved, tuning
+
+The learner now notices that the room changed and **asks you** about it: a piece of furniture that was moved (a *Moved* item
+that keeps the zone's id, name, entities and automations), a place that nobody has used for 21 covered days (a *Retire* item
+with a 90-day *Keep*), and a radar that was moved or turned (a *Radar moved* item that stays until you answer it, a generic
+push 'Radar needs attention', and a reset of the learned maps that keeps your places as 'needs re-check'). A zone is **frozen**
+(never flagged, moved or retired) when its usual hours were mostly not observed, which is what keeps the bed safe under the
+00:00 to 06:00 schedule. The merge detector of the design is live. A one-button, counts-only **tuning export** lets you
+propose threshold changes for a release; nothing is tuned at runtime. The learner still only recommends: every change is a
+review item that needs an answer, and the app still switches nothing in your home and sends no node command. The P7 data
+lives in one optional key `zone7` inside the `p5` section of the state (schema 4 stays; 0.6.0 and 0.5.0 keep the key and write
+it back). The firmware is not changed. The app version is 0.7.0; `config.yaml` gains the new version, the description and a
+second `backup_exclude` entry (`tuning/*`), no option. Design: option A, section P7 (`CD:phases/P7`).
+
+The core (`core/drift.py`, `moves.py`, `movedfrom.py`, `radarmoved.py`, `tuningagg.py`, `p7state.py` and the changes in
+`types.py`, `params.py`, `zones.py`, `review.py`, `notify.py`, `extraction.py`, `where.py`, `learner.py`), the shell and the
+replay (`replay/p7_scenarios.py`, `evaluate_p7.py`, `tune.py` and the plumbing) were written to the P7 specification in
+parallel by three owners. This block is the shell owner's; the core and replay owners add what only they can report (see
+'Verification'). **`P7Params.enabled` is False in the dataclass**: every existing test and every non-P7 replay job builds a
+learner that behaves exactly like 0.6.0; the production learner factory in `shell/service.py` passes `enabled=True`.
+
+### New
+
+Review items (shell: `shell/review_p5.py` texts, `select_model.py` labels; core: `review.py`, `moves.py`):
+
+- `mod-<zone>` ('Moved A'): Approve updates the zone in place (**id, name, kind, entities and automations stay**, only the
+  attribute `poly_cm` changes), Rename makes a new zone, Reject rejects the new spot as a place. The detector (`CD:pipeline/§7`):
+  a new place 0.5 to 4 m from a falling zone, hours correlated at r >= 0.6, and, beyond 1.5 m, at most 25 % of its dwell before
+  the zone's last use; a shift under 0.5 m is found through the zone's own suggestion.
+- `mrg-<place>` ('Extend A'): the merge detector (touching within 0.4 m or IoU >= 0.2, r >= 0.6, usage not falling) replaces the P5
+  scaffolding in production; a moved place wins over an extension.
+- `ret-<zone>` ('Retire A', new): 21 covered days with a ratio under 0.1 and the usual hours observed at least half the time;
+  Approve removes the zone and its entities, Reject is **Keep** for 90 days. Never the item a push offers.
+- `radar_moved` ('Radar moved', new, tier 1 after the night window and the bed): two consecutive moved nights, **latched until
+  answered**; Approve resets the maps in place (the zones and marks stay, every one 'needs re-check' for 28 days and is
+  re-anchored by a Moved item), Reject is Ignore (quiet for 14 days).
+- Answers are refused with the new review-event reason `zone_busy` while the zone is occupied (Approve of Moved and Retire only);
+  the order on the P7 path is Radar moved, Moved, places, Extend, Retire. Texts carry **no zone name, hour or date** unless
+  'Detailed review text' is on; the P5-path items keep their P5 texts (a merge or modify item without the data key `src`).
+- The push request can have the kind `attention` (the core keeps `daily` in its own state, so a 0.6.0 app still loads it; the
+  shell writes the word): the blueprint accepts it and says 'Radar needs attention' (no name, time or distance, no actions).
+
+Drift and freezing (core): a coverage-normalised ratio of the 3 over the 14 covered dates (decay-weighted), summed over the
+hours observed at least half the time in both windows; a zone whose usual hours are under half observed is frozen
+(`ZoneView.frozen` is the P5 static predicate OR this coverage rule). Moved-from and retired masks keep the old spot from coming
+back as a new place until it qualifies again on later stays alone. A probation rule keeps a one-week guest's seat from being
+offered (a new place after night 14 needs 10 covered dates of evidence).
+
+Tuning (shell: `shell/tuningexport.py`, `p7.py`, `topics_p7.py`, `discovery_p7.py`; core: `tuningagg.py`): one line of counts
+and fixed-length histograms a night in `/data/tuning/nights.jsonl` (the newest 28, local, excluded from backups, deleted by
+Forget all); `button.radar_zones_learner_export_tuning` publishes **one pooled record** (sums, no per-night list, no date) once
+to `radar_zones/learner/tuning/export`, **not retained**, no file written; `sensor.radar_zones_learner_tuning` says `none` or
+`<n> nights`. The record is scanned for privacy and size before it is published. `replay/tune.py --aggregate <file>` turns it
+into proposals on a PC. HA[U8] (the 'Listen to a topic' tool delivers the message) is an assumption (acceptance A7).
+
+Plumbing: 35 subscriptions (the one new topic is a command, so a retained message on it is ignored and deleted), 2 discovery
+messages, `P7Layer(P6Layer)` is the one layer object that `main` passes as the service's `p4=` (no new service hook: Forget
+all deletes the tuning folder through the existing `purge_capture` step), `main` builds `build_topics_p7`, new status
+attributes (counts only) in core (`zones_frozen`, `zones_blind`, `zones_falling`, `zones_unused`, `zones_recheck`,
+`moved_from`, `radar_moved`, `places_probation`, `places_recheck_held`, `zone7_pruned`, `zone7_reset`, `p7_errors`) and shell
+(`tuning_exports`, `tuning_export_refused`, `tuning_write_errors`, `p7_shell_errors`).
+
+Tests (shell, seven modules): `test_p7s_texts`, `test_p7s_discovery`, `test_p7s_topics`, `test_p7s_tuningexport`,
+`test_p7s_blueprint`, `test_p7s_entities`, `test_p7s_service` and the helper `tests/p7s_harness.py` (the P7 layer with the
+fake core and a fake Home Assistant that also models the 'Listen to a topic' tool); the `FakeLearner` of `tests/fakes.py`
+gained the P7 accessors and a clean tuning line.
+
+### Changed
+
+- `main` builds `build_topics_p7` and one `P7Layer`; `P5Layer`, `P6Layer` and their topics are unchanged and still tested on
+  their own.
+- `config.yaml`: version, description, and `backup_exclude` gains `tuning/*` next to `capture/*` (it matches the folder's files
+  and not `state.json`, the snapshots or the options).
+- `blueprints/radar_zone_review_push.yaml`: the two kind checks accept `attention` and the generic message for it is 'Radar
+  needs attention'. **Copy the blueprint again after the update**; an older copy ignores that kind. It has never been loaded by
+  Home Assistant (acceptance A6, assumption HA[U9]).
+- `README.md`: a new section 12; the P5 sentences that said merge and modify items are not made in production are in the
+  present tense; the 'Reserved for later: the `retire_zone` item' line is gone; the select options row gains `Retire A` and
+  `Radar moved`; the privacy summary lists the usual-hours state and the tuning data.
+- `THIRD_PARTY_NOTICES.md`: P7 uses no new third-party code or idea (stated there).
+- Existing tests, only the mechanical edits of the P7 specification (12.4): the version strings of the shell and manifest tests,
+  the manifest test (description line, the two `backup_exclude` entries and what each matches, the two changelog headings), the
+  `SHELL_MODULES` list of the lazy-import test, the regex of the blueprint test (the three kinds), and the select test (two
+  added labels). Nothing was loosened.
+
+### Privacy changes (read before you update)
+
+`state.json` (in every backup) gains, per zone, a 24-value **usual-hours profile**, the dates a zone was last used and of a Keep
+answer, the position of a moved or removed place (the moved-from mask) and counters of your answers: the same class as the
+stay list, coarser, and **never published**. The tuning file `/data/tuning/nights.jsonl` is a day-by-day series of counts (a
+night with no stays reads as 'nobody home'): it has no date, position, name, id or hour, it is **not in backups**, nothing
+publishes it, and Forget all deletes it. The only thing that leaves the add-on is the pooled export, **when you press the
+button**, once, to a topic that is not retained; Home Assistant and every add-on with MQTT access can read a message on it
+(`CD:privacy` 'Honest correction 3'). Push texts stay generic: a count, 'Radar zone review' or 'Radar needs attention', an item
+id with a revision in an action id; no name, time or distance.
+
+### Interpretations and open points (for the integration)
+
+The numbers are the decisions of the P7 specification (section 13.1); the owner questions Q1-Q19 are not answered yet and the
+spec's default applies to each. The interpretations (a `PROPOSAL` is the spec's value where `CD` is silent):
+
+- **Drift (D6, D7, D9, D18, D24, D25).** The 3-day and 14-day series are derived every night from the stay list and the
+  coverage table as decay-weighted windows over covered dates (half-lives 3 and 14), not stored bins; per zone only the usual
+  profile `u`, two run counters, a few dates and revision counters are persisted. A `collapsed` zone (nothing seen in the whole
+  slow window) has ratio 0; the retire run resets at a ratio of 0.1 or more (consecutive, as `CD`; 0.25 is the first draft's
+  band) and the flag run at 0.25. `u` is refreshed only while the zone is `ok`. Numbers are computed for marks and beds, items
+  only for zone records that are not beds. **Q3, Q2** beds and marks are never moved, merged or retired.
+- **Moves (D15, D19-D21, D33, D36, D46, DV9).** The modify detector runs at the review layer (`moves.plan`) and consumes the
+  suggestion, so extraction and every suggestion id and cell are as in 0.6.0 until the first answer; the answer swaps the zone's
+  `ref` to the new suggestion and keeps the old one in `also`; the modify revision is a per-zone counter that is never reset;
+  for a candidate-source proposal Rename and Reject never touch the old zone. A falling zone needs 4 stays in the slow window.
+- **Masks and forgetting (D11, D45, DV5, DV13).** Moved-from and retired masks live in `zone7.mf` (the P4 suppression entry is
+  pinned) and are judged in gate 7 on the candidate's own post-event stays. 'Forget rejections' also clears them, every Keep
+  date, the radar Ignore mark and the P7 snoozes; the per-zone 'Forget learned data' restarts only that zone's unused counters.
+- **Guests (D12, DV6, Q1).** The probation rule is a PROPOSAL with a real cost: a genuinely new seat is offered about 11 days
+  later after night 14. It is applied to the item list, not to the gates, so learning is unchanged.
+- **Radar moved (D8, D26, D34, D35, DV2, DV12, DV15, Q15, Q17).** Door events and the `identical` and `home_empty` clutter events
+  (no outline map: the walk grid has no 3-day variant); a hit rate stands in for 'correlation'; the detector delivers about 0.6
+  to 0.8 m and 7 to 10 degrees, not `CD`'s 0.3 m and 5 degrees. Latched until answered, held for at most 14 days, quiet for 14
+  days after Ignore. Reset keeps the coverage, the night model, the settings, the night-window and bed answers, the zones and
+  marks (Q5).
+- **Tuning (D14, D28, D38, DV8, Q6, Q18).** An offline loop; the pooled export has no per-night list or date; labels are
+  counted without a position (`lb`, `la`).
+- **Push (D22, D5).** A retire item and the radar item are never a push head; the attention request is a flag on `PushRequest`
+  and shares the one-a-day cap; snoozes of the new items live in `zone7.snz`, so a 0.6.0 app loads the state.
+- **Core notes.** (1) `tests/test_p5_notify.py` gained the field `attention` in its pinned `PushRequest` field set (a mechanical
+  consequence of Appendix A.2). (2) `core/state.py` needs no edit: the `zone7` sync is one line in `Learner.export_state`, the
+  load runs in `Learner.__init__`. (3) A zone entry is created at every nightly for every record and label, `young` included.
+  (4) The usual-profile refresh keeps the mass of the hours that were not observed and skips the night on which `u` was
+  initialised and a date already counted. (5) The date is marked seen on every night, held or not. (6) The `rr`/`ro` and `mr`/`ms`
+  bookkeeping is done in `moves.plan`; a snoozed retire item is filtered like a snoozed modify. (7) `ReviewModel._forget(L)` and
+  `_item_exists(self, L, ...)` gained `L`. (8) `Learner.p7_radar_dbg` (the last radar verdict, for the replay report) is an extra RAM
+  attribute. (9) `reset_summary()["grids_nonzero"]` counts the non-zero cells over the nine grids.
+- **Shell readings of the spec.** (1) `tuning/last_night` (one number, the learner's night counter) lets a nightly that ran twice
+  after a restart be written once; `nights.jsonl` holds no night number, and both files are under `tuning/*`. (2) The export press
+  is a shell event answered by the layer; the core never sees it. (3) Forget all deletes the tuning folder in the existing
+  `purge_capture` step, so the service has no new hook. (4) The slot-mode select, whose option list is fixed by P5, has no
+  `Radar moved` option: an open radar item takes the next slot. (5) The title of every push stays 'Radar zone review'; an
+  attention request has no head, so it has no actions. (6) A kept line that fails the core's privacy scan is dropped when the
+  file is read, so a damaged or hand-edited file can never reach the pooled record. (7) The retire text names the 90 days from
+  `P7Params.keep_days`.
+
+### Deviations from the design (DV1-DV15 of the specification)
+
+DV1 the series are derived and decayed, not stored bins; DV2 the radar-moved features are door and clutter events, no outline
+map; DV3 `frozen` is the static predicate OR the coverage rule (a bed marked under night-off has no night hours in any profile);
+DV4 empty-off is a replay stress case, not product behaviour; DV5 masks live in `zone7.mf`; DV6 the probation rule for guests
+(`CD` states no mechanism); DV7 the three CD buttons map onto Approve, Rename, Reject plus Later, the P7 texts carry no zone
+name by default; DV8 the tuning loop is offline; DV9 the modify detector runs at the review layer; DV10 the state key is a
+sibling `zone7`, not inside `zone6`; DV11 consecutive retire counting; DV12 the detector finds 0.6 to 0.8 m and 7 to 10 degrees
+(measured); DV13 'Forget rejections' clears the masks, Keep dates and snoozes too; DV14 the nightly budget is stated against
+the measured P6 time; DV15 the radar item is latched.
+
+### Not built
+
+- HOLD mode (D1: no scan controller, one switch for both radars, zones `unavailable` while the radars are off, no wake source).
+- Move, merge or retire of a 'Mark spot here' mark or of a bed (Q2, Q3); zone entities that go `unavailable` while a radar-moved
+  item is open or zones are 'needs re-check' (Q4); an automatic runtime change of any threshold (Q6); a per-frame flicker
+  counter and the margin proposal; a finer radar-moved detector (Q15); a per-date walk accumulator for an outline map; a room
+  occupancy entity (P6 Q1).
+- Writing to Home Assistant services from the app, and any firmware change.
+
+### Verification (development PC)
+
+- Shell unit tests (the seven `test_p7s_*` modules above: 40 + 13 + 14 + 34 + 13 + 15 + 24 = 153 tests), all OK, the cases with
+  the real `Learner` behind the real layer included (a modify that keeps the entities, a retire that removes them, a nightly
+  that writes one clean line, the export after a real night). The existing P3-P6 shell tests are unchanged apart from the
+  mechanical edits listed under 'Changed'. The full unit-test count is filled in at integration.
+- The replay checks of the P7 specification (P7-1 to P7-10 and the regression checks P7-R1 to P7-R3) belong to the core and
+  replay owners and are not reported in this block.
+- **Not verified:** everything Home Assistant does (HA[U8] the 'Listen to a topic' tool, HA[U9] the push kind `attention`,
+  HA[U10] a change of `poly_cm` alone), the blueprint, the real door and clutter statistics that decide whether the radar-moved
+  detector has features, the real distribution of the drift ratios and of rarely used seats, how often a real guest produces a
+  candidate, the real effect of the 21-day and 90-day rules, the CM4 cost of the nightly step and the usefulness of the tuning
+  proposals. They are the acceptance steps A1-A10 of the specification, section 11 (README section 12.9).
+
+## 0.6.0 - P6 confirmed-zone evaluation
+
+The learner now evaluates the live radar tracks against the zones you confirmed and tells Home Assistant: **zone occupancy,
+the number of people, enter and leave events, learned clear delays, door fast-clear, early clear for zones the second radar
+agrees with, time variants, tuning entities, and a blueprint that switches a light or a scene.** The learner still decides
+nothing about the home: the app has no Home Assistant API access, so a light or a scene is switched only by the blueprint you
+install. The zone data lives in one optional key `zone6` inside the `p5` section of the state (schema 4 stays; an installed
+0.5.0 offers the update and keeps its state, and 0.5.0 can still read a 0.6.0 file: it keeps `zone6` and writes it back). The
+firmware is not changed. The app version is 0.6.0; `config.yaml` gains only the new version and description, no option.
+Design: option A, section P6 (`CD:phases/P6`, with the owner's decision of 2026-10-21 for the radar power states).
+
+The core (`core/zoneeval.py`, `zoneinfo.py`, `p6state.py` and the changes in `types.py`, `params.py`, `tracker.py`,
+`learner.py`) and the shell were written to the P6 specification in parallel, and the replay was extended by
+its own owner. This block is the shell owner's; the core and replay owners add what only they can report (see
+'Verification'). With no zone the learner emits exactly what 0.5.0 emitted, and the learning itself is untouched: the zone
+evaluator reads the tracker and never writes to it.
+
+### New
+
+Zone entities (shell: `shell/p6.py`, `zonepub.py`, `topics_p6.py`, `discovery_p6.py`, `p6_types.py`). Every confirmed zone of
+the kinds dwell, short_task, bed and manual (a record or a 'Mark spot here' label; at most 24 zones get entities, the rest are
+evaluated and tuned but have none until a slot frees) is **one device** `radar_zone_<id>` with `via_device` the node:
+
+- `binary_sensor.radar_spot_<id>` ('<zone> occupancy', `device_class: occupancy`): `ON` while a person is in the zone or the
+  zone waits for its clear delay, `OFF` otherwise. Attributes, always all six: `kind`, `state_source`, `variant_now`,
+  `typical_hours` (`wd 09-12,13-17; we 10-22`), `confidence` (the stored suggestion's, `null` for a label), `poly_cm`.
+- A hold ends on the device time of the first radar batch past `last detection + delay` (at most one 5 s heartbeat late in an
+  idle room); a tick only reclassifies a person who has not been seen for 2 s (count 0, held) and turns the zones valid 3.5 s
+  after the radars resume. A return after a lost batch is no hidden spell, a lost batch never ends a hold, and a pending gap of 15 s
+  or more is a power loss (zones unavailable, no event).
+- `sensor.radar_spot_<id>_count` ('target count', diagnostic, **disabled by default**): 0 to 3, at most once a second with a
+  trailing publish of the latest value.
+- `event.radar_spot_<id>_event` ('enter/leave'): `{"event_type":"enter","track":"t1842"}` and `{"event_type":"leave","track":
+  "t1842","dwell_s":5230,"via":"edge"}` (`via` is `edge`, `hold_expired`, `door_death` or `early`; `variant` is added when
+  there is one). No zone name and no coordinate in a payload.
+- Tuning (config entities that work while the radars are off): `number.radar_spot_<id>_clear_delay` (3-900 s),
+  `number.radar_spot_<id>_margin` (-50..100 cm, step 5) and `button.radar_spot_<id>_forget` (discards the learned evidence
+  and the tuning of that one zone, not the zone). The number states are retained and show the value in force.
+- Time variants (`CD:suggestion_types`): the variant in force is the attribute `variant_now`; a zone that has variants also
+  gets one request switch each, `switch.radar_spot_<id>_vreq_<variant>` ('<zone> - <variant> sensor', config, OFF), and only
+  an ON switch creates `binary_sensor.radar_spot_<id>_v_<variant>`, ON while the zone is occupied and that variant is in force.
+  The request is stored in the state (`zone6.ve`).
+
+Zones are **unavailable while the radars are off, warming up or faulted, and while the node or the learner is dead**, as the
+owner decided for option A (no PIR, so the design's held states do not exist). Every zone state entity has three availability
+topics with `availability_mode: all`: `radar_zones/learner/status`, the node's `sensors/status` and a **new retained topic
+`radar_zones/zone/availability`**, which is `online` only while the core's `ZoneStates.valid` and the shell's own radar
+validity are both true. `radar_zones/radar/valid` (P4) is not used for zones: it ignores the core's resume state, so after an
+add-on restart it would show `unavailable -> off -> on`. At a resume the real state of every zone is published **before**
+`online`, so the history is `unavailable -> on` or `unavailable -> off`, never `unavailable -> off -> on` and never the
+evening's stale `on`; no event comes from a power transition (the core's rule, checked end to end with the real core).
+
+Blueprint `blueprints/radar_zone_spot_light.yaml` ('Radar spot occupied -> light/scene'): one automation per spot; a light, a
+scene for occupied and a scene for clear, an off delay (60 s), an optional brightness. On at `to: on` (also straight from
+unavailable, so a person at the spot at 06:00 switches the light on); off at `to: off` with `not_from: [unavailable,
+unknown]` after the delay; an unavailable zone changes nothing. The header says what that means for the light: if the
+blueprint switched it on and the person left while the radars were off, the morning `unavailable -> off` is ignored and the
+light stays on until someone switches it (the optional input 'Also switch off when the zone returns unavailable -> off' changes
+that and also fires at every morning power-up with nobody there; off by default).
+
+Core (the specification, section numbers of the P6 spec): the zone area is the stored cell mask grown by the margin (25 cm);
+a confirmed track enters after at least 3 of its last 10 detections inside, a detection at 0.8 m/s or more is not counted in a
+dwell, bed or manual zone (a pass); one detection outside the area is a leave at once; a track that vanishes inside holds the
+zone until `last detection + clear delay` (default by kind: bed 600 s, dwell and manual 300 s, short_task 60 s; learned
+nightly as the nearest-rank p95 of the zone's own hidden spells, 5-600 s, from 10 spells; a tuning value wins); a moving death
+inside a learned door clears after 3 s; a zone the second radar agrees with (LD2412-on share >= 0.8 over at least an hour of
+known time) may clear early after 60 s of LD2412 absence and no track anywhere; POWER interruptions (power, silence of 15 s or
+more, a reboot) suspend every zone with no event, a GAP keeps the zones and suspends the hold deadline for the unobserved
+span (spec 5.1-5.8, 6).
+
+Plumbing: 34 subscriptions (the 4 new ones are command patterns, so a retained message on one is ignored and deleted), 35
+discovery messages per burst from the P5 app and 6 for each zone, `P6Layer(P5Layer)` is the one layer object that `main`
+passes as the service's `p4=` (no new service hook), `Service` rate-limits the new save reason `zone` like `label`, and
+`ZonePublisher` publishes only changes.
+
+Tests: `test_p6_topics`, `test_p6_discovery`, `test_p6_layer`, `test_p6_lifecycle`, `test_p6_tuning`, `test_p6_recorder`,
+`test_p6_blueprint`, `test_p6_service` and the helpers `tests/fake_ha_zone.py` (a generic fake Home Assistant for zone entities
+whose behaviours are the assumptions HA[U1]-HA[U7], with a recorder model) and `tests/p6_harness.py` (the layer with the fake
+core, and the real `Learner` behind the real service, frames over MQTT).
+
+### Changed
+
+- `main` builds `build_topics_p6` and one `P6Layer`; `P5Layer` and `TopicsP5` are unchanged and still tested on their own.
+- The description line of `config.yaml`; the README (new section 11; the P3-P5 sentences that said 'no zone entity until P6'
+  are in the present tense; the privacy summary says what the zone entities reveal; the retained-topic list gains the tuning
+  and availability topics).
+- `THIRD_PARTY_NOTICES.md`: the k-of-n entry (P43YM/ld2450_zones) and the zone margin (TillFleisch/ESPHome-HLK-LD2450) are no
+  longer 'planned': they are idea references with no code used; the pass-speed idea of zomco/mmwave-engine is added; the
+  hlk_radar_fusion line is rewritten as well: since P6 the second radar (LD2412) may only shorten a held zone (idea reference, no code used).
+- Existing tests: the version strings, the `SHELL_MODULES` list of the lazy-import test, the description line of the manifest
+  test and one assertion of `test_p5_service.MainWiringTest` (the subscriptions `main` builds are 34, not 30: `main` builds the
+  P6 topics).
+
+### Privacy changes (read before you update)
+
+P5 published no per-zone topic. P6 does, on purpose: per-zone occupancy, count, events and attributes. **Zone names appear
+only in the Home Assistant entity and device names of the discovery configs** (not retained), never in a topic or an event
+payload. The six attributes include the hours a zone is usually used and the zone's outline (`CD:privacy`: details appear only
+inside Home Assistant); occupancy, events and hours are a location and routine log once the recorder keeps them. The README
+recommends the recorder excludes for the event entities and the 10-day purge. The retained topics added are the two tuning
+states and the request-switch states of each zone (a small integer or ON/OFF) and `radar_zones/zone/availability`.
+
+### Interpretations and open points (for the integration)
+
+The numbers are the decisions of the P6 specification (section 13.1); the owner questions Q1-Q20 are not answered yet and the
+spec's default applies to each.
+
+- **Q1** no room occupancy entity (not in the P6 scope; the 0.5.0 comments that said P6 are corrected). **Q2** the latency
+  gate wording: enter 0.8 s on frame time and 0.84 s on arrival time, leave 0.5 s on frame time with the arrival time
+  reported (0.64 s: the firmware's 500 ms batch gate alone uses the budget). **Q3** 24 zones with entities. **Q4** the tuning
+  entities are built now, automatic re-tuning stays P7. **Q5** `forget` is per-zone evidence and tuning, not 'Remove zone'.
+  **Q6** doors are read from the silent `entry_zone` suggestions; there is no door confirmation flow. **Q7** `early_absent_s`
+  60 and `ldr_min_known_s` 3,600 are proposals; the evidence is not decayed (P7). **Q8** a variant's name is its id
+  (`wd0917`), the request is one switch per variant. **Q9** the blueprint inputs are proposals. **Q13** the optional recorder
+  valve is built and OFF (`P6Params.valve_after_episodes`, 35 if turned on; it holds back events, count, variant sensors and
+  attributes of a zone after that many episodes in a local day, never occupancy or availability). **Q14** the six attributes are
+  always published. **Q15** zones are unavailable, not held, while the radars are off. **Q16** `zone6` keyed by zone id.
+  **Q17** `via` early, `dwell_s` from the zone becoming occupied, P5 entity ids. **Q18** after a Forget all the `unique_id` and
+  the device identifier carry the installation epoch (`radar_spot_e1_z0001`, `radar_zone_e1_z0001`), so a reused zone id does
+  not inherit a removed zone's registry entry. **Q19** only dwell, short_task, bed and manual zones have entities. **Q20** the
+  '< 500 recorder rows per zone per day' line is a proxy that holds up to 121 episodes a day for the default set and 74 with
+  everything recorded; above that it fails and `zones_over_budget` (core) says so.
+- Shell readings of the spec: (1) The attributes are published also while the zone is unavailable (the state source `radar_off`
+  or `warmup` must be visible then); occupancy and count are not. (2) `typical_hours` and `confidence` are fields of the core's
+  `ZoneState` (CORE added them after the interface of Appendix A, which has no other path to the shell). The shell reads the
+  installation epoch from `Learner.zone6.export()["set"]["epoch"]`. (3) The entity names are `<zone> occupancy`, `<zone> target
+  count`, `<zone> enter/leave`, `<zone> clear delay`, `<zone> margin`, `<zone> forget learned data`, `<zone> - <variant>
+  sensor` and `<zone> - <variant> occupancy`; an unnamed label is `Spot <id>`. If Home Assistant puts the device name in front
+  of an entity name, the names read doubled: the entity ids are fixed by `default_entity_id` either way. (4) A zone that is new
+  to Home Assistant gets its not retained states again 10 s after its config (an entity is created after its config and drops
+  earlier states); a burst has the service's second pass. (5) A zone event that the broker link cannot take is dropped and
+  counted (`zone_events_dropped`); the other zone topics are sent again at the next tick. (6) Zone commands are checked twice:
+  in the MQTT thread (the mapper knows the zones that have entities) and in the layer; both count into `zone_cmds_ignored`.
+  (7) A tuning command is applied while the radars are off (D38); the number echoes the effective value from the core's
+  `ZoneStates`, read back at the next tick when the core does not emit it. (8) The `state_source` values beyond `live` are a
+  proposal: `failsafe`, `radar_off`, `warmup`, `fault`. (9) The availability list has the shape of spec 8.1 for the state
+  entities; the tuning entities, the button and the request switches use the single learner availability topic.
+- Not verifiable here (nothing ran against Home Assistant): HA[U1]-HA[U7] (spec 14.2) and the blueprint, acceptance steps A1,
+  A2, A8, A9; the real recorder rows, the real latency over MQTT, the CM4 cost and the LD2412 numbers (A3, A5, A6, A12).
+
+### Not built
+
+- A room occupancy entity (Q1), an entity for a transit zone, a confirmed-door flow, a per-variant delay.
+- The automatic re-tuning of the constants, drift, moves, retire and the night-window freeze rule (P7).
+- Writing to Home Assistant services from the app, and any firmware change.
+
+### Verification (development PC)
+
+- Shell unit tests (the eight `test_p6_*` modules above: 24 + 30 + 54 + 36 + 17 + 16 + 22 + 24 = 223 tests), all OK, the
+  end-to-end cases with the real `Learner` included (a person walks in, sits and leaves; a night with the radars off gives
+  `on -> unavailable -> on` with no second enter; a variant request; Forget all moves the epoch). The existing P3-P5 tests
+  are unchanged apart from the mechanical edits listed under 'Changed'. The full unit-test count is filled in at
+  integration.
+- The replay checks of the P6 specification (P6-1 to P6-4, P6-7 to P6-11, P6-14, P6-15 and the regression checks P6-R1 to
+  P6-R3) belong to the core and replay owners and are not reported in this block.
+- **Not verified:** everything Home Assistant does (above), a real zone edge, a real power cycle and the real clear-delay
+  distribution. They are the acceptance steps A1-A12 of the specification, section 11.9.
+
 ## 0.5.0 - P5 setup review and suggestion UI
 
 The review of the learner's suggestions moves from the learner's own attributes to the review device in Home Assistant:

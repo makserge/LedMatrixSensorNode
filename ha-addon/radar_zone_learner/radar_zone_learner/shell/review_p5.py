@@ -4,7 +4,12 @@
 - the tier-2 texts (place, merge, modify) are built here from the flat ``ReviewItem.data`` (spec 2.4), with the typical
   hours of a place only when ``detail`` (the switch 'Detailed review text') is on, so that no hour range reaches any
   retained topic or the recorder by default (spec 2.11, 7.5);
-- ``push_state`` builds the eight-field state of the push request sensor (spec 6.3);
+- P7 (spec 6.4): a merge or modify item whose data has the key ``src`` was made by a P7 detector and gets the P7 text, which
+  carries no zone name unless ``detail``; an item without ``src`` is a P5-path item and keeps the P5 text unchanged. The
+  retire item (``retire_zone``) and the radar-moved item (``radar_moved``) exist only on the P7 path. Every P7 text is cut to
+  255 characters (a Home Assistant state), and no text carries an hour or a date;
+- ``push_state`` builds the eight-field state of the push request sensor (spec 6.3); since P7 the ``kind`` field reads
+  ``attention`` for a radar-moved request (spec 6.5);
 - ``you_are_in_text`` and ``advanced_label`` are the texts of the 'You are in' sensor and the Advanced select.
 
 Nothing here reads a clock or a file, and no coordinate or stay time is ever put into a text: a place is described by
@@ -15,14 +20,18 @@ from __future__ import annotations
 import json
 from typing import Callable, Optional
 
+from ..core.params import DEFAULT_P7
 from .p4_types import ITEM_BED, ITEM_NIGHT_WINDOW
 from .review import DEFAULT_END_MIN, DEFAULT_START_MIN, STATE_MAX_CHARS, item_text, state_text
 
 __all__ = ["item_text_p5", "item_generic_text", "kind_phrase", "position_phrase", "hours_phrase", "push_state",
            "you_are_in_text", "you_are_in_attr", "advanced_label", "pending_json", "PENDING_ATTR_MAX_BYTES",
-           "NAME_LABEL_MAX", "LIVE_OFF_TEXT", "MARKED_SPOT_TEXT", "ADVANCED_LABEL_MAX", "state_text"]
+           "NAME_LABEL_MAX", "LIVE_OFF_TEXT", "MARKED_SPOT_TEXT", "ADVANCED_LABEL_MAX", "state_text", "P7_TEXT_MAX",
+           "KIND_ATTENTION"]
 
 NAME_LABEL_MAX = 24                  # a zone or label name in an Advanced label (spec 2.10)
+P7_TEXT_MAX = 255                    # every P7 item text (P7 spec 6.4; P5 spec 2.11)
+KIND_ATTENTION = "attention"         # the ``kind`` field of the push state for a radar-moved request (P7 spec 6.5)
 ADVANCED_LABEL_MAX = 44              # a whole Advanced label (the spec sizes 40; the longest verb text is 42)
 PENDING_ATTR_MAX_BYTES = 8000        # attribute JSON of 'Review pending' (spec 8.6)
 LIVE_OFF_TEXT = "Live view off"
@@ -119,6 +128,57 @@ def _modify_text(data: dict) -> str:
                 _str(data.get("zname"), "the zone"), _int(data.get("shift_cm")), _str(data.get("dir"))))
 
 
+def _dist_phrase(cm: int, direction: str) -> str:
+    """``1.1 m to the right`` (the shift or the extension, to 0.1 m); the direction phrase may be empty."""
+    return ("%.1f m %s" % (abs(cm) / 100.0, direction)).strip()
+
+
+def _modify_text_p7(data: dict, detail: bool) -> str:
+    """P7 spec 6.4: the action sentences come first, so a cut at 255 characters can never remove them. With ``detail`` off
+    the zone is named by its tag only (a name never reaches a retained topic by default)."""
+    head = ("Has %s moved here?" % _str(data.get("zname"), "the zone")) if detail \
+        else "Place %s moved?" % _str(data.get("tag"), "?")
+    return _cut("%s Approve = update it (entities and automations stay), Rename = keep both, Reject = ignore the new "
+                "spot. It seems to be about %s from where it was." % (
+                    head, _dist_phrase(_int(data.get("shift_cm")), _str(data.get("dir")))), P7_TEXT_MAX)
+
+
+def _merge_text_p7(data: dict, detail: bool) -> str:
+    tag = _str(data.get("tag"), "?")
+    zone = _str(data.get("zname"), "the zone")
+    ext = ("%d cm %s" % (_int(data.get("ext_cm")), _str(data.get("dir")))).strip()
+    if detail:
+        head, mid = "Extend %s?" % zone, "Place %s touches %s (%s)" % (tag, zone, ext)
+    else:
+        head, mid = "Extend place %s?" % tag, "Place %s touches a place you confirmed (%s)" % (tag, ext)
+    return _cut("%s %s and is used at similar hours. Approve = extend it, Rename = keep it as a new place, Reject = "
+                "ignore it." % (head, mid), P7_TEXT_MAX)
+
+
+def _retire_text(data: dict, detail: bool) -> str:
+    keep = DEFAULT_P7.keep_days
+    tail = ("Approve = remove it and its entities (automations that use them stop working), Reject = keep it for %d "
+            "days." % keep)
+    if detail:
+        head = "Remove %s? It has not been used for %d weeks." % (_str(data.get("zname"), "the zone"),
+                                                                  _int(data.get("weeks")))
+    else:
+        head = "Remove place %s? It has not been used for a long time (the map shows it)." % _str(data.get("tag"), "?")
+    return _cut("%s %s" % (head, tail), P7_TEXT_MAX)
+
+
+def _degrees(value) -> str:
+    """``10.0`` or ``7.5``: the turn of the radar in degrees, one decimal, no sign (the data has one decimal)."""
+    return "%.1f" % abs(_num(value))
+
+
+def _radar_moved_text(data: dict) -> str:
+    """The same with and without ``detail``: it has no name and no time (spec 6.4)."""
+    return _cut("The radar seems to have been moved or turned (about %d cm, %s degrees). Approve = reset the learned maps "
+                "(your places are kept and checked again), Reject = ignore this." % (
+                    _int(data.get("shift_cm")), _degrees(data.get("deg"))), P7_TEXT_MAX)
+
+
 def item_text_p5(item, window: Optional[tuple], detail: bool) -> str:
     """The text of any review item. ``window`` is ``(sched, start_min, end_min)`` as the shell last saw the node's
     night window (used by the bed item); ``detail`` is the persisted switch 'Detailed review text'."""
@@ -128,9 +188,13 @@ def item_text_p5(item, window: Optional[tuple], detail: bool) -> str:
     data = _data(item)
     typ = getattr(item, "type", "")
     if typ == "merge_into":
-        return _merge_text(data)
+        return _merge_text_p7(data, detail) if "src" in data else _merge_text(data)
     if typ == "modify_zone":
-        return _modify_text(data)
+        return _modify_text_p7(data, detail) if "src" in data else _modify_text(data)
+    if typ == "retire_zone":
+        return _retire_text(data, detail)
+    if typ == "radar_moved":
+        return _radar_moved_text(data)
     if typ in ("dwell_zone", "short_task_zone"):
         return _place_text(data, detail)
     return item.id
@@ -168,9 +232,14 @@ def push_state(req, head_text: Optional[str], detail: bool) -> str:
     """``<seq>|<acked>|<kind>|<count>|<rev>|<item>|<acks>|<text>``: eight fields, at most 255 characters.
 
     ``text`` is empty unless ``detail`` (the switch 'Detailed review text') is on; every pipe in it becomes ``/`` and it
-    is cut so that the whole state fits (it is last, so a long text cannot shift another field)."""
+    is cut so that the whole state fits (it is last, so a long text cannot shift another field).
+
+    P7 (spec 6.5): the ``kind`` field is ``attention`` while the request is a radar-moved request (``req.attention``); the
+    core keeps ``kind`` ``daily`` in its own state (a 0.6.0 app must still load it), so this is the only place the word is
+    written. Nothing else changes: still eight fields, at most 255 characters."""
     rev = "" if req.head_rev is None else str(int(req.head_rev))
-    prefix = "%d|%d|%s|%d|%s|%s|%s|" % (int(req.seq), int(req.acked), req.kind, int(req.count), rev,
+    kind = KIND_ATTENTION if getattr(req, "attention", False) else req.kind
+    prefix = "%d|%d|%s|%d|%s|%s|%s|" % (int(req.seq), int(req.acked), kind, int(req.count), rev,
                                         req.head_id or "", ",".join(req.acks))
     text = ""
     if detail and head_text:

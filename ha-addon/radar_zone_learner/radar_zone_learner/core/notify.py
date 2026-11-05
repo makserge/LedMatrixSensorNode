@@ -27,7 +27,7 @@ import re
 from datetime import date
 
 from .params import P5Params
-from .types import ITEM_BED, PUSH_TARGET_RE, PushRequest, SaveRequested
+from .types import ITEM_BED, ITEM_RADAR_MOVED, PUSH_TARGET_RE, PushRequest, SaveRequested
 
 _TARGET = re.compile(PUSH_TARGET_RE)
 SIG_MAX = 40
@@ -41,9 +41,10 @@ def _sig(item_id: str, rev: int) -> str:
 
 
 class PushPlanner:
-    def __init__(self, p5, p5params: P5Params) -> None:
+    def __init__(self, p5, p5params: P5Params, zone7=None) -> None:
         self.p5 = p5                         # the P5State: its ``push`` dict is replaced on a load, so it is read live
         self.params = p5params
+        self.zone7 = zone7                   # P7: the Zone7 object (attention state); None = the P5 construction
         self._eval_key = None                # RAM: the inputs of the last rule evaluation
         self._last_emitted = PushRequest(0, 0, "none", 0, None, None, ())
 
@@ -51,8 +52,10 @@ class PushPlanner:
     def request(self, items) -> PushRequest:
         """The current request: the stored counters and head with ``count`` = the open items now."""
         ps = self.p5.push
+        z7 = self.zone7
+        attention = bool(z7 is not None and z7.rm["attn"] and any(i.id == ITEM_RADAR_MOVED for i in items))
         return PushRequest(ps["seq"], ps["acked"], ps["kind"], len(items), ps["head_id"], ps["head_rev"],
-                           tuple(ps["acks"]))
+                           tuple(ps["acks"]), attention)
 
     def state(self) -> dict:
         return dict(self.p5.push)
@@ -107,7 +110,12 @@ class PushPlanner:
         count = len(items)
         today = date.fromordinal(date_ord).isoformat()
         in_window = p.push_after_min <= minute < p.push_before_min
-        head = next((i for i in items if i.tier == 2), None)
+        head = next((i for i in items if i.tier == 2 and i.type != "retire_zone"), None)    # P7: a removal is never a head
+        z7 = self.zone7 if L.p7on else None
+        # P7 (spec 6.5): a radar_moved item that was never announced makes the daily request an attention request
+        attn_new = z7 is not None and any(i.id == ITEM_RADAR_MOVED and _sig(i.id, i.rev) not in ps["sig"]
+                                          for i in items)
+        radar_open = z7 is not None and any(i.id == ITEM_RADAR_MOVED for i in items)
         kind = None
         announce = False
         if not ps["setup_sent"]:
@@ -125,6 +133,17 @@ class PushPlanner:
                 kind = ps["kind"]                      # the retry (rule 6): kind and sig stay
         if kind is None:
             return
+        if z7 is not None:
+            if kind == "setup":
+                z7.rm["attn"] = False
+            elif announce:                                  # the daily rule: attention is part of it, not a rule after it
+                z7.rm["attn"] = bool(attn_new)
+                if attn_new:
+                    head = None                            # an attention request has no head: the push says what is wrong
+            elif z7.rm["attn"] and radar_open:
+                head = None                                # the retry keeps the attention request as it was
+            else:
+                z7.rm["attn"] = False
         ps["seq"] += 1
         ps["kind"] = kind
         ps["last_day"] = today
@@ -144,6 +163,13 @@ class PushPlanner:
                     s = "%s#%d" % (key, rev)
                     if s not in ps["sig"]:
                         ps["sig"].append(s)
+            if z7 is not None:                              # the same for the P7 snoozes (retire, radar_moved)
+                for key in list(z7.snz):
+                    kind, _, rev = L.review.resolve(L, key)
+                    if kind in ("retire", "radar"):
+                        s = "%s#%d" % (key, rev)
+                        if s not in ps["sig"]:
+                            ps["sig"].append(s)
             if L.review.later.get(ITEM_BED) is not None and _sig(ITEM_BED, 0) not in ps["sig"]:
                 ps["sig"].append(_sig(ITEM_BED, 0))             # a bed item snoozed before this push: same rule
             del ps["sig"][:-SIG_MAX]

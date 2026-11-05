@@ -109,6 +109,29 @@ class SelectModelDynamicTest(unittest.TestCase):
             self.assertLessEqual(len(label), 40)
 
 
+class SelectModelP7LabelsTest(unittest.TestCase):
+    """P7 (spec 6.4, 12.4): the labels ``Retire <tag>`` and ``Radar moved`` are added; the existing labels are unchanged."""
+
+    def setUp(self):
+        self.m = SelectModel("dynamic")
+        self.items = [window_item(), bed_item(), place_item("s0005-1", tag="A"), merge_item("s0007-1", "C"),
+                      modify_item("z0001", "D"),
+                      ReviewItem("ret-z0002", 1, "retire_zone", {"tag": "E", "zid": "z0002", "zname": "Chair", "weeks": 4}, 2)]
+
+    def test_retire_label_and_the_existing_labels(self):
+        self.m.update(self.items, None)
+        self.assertEqual(self.m.options, ["No item", "Night window", "Bed zone", "Place A", "Extend C", "Moved D",
+                                          "Retire E"])
+        self.assertEqual(self.m.resolve("Retire E"), (True, "ret-z0002"))
+
+    def test_radar_moved_is_a_static_label_after_the_two_p4_ones(self):
+        radar = ReviewItem("radar_moved", 2, "radar_moved", {"shift_cm": 80, "deg": 10.0, "streak": 2}, 1)
+        self.m.update([window_item(), bed_item(), radar] + self.items[2:], "radar_moved")
+        self.assertEqual(self.m.options[:5], ["No item", "Night window", "Bed zone", "Radar moved", "Place A"])
+        self.assertEqual(self.m.state(), "Radar moved")
+        self.assertEqual(self.m.resolve("Radar moved"), (True, "radar_moved"))
+
+
 class SelectModelSlotsTest(unittest.TestCase):
     def setUp(self):
         self.m = SelectModel("slots")

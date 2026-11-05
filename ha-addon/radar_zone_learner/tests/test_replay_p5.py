@@ -225,7 +225,7 @@ class JobsP5Test(unittest.TestCase):
 
     def test_the_run_replay_cli_knows_the_profiles(self):
         with tmpdir() as d, contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
-            self.assertEqual(run_replay.main(["--out", d, "--profile", "p5", "--nights", "40"]), 2)
+            self.assertEqual(run_replay.main(["--out", d, "--profile", "p5", "--nights", "61"]), 2)
             self.assertEqual(run_replay.main(["--out", d, "--profile", "p5", "--jobs", "bed_w0000_0600_nope"]), 2)
         args = SimpleNamespace(jobs="bed_w0000_0600_p5ans,bed_none_p5setup", profile="p5", nights=None, seeds=None)
         jobs = run_replay.build_jobs(args)
@@ -857,7 +857,7 @@ class DumpRunTest(unittest.TestCase):
         with contextlib.redirect_stderr(io.StringIO()):
             self.assertEqual(dump_run.main(["--tree", str(ADDON), "--jobs", "bed_w0000_0600", "--out", "x", "--seeds", "0-9"]), 2)
             self.assertEqual(dump_run.main(["--tree", "no_such_tree", "--jobs", "bed_w0000_0600", "--out", "x"]), 2)
-            self.assertEqual(dump_run.main(["--tree", str(ADDON), "--jobs", "bed_w0000_0600", "--out", "x", "--nights", "40"]), 2)
+            self.assertEqual(dump_run.main(["--tree", str(ADDON), "--jobs", "bed_w0000_0600", "--out", "x", "--nights", "61"]), 2)
         self.assertEqual(dump_run._parse_seeds("1-3,5"), (1, 2, 3, 5))
 
 

@@ -15,7 +15,8 @@ ADDON = Path(__file__).resolve().parents[1]
 SHELL_MODULES = ("options", "topics", "mqtt_io", "discovery", "persistence", "timemodel", "health", "png",
                  "render", "resources", "service", "p4", "p4_types", "topics_p4", "discovery_p4", "review", "nodelink",
                  "rfstats", "p5", "p5_types", "topics_p5", "discovery_p5", "select_model", "review_p5", "reviewmap",
-                 "capture")
+                 "capture", "p6", "p6_types", "topics_p6", "discovery_p6", "zonepub", "p7", "topics_p7", "discovery_p7",
+                 "tuningexport")
 
 # Spec 6.1, in order, with QoS.
 EXPECTED_SUBSCRIPTIONS = [

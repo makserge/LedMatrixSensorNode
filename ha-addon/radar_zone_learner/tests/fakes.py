@@ -5,11 +5,14 @@ callbacks directly through the ``fire_*`` helpers.
 """
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import dataclass
 from typing import Optional
 
-from radar_zone_learner.core.types import (DebugMapData, DebugMapChanged, PushRequest, StatusChanged, WhereView)
+from radar_zone_learner.core.types import (DebugMapData, DebugMapChanged, PushRequest, RadarMovedView, SaveRequested,
+                                           StatusChanged, TuningLine, VariantRequest, WhereView, ZoneDrift, ZoneForget,
+                                           ZoneState, ZoneStates, ZoneTune)
 
 
 @dataclass
@@ -167,11 +170,47 @@ def empty_debug_map(**changes) -> DebugMapData:
     return DebugMapData(**values)
 
 
+def clean_tuning_line(**changes) -> dict:
+    """A zero-filled nightly count line of the shape of P7 spec 4.8 (every key of the whitelist, counts and fixed-length
+    histograms only); ``changes`` replace top-level keys. It passes ``tuningagg.scan`` (a test checks that)."""
+    zeros = lambda n: [0] * n        # noqa: E731
+    line = {"v": 1, "ob": 0.0, "cd": 0, "sn": 0, "sd": zeros(6), "sl": zeros(5), "sf": zeros(4), "sg": zeros(5),
+            "hs": zeros(10), "hn": 0, "dl": {k: zeros(6) for k in ("dwell", "short_task", "bed", "manual")}, "cn": 0,
+            "gf": zeros(8), "nm": zeros(8), "ch": {k: zeros(6) for k in ("n", "cd", "ld", "gs", "cv", "cf")},
+            "dr": zeros(6), "zs": zeros(7), "zf": 0, "zr": 0, "dg": 0, "lb": zeros(2), "la": zeros(4),
+            "ac": {"op": {"place": zeros(4), "merge": zeros(4), "modify": zeros(4), "retire": zeros(3), "radar": zeros(3)},
+                   "gh": {k: [zeros(6), zeros(6)] for k in ("cf", "cd", "n", "gs", "cv", "ld")},
+                   "rh": {k: zeros(6) for k in ("mod_y", "mod_r", "ret_rm", "ret_kp")}}}
+    line.update(changes)
+    return line
+
+
+def clean_tuning_text(**changes) -> str:
+    return json.dumps(clean_tuning_line(**changes), separators=(",", ":"))
+
+
+class FakeZone6:
+    """The part of the core's ``Zone6`` container that the shell reads (P6 spec A.6): ``export()``, with the installation
+    epoch under ``set``."""
+
+    def __init__(self, owner: "FakeLearner") -> None:
+        self.owner = owner
+
+    def export(self) -> dict:
+        return {"v": 1, "set": {"epoch": self.owner.p6_epoch}}
+
+
 class FakeLearner:
     """Implements the ``Learner`` signatures of spec 5.3 and the P5 accessors (P5 spec A.8) with scripted outputs.
 
     The P5 accessors return what the test put into the ``p5_*`` attributes (empty by default) and record their
-    calls, so that ``P5Layer`` tests can run without the real core."""
+    calls, so that ``P5Layer`` tests can run without the real core.
+
+    The P6 accessors (P6 spec A.4) return a scripted zone model: ``p6_zone`` makes or changes a ``ZoneState``,
+    ``p6_valid`` is the ``valid`` flag of ``zone_states()``, ``p6_snapshot()`` is the ``ZoneStates`` a test pushes into
+    ``tick_outputs`` to play the core's output, and ``handle`` applies ``ZoneTune``, ``ZoneForget`` and ``VariantRequest``
+    the way the core does (the delay in force, the margin, the requested variants) and returns the changed ``ZoneStates`` and
+    ``SaveRequested("zone")``. ``zone6.export()`` returns ``p6_epoch``. The zone views are ``p5_zones``."""
 
     def __init__(self, state: Optional[dict] = None) -> None:
         self.state_in = state
@@ -198,6 +237,21 @@ class FakeLearner:
         self.map_calls: list = []           # (selected, live) of every review_map() call
         self.where_calls: list = []         # selected of every where_am_i() call
         self.resets = 0                     # reset() calls
+        # P6 accessors (spec A.4): the scripted zone model
+        self.p6_valid = False               # ZoneStates.valid
+        self.p6_zones: dict = {}            # zid -> ZoneState
+        self.p6_t_dev = 0
+        self.p6_epoch = 0                   # zone6.set.epoch
+        self.p6_debug: tuple = ()           # zone_debug()
+        self.p6_tune: dict = {}             # zid -> {"cd": seconds, "mg": cm}: the overrides the commands set (zone6.tune)
+        self.zone6 = FakeZone6(self)
+        # P7 accessors (spec A.3): the scripted values
+        self.p7_enabled = False
+        self.p7_drift: tuple = ()           # drift_view(): ZoneDrift
+        self.p7_radar = RadarMovedView("none", 0, 0, (0, 0, 0), False)       # radar_moved_state()
+        self.p7_moved_from = 0              # moved_from_count()
+        self.p7_summary = {"grids_nonzero": 0, "candidates": 0, "stays": 0, "door_events": 0, "ghost_events": 0}
+        self.p7_resets = 0                  # reset_maps() calls
 
     def handle(self, event) -> list:
         self.events.append(event)
@@ -206,6 +260,8 @@ class FakeLearner:
         if self.responder is not None:
             self.queued = self.queued + list(self.responder(event) or [])
         outs, self.queued = self.queued, []
+        if isinstance(event, (ZoneTune, ZoneForget, VariantRequest)):
+            outs = outs + self._p6_apply(event)
         return outs
 
     def tick(self, now_ms: int) -> list:
@@ -268,6 +324,93 @@ class FakeLearner:
     def reset(self) -> "FakeLearner":
         self.resets += 1
         return self.p5_reset_result if self.p5_reset_result is not None else FakeLearner()
+
+    # --- P7 accessors (spec A.3)
+    @property
+    def p7on(self) -> bool:
+        return self.p7_enabled
+
+    def drift_view(self) -> tuple:
+        return tuple(self.p7_drift) if self.p7_enabled else ()
+
+    def radar_moved_state(self) -> RadarMovedView:
+        return self.p7_radar if self.p7_enabled else RadarMovedView("none", 0, 0, (0, 0, 0), False)
+
+    def moved_from_count(self) -> int:
+        return self.p7_moved_from
+
+    def reset_maps(self) -> None:
+        self.p7_resets += 1
+
+    def reset_summary(self) -> dict:
+        return dict(self.p7_summary)
+
+    def p7_drift_row(self, zid: str, **fields) -> ZoneDrift:
+        """A ``ZoneDrift`` (defaults: an unfrozen ``ok`` zone with ratio 1.0) appended to ``p7_drift``."""
+        values = dict(id=zid, state="ok", ratio=1.0, frozen=False, lo=0, rt=0, lu=0, rc=False, held=False)
+        values.update(fields)
+        row = ZoneDrift(**values)
+        self.p7_drift = tuple(self.p7_drift) + (row,)
+        return row
+
+    @staticmethod
+    def p7_line(night: int = 1, text: str = None) -> TuningLine:
+        """A ``TuningLine``: ``text`` as given, else a clean zero-filled line of the shape of P7 spec 4.8."""
+        return TuningLine(night, text if text is not None else clean_tuning_text())
+
+    # --- P6 accessors (spec A.4) and the scripted zone model
+    def zone_states(self) -> ZoneStates:
+        return self.p6_snapshot()
+
+    def zone_tune(self, zid: str) -> dict:
+        """The overrides in force for a zone (what ``zone6.tune[zid]`` holds in the core); empty when there are none."""
+        return dict(self.p6_tune.get(zid, {}))
+
+    def zone_snapshot(self) -> tuple:
+        return tuple((z.id, z.occ, self.p6_valid) for z in self._p6_ordered())
+
+    def zone_debug(self) -> tuple:
+        return tuple(self.p6_debug)
+
+    def _p6_ordered(self) -> list:
+        return [self.p6_zones[k] for k in sorted(self.p6_zones)]
+
+    def p6_snapshot(self) -> ZoneStates:
+        return ZoneStates(self.p6_valid, self.p6_t_dev, tuple(self._p6_ordered()))
+
+    def p6_zone(self, zid: str, **fields) -> ZoneState:
+        """Makes the zone's state (defaults: empty, not held, delay 300 s by default, margin 25 cm, no variants, no typical
+        hours, no confidence) or changes fields of it."""
+        cur = self.p6_zones.get(zid)
+        values = dict(id=zid, occ=False, count=0, held=False, variant="", ldr=False, delay_s=300, delay_src="default",
+                      margin_cm=25, variants=(), requested=(), typical_hours="", confidence=None)
+        if cur is not None:
+            values.update({f: getattr(cur, f) for f in values})
+        values.update(fields)
+        self.p6_zones[zid] = ZoneState(**values)
+        return self.p6_zones[zid]
+
+    def _p6_apply(self, event) -> list:
+        before = self.p6_snapshot()
+        z = self.p6_zones.get(event.zid)
+        if z is None:
+            return []
+        if isinstance(event, ZoneTune):
+            self.p6_tune.setdefault(z.id, {})[event.field] = event.value
+            if event.field == "cd":
+                self.p6_zone(z.id, delay_s=event.value, delay_src="manual")
+            else:
+                self.p6_zone(z.id, margin_cm=event.value)
+        elif isinstance(event, ZoneForget):
+            self.p6_tune.pop(z.id, None)
+            self.p6_zone(z.id, delay_s=300, delay_src="default", margin_cm=25, requested=(), ldr=False)
+        else:
+            want = [v for v in z.requested if v != event.variant]
+            if event.on and event.variant in z.variants:
+                want.append(event.variant)
+            self.p6_zone(z.id, requested=tuple(sorted(want)))
+        after = self.p6_snapshot()
+        return [] if after == before else [after, SaveRequested("zone")]
 
 
 class FakeNode:
@@ -345,4 +488,5 @@ def quiet_logs(testcase) -> None:
 
 
 __all__ = ["FakeMqttClient", "FakeClientFactory", "FakeMessage", "FakeMessageInfo", "FakeReasonCode",
-           "FakeClock", "FakeLearner", "FakeNode", "empty_debug_map", "quiet_logs", "DebugMapChanged"]
+           "FakeClock", "FakeLearner", "FakeZone6", "FakeNode", "empty_debug_map", "quiet_logs", "DebugMapChanged",
+           "clean_tuning_line", "clean_tuning_text"]

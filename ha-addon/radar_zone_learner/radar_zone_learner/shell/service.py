@@ -27,14 +27,14 @@ from .discovery import discovery_messages
 from .health import HealthServer, StallWatchdog
 from .mqtt_io import MqttIO
 from .options import SettingsError, configure_logging, load_settings
-from .p5 import P5Layer
+from .p7 import P7Layer
 from .persistence import StateStore
 from .png import encode_png
 from .render import render
 from .resources import CpuMeter, rss_mb
 from .timemodel import ZoneInfoTime
 from .topics import HaBirth, Republish, build_topics
-from .topics_p5 import build_topics_p5
+from .topics_p7 import build_topics_p7
 
 QUEUE_SIZE = 2000                 # D28
 TICK_PERIOD_S = 1.0               # spec 4.2: at least once a second
@@ -465,13 +465,13 @@ class Service:
     # ------------------------------------------------------------ persistence
     def _save(self, reason: str) -> None:
         now = self.monotonic()
-        if reason in ("label", "name"):
-            # a flood of presses or names must not become a flood of fsync'd writes of 150-250 KB each:
-            # one write now, the next ones wait for the interval and are written together
+        if reason in ("label", "name", "zone"):
+            # a flood of presses, names or tuning commands (P6: reason "zone") must not become a flood of fsync'd writes
+            # of 150-250 KB each: one write now, the next ones wait for the interval and are written together
             if self._last_req_save is not None and now - self._last_req_save < SAVE_MIN_INTERVAL_S:
                 self._save_pending = True
                 return
-        if reason in ("label", "name", "deferred"):
+        if reason in ("label", "name", "deferred", "zone"):
             self._last_req_save = now
         self._save_pending = False
         self._last_save = now
@@ -519,22 +519,28 @@ def main(argv: Optional[list] = None) -> int:
     log.info("radar_zone_learner %s starting (shadow mode)", APP_VERSION)
 
     from ..core.learner import Learner
-    from ..core.params import DEFAULT_PARAMS
+    from ..core.params import DEFAULT_P7, DEFAULT_PARAMS
 
     params = replace(DEFAULT_PARAMS, night_lux=settings.night_lux)
+    # P7 (spec D4): ``P7Params.enabled`` is False in the dataclass, so every other user of the core (the tests, the replay's
+    # non-P7 jobs) runs on P6 behaviour; the production learner switches the P7 detectors on here
+    p7params = replace(DEFAULT_P7, enabled=True)
     if params.night_lux != DEFAULT_PARAMS.night_lux:
         log.info("night_lux %g lx (option)", params.night_lux)
     time_model = ZoneInfoTime(os.environ.get("TZ", "UTC"))
     log.info("time zone %s", time_model.name)
 
     def learner_factory(state):
-        return Learner(params, time_model, state)
+        return Learner(params, time_model, state, p7params=p7params)
 
-    topics = build_topics_p5(settings)
+    topics = build_topics_p7(settings)
     events: queue.Queue = queue.Queue(maxsize=QUEUE_SIZE)
     mqtt = MqttIO(settings, topics, events)
     store = StateStore(settings.data_dir, validate=learner_factory)
-    p4 = P5Layer(topics, mqtt.publish, settings.data_dir, debug_map=settings.debug_map)   # the one layer object
+    # the one layer object (P7Layer is a P6Layer is a P5Layer is a P4Layer); the zone day of its valve is the local day
+    p4 = P7Layer(topics, mqtt.publish, settings.data_dir, debug_map=settings.debug_map,
+                 day_of=lambda ms: time_model.local(ms).date_ord, p7params=p7params)
+    p4.attach_mapper(mqtt.mapper)
     service = Service(settings, learner_factory, mqtt, store, HealthServer(args.health_port), StallWatchdog(),
                       clock_ms=lambda: time.time_ns() // 1_000_000, monotonic=time.monotonic,
                       topics=topics, events=events, time_model=time_model, p4=p4)

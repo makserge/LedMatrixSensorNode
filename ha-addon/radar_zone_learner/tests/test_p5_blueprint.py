@@ -97,9 +97,9 @@ class BlueprintTest(unittest.TestCase):
     # ------------------------------------------------------------ the request branch
     def test_the_run_start_check_and_the_re_check_test_this_phone_and_never_seq_acked(self):
         self.assertNotIn("acked", self.code)
-        self.assertRegex(self.text, r"snap\[0\] \| int > 0 and snap\[2\] in \['setup', 'daily'\] and snap\[3\] \| int > 0 "
+        self.assertRegex(self.text, r"snap\[0\] \| int > 0 and snap\[2\] in \['setup', 'daily', 'attention'\] and snap\[3\] \| int > 0 "
                                     r"and me not in snap\[6\]\.split\(','\)")
-        self.assertRegex(self.text, r"cur\[0\] == snap\[0\] and cur\[2\] in \['setup', 'daily'\] and cur\[3\] \| int\(0\) > 0 "
+        self.assertRegex(self.text, r"cur\[0\] == snap\[0\] and cur\[2\] in \['setup', 'daily', 'attention'\] and cur\[3\] \| int\(0\) > 0 "
                                     r"and me not in cur\[6\]\.split\(','\)")
         self.assertEqual(self.code.count("me not in"), 2)
         self.assertNotRegex(self.code, r"snap\[[0-9]\] > snap|cur\[[0-9]\] > cur|\[0\] \| int > .*\[1\]")

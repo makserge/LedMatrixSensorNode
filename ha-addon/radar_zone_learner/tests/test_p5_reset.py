@@ -58,6 +58,9 @@ class ResetTest(unittest.TestCase):
         expect = PS.P5State().export()                                     # the p5 section: defaults ...
         expect["settings"] = {"approve_sched": False, "guests_pause": True, "pets": True, "detail_text": True}
         expect["push"]["seq"], expect["push"]["acked"] = 5, 4              # ... except the settings and the counters
+        # P6 (spec D24, D41): Forget all carries the installation epoch plus one, nothing else of the zone data
+        expect["zone6"] = {"v": 1, "set": {"epoch": 1}, "tune": {}, "delay": {}, "ld": {}, "ldr": [], "info": {},
+                           "ve": {}}
         self.assertEqual(p5, expect)
         self.assertEqual(L.export_state(), before)                        # the old learner is untouched
 

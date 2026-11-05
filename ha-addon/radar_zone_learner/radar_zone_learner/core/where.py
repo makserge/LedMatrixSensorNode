@@ -63,8 +63,14 @@ def _near(geom, cells, cell: int) -> bool:
 
 
 def item_cells(L, item) -> Optional[frozenset]:
-    """The cells a tier-2 review item stands for: the suggestion's (a modify item's zone is drawn by the zones)."""
+    """The cells a tier-2 review item stands for: the suggestion's (a modify item's zone is drawn by the zones); P7: a
+    retire item stands for its zone's own cells and a radar_moved item for nothing."""
     d = item.data
+    if item.type == "retire_zone":
+        z = next((x for x in L.review.zones if x["zid"] == d.get("zid")), None)
+        return frozenset(z["cells"]) if z is not None else None
+    if item.type == "radar_moved":
+        return None
     sid = d.get("sid") if item.type in ("merge_into", "modify_zone") else item.id
     s = next((x for x in L.ns.suggestions if x["id"] == sid), None)
     return frozenset(s["cells"]) if s is not None else None

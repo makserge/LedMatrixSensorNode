@@ -7,7 +7,7 @@ the diagnostic sensor that carries the push request.
 Learner device: 'Forget all learned data' with its confirmation text, 'Forget rejections', 'Re-suggest night window',
 and the switches 'Guests present - pause learning', 'Pets in home', 'Detailed review text' and 'Debug capture'.
 
-No zone entity and no occupancy entity: those come with P6 (shadow mode until then). With the option ``debug_map``
+No zone entity and no occupancy entity here: the zone entities are the P6 layer's (``discovery_p6``). With the option ``debug_map``
 false the two image configs are empty payloads (they remove the entities), as the debug map's is (spec D33).
 """
 from __future__ import annotations

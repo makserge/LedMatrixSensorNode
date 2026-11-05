@@ -699,7 +699,9 @@ def rep_naming(results: list) -> dict:
 
 # ---------------------------------------------------------------- entry
 def evaluate_p4(results: list) -> Optional[dict]:
-    """The P4 part of the report, or None when no run carries a P4 scenario."""
+    """The P4 part of the report, or None when no run carries a P4 scenario (a P6 job has a script too, but it is not a
+    P4 scenario: it is judged by ``replay.evaluate_p6``)."""
+    results = [r for r in results if not _script(r).startswith(("p6", "p7"))]
     if not any(_script(r) for r in results):
         return None
     criteria = [crit_p41(results), crit_p42(results), crit_p43(results), crit_p44(results), crit_p45(results),

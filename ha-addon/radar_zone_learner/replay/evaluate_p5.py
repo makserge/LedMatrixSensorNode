@@ -1030,7 +1030,8 @@ def build_report(results: list, unit_g5b: Optional[bool] = None) -> dict:
     re-runs are given to ``replay.evaluate.evaluate`` and the P5 section is attached to that report."""
     from . import evaluate as E
     p5res = [r for r in results if is_p5_run(r) or is_rerun(r)]
-    others = [r for r in results if not (is_p5_run(r) or is_rerun(r))]
+    others = [r for r in results
+              if not (is_p5_run(r) or is_rerun(r) or _script(r).startswith(("p6", "p7")))]   # a P6 or P7 run is not a P5 or P3 run
     p5 = evaluate_p5(p5res)
     summaries = [E.summarize_run(r) for r in p5res]
     if others:

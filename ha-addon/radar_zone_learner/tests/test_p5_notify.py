@@ -281,7 +281,9 @@ class EmissionTest(unittest.TestCase):
         self.assertTrue(r.head_id is None or isinstance(r.head_id, str))
         self.assertTrue(r.head_rev is None or type(r.head_rev) is int)
         self.assertIsInstance(r.acks, tuple)
-        self.assertEqual(set(r.__dataclass_fields__), {"seq", "acked", "kind", "count", "head_id", "head_rev", "acks"})
+        self.assertEqual(set(r.__dataclass_fields__), {"seq", "acked", "kind", "count", "head_id", "head_rev", "acks",
+                                                       "attention"})                  # P7 (spec A.2): the trailing flag
+        self.assertIs(r.attention, False)                                            # never set without P7
 
 
 class AckTest(unittest.TestCase):

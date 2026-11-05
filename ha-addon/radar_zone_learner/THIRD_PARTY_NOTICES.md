@@ -22,9 +22,18 @@ The learner uses ideas from the following projects. No code from these projects 
 
 - PeterkoCZ91/HLK-LD2450-security (MIT): 3×3 association of radar detections to tracks.
 - zomco/mmwave-engine (MIT): alpha-beta filter with alpha 0.35 and beta 0.08.
-- P43YM/ld2450_zones (MIT): k-of-n zone entry. Not used yet (planned for phase P6).
-- TillFleisch/ESPHome-HLK-LD2450 (MIT): zone margin. Not used yet (planned for phase P6).
-- paulin011/hlk_radar_fusion (MIT): still-presence fusion. Not used yet (planned for phase P6).
+- zomco/mmwave-engine (MIT): the dwell pass speed. Since P6 a detection of a track moving at 0.8 m/s or more is not counted
+  for a dwell, bed or manual zone. Idea reference, no code used.
+- P43YM/ld2450_zones (MIT): k-of-n zone entry. Since P6 a track enters a zone after at least 3 of its last 10 detections
+  inside the zone. Idea reference, no code used.
+- TillFleisch/ESPHome-HLK-LD2450 (MIT): zone margin. Since P6 the zone area is the stored cell mask grown by a margin of 25 cm
+  (adjustable per zone, -50 to +100 cm). Idea reference, no code used.
+- paulin011/hlk_radar_fusion (MIT): still-presence fusion. Since P6 the second radar (LD2412) may only shorten a held zone
+  (early clear after 60 s of absence, for zones where it agreed at least 80 % of the time); it never extends a hold. Idea
+  reference, no code used.
+
+P7 (0.7.0: drift, moves, retire, radar moved, tuning) uses no new third-party code and no new idea from another project; it
+adds no dependency (the app still needs only the Python standard library and paho-mqtt 2.1.0).
 
 If code from any of these projects is ever ported into this app, its MIT copyright and licence text
 will be added to this file.

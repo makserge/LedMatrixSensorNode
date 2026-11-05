@@ -8,10 +8,10 @@ ADDON = Path(__file__).resolve().parents[1]
 
 CONFIG_LINES = [
     'name: "Radar Zone Learner"',
-    'version: "0.5.0"',
+    'version: "0.7.0"',
     'slug: "radar_zone_learner"',
-    "description: \"Learns places from the LED matrix node's LD2454 radar frames (P5: review and "
-    "suggestions, shadow mode).\"",
+    "description: \"Learns places from the LED matrix node's LD2454 radar frames, reports occupancy of the "
+    "zones you confirmed and notices moved furniture and a moved radar (P7).\"",
     "arch:",
     "  - aarch64",
     "  - amd64",
@@ -25,6 +25,7 @@ CONFIG_LINES = [
     "backup: hot",
     "backup_exclude:",
     '  - "capture/*"',
+    '  - "tuning/*"',
     "options:",
     "  log_level: info",
     "  node_prefix: led_matrix_node",
@@ -60,10 +61,11 @@ class ManifestTest(unittest.TestCase):
         for key in FORBIDDEN_KEYS:
             self.assertNotIn(key, top_keys)
 
-    def test_backup_exclude_matches_the_capture_files_and_nothing_else(self):
+    def test_backup_exclude_matches_the_capture_files_and_the_tuning_file_and_nothing_else(self):
         # The Supervisor tests each exclude entry with PurePath.match against the file's full path below its own data
         # folder (relative patterns match from the right, absolute ones need the whole path): '/data/capture/**'
-        # matches nothing there, 'capture/*' matches the capture files and not the state.
+        # matches nothing there, 'capture/*' matches the capture files and not the state. P7 adds 'tuning/*': the per-night
+        # count file (a day-by-day series) must not be in a backup either.
         lines = (ADDON / "config.yaml").read_text(encoding="utf-8").splitlines()
         i = lines.index("backup_exclude:")
         entries = []
@@ -71,14 +73,19 @@ class ManifestTest(unittest.TestCase):
             if not ln.startswith("  - "):
                 break
             entries.append(ln[4:].strip().strip('"'))
-        self.assertEqual(len(entries), 1)
-        pattern = entries[0]
-        self.assertFalse(pattern.startswith("/"))
+        self.assertEqual(entries, ["capture/*", "tuning/*"])
+        for pattern in entries:
+            self.assertFalse(pattern.startswith("/"))
         data = PurePosixPath("/data/apps/data/local_radar_zone_learner")
-        self.assertTrue((data / "capture" / "capture-20260101-00.jsonl").match(pattern))
-        for name in ("state.json", "rf_stats.json", "options.json"):
-            self.assertFalse((data / name).match(pattern), name)
-        self.assertFalse((data / "snapshots" / "state-2026-01-01.json").match(pattern))
+        self.assertTrue((data / "capture" / "capture-20260101-00.jsonl").match("capture/*"))
+        self.assertTrue((data / "tuning" / "nights.jsonl").match("tuning/*"))
+        self.assertTrue((data / "tuning" / "last_night").match("tuning/*"))
+        for pattern in entries:
+            for name in ("state.json", "rf_stats.json", "options.json"):
+                self.assertFalse((data / name).match(pattern), (pattern, name))
+            self.assertFalse((data / "snapshots" / "state-2026-01-01.json").match(pattern))
+        self.assertFalse((data / "tuning" / "nights.jsonl").match("capture/*"))
+        self.assertFalse((data / "capture" / "capture-20260101-00.jsonl").match("tuning/*"))
 
     def test_options_match_translations(self):
         text = (ADDON / "translations" / "en.yaml").read_text(encoding="utf-8")
@@ -142,6 +149,9 @@ class ManifestTest(unittest.TestCase):
         self.assertIn("0.3.0 - P3 shadow mode", (ADDON / "CHANGELOG.md").read_text(encoding="utf-8"))
         self.assertIn("0.4.0 - P4 night window", (ADDON / "CHANGELOG.md").read_text(encoding="utf-8"))
         self.assertIn("0.5.0 - P5 setup review", (ADDON / "CHANGELOG.md").read_text(encoding="utf-8"))
+        self.assertIn("0.6.0 - P6 confirmed-zone evaluation", (ADDON / "CHANGELOG.md").read_text(encoding="utf-8"))
+        self.assertIn("0.7.0 - P7 drift, moves, retire, radar moved, tuning",
+                      (ADDON / "CHANGELOG.md").read_text(encoding="utf-8"))
 
     def test_version_consistent(self):
         from radar_zone_learner.core.types import APP_VERSION

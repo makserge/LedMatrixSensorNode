@@ -21,7 +21,9 @@ Every actor records what it did and what the learner showed right after (``summa
 that into the numbered P4 checks.
 
 P5 (``replay.p5_scenarios``): the actors of the P5 jobs are built on the same ``Actor`` interface; ``make_actors`` hands a
-job whose script starts with ``p5`` to ``p5_scenarios.make_actors``. ``Actor.readback`` also gives the P5 view of the
+job whose script starts with ``p5`` to ``p5_scenarios.make_actors``, one whose script starts with ``p6`` to
+``p6_scenarios.make_actors`` (the P5 approval actor and the P6 actors) and one whose script starts with ``p7`` to
+``p7_scenarios.make_actors`` (the P5 approval actor and the P7 user). ``Actor.readback`` also gives the P5 view of the
 learner (``zone_views``, ``advanced``, ``push``) and the 'mark' script records the kinds of the confirmed zones after
 each press (``zone_kinds``), which P5-5b and P5-5c read.
 """
@@ -545,6 +547,12 @@ class PlaceUser(Actor):
 def make_actors(job) -> list:
     """The actors of a job's scenario (none for a P3 job and for 'base')."""
     s = job.script
+    if s.startswith("p7"):
+        from . import p7_scenarios
+        return p7_scenarios.make_actors(job)
+    if s.startswith("p6"):
+        from . import p6_scenarios
+        return p6_scenarios.make_actors(job)
     if s.startswith("p5"):
         from . import p5_scenarios
         return p5_scenarios.make_actors(job)

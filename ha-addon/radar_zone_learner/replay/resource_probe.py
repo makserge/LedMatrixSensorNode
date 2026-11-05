@@ -30,6 +30,32 @@ over 100 frames, and one base rebuild (``review_map`` + ``render_review``) <= 40
 (write to a temporary file, ``os.replace``) <= 80 ms; (d) the memory the P5 data adds to the core (tracemalloc: the full
 state against the same state without the ``p5`` section and the zone extras; the whole state's growth over an empty core is
 reported as ``memory_total_mb``) <= 2 MB. Results go to ``DIR/p5_probe.json``.
+
+``--p6`` (check P6-R3, P6 spec 11.2): the cost of the zone evaluator with 100 zone records, 100 labels and their ``zone6`` (50 spells,
+LD2412 evidence, variants) and 3 tracks at 10 Hz walking along rows of zones:
+
+    python -I -B replay/resource_probe.py --p6 --out DIR
+
+(a) the evaluator costs at most 8.3 microseconds per detection on this PC (the same 9,000 detections through the learner with the
+100 + 100 zones and through one without zones; the minimum of three alternating repeats; gated for three people WALKING across the
+zones, the stress in which a zone changes state every second or two; the figure for three people sitting in three zones is
+reported next to it): 25 % of the P3 target (1 % of one CM4 core =
+2.5 ms a second for 30 detections a second = 83 microseconds) divided by the CM4 factor 10 (the conservative end of the x5-10 of the
+design); the report also gives the x5 value (16.6 microseconds); the 24 h measurement on the CM4 (A12) is the arbiter; (b) the peak RSS of
+a child process that holds only the learner with the full state stays under 40 MB; (c) ``export_state`` + an atomic save with the full ``zone6`` is reported; (d) ``Learner.handle`` for a
+20-frame batch with 3 tracks inside the zones is reported. Results go to ``DIR/p6_probe.json``.
+
+``--p7`` (check P7-R3, P7 spec 9.1, DV14): the cost of the P7 additions on the P6 probe's state plus 14 covered dates of 300 stays (4,200
+in all), 5,000 door events, 400 static-clutter events, the coverage of 42 dates and 50 moved-from masks:
+
+    python -I -B replay/resource_probe.py --p7 --out DIR
+
+(a) the four nightly P7 steps (drift, release, radar, tuning: the module functions the learner calls are timed) take at most 0.5 s together, at
+most 0.5 s more than the whole nightly run of a P6 learner (P7 disabled) on the same state, and the radar-moved step at most 0.25 s (the minimum of
+three alternating repeats); (b) the peak RSS of a child process that holds only the P7 learner with the full state, after a nightly run and
+5 minutes of walking people, stays under 40 MB; (c) the per-frame cost of the P6 probe's walking people is unchanged with P7 enabled (the minimum of
+five alternating repeats within 2 %: P7 does not touch the per-frame path); (d) ``export_state`` + an atomic save with 200 zone entries and
+50 masks is reported. Results go to ``DIR/p7_probe.json``.
 """
 import sys
 from pathlib import Path
@@ -354,13 +380,438 @@ def p5_probe(out: Path) -> dict:
     return res
 
 
+# ---------------------------------------------------------------- P6-R3 (P6 spec 11.2): the cost of the zone evaluator
+P6_LIMITS = {"evaluator_us_per_detection": 8.3, "rss_mb": 40.0}
+P6_CM4_ALLOWANCE_US = 83.0            # 25 % of the P3 target (1 % of one core) at 30 detections a second, on the CM4
+P6_CM4_FACTORS = (5.0, 10.0)          # CD:ha_side 'CPU / RAM on the CM4': x5-10 slower than this PC (an inference there)
+
+
+def zone6_state(state: dict) -> dict:
+    """The ``zone6`` section of a full state: every zone record and label has 50 spells, LD2412 evidence, up to 3 hour ranges and
+    6 variants; the first 24 have tuning and a variant request (P6 spec 6.4)."""
+    ids = [z["zid"] for z in state["zones"]] + [lb["id"] for lb in state["labels"]]
+    z6 = {"v": 1, "set": {"epoch": 0}, "tune": {}, "delay": {}, "ld": {}, "ldr": [], "info": {}, "ve": {}}
+    for n, zid in enumerate(ids):
+        z6["delay"][zid] = {"sp": [30 + (n * 7 + k * 11) % 500 for k in range(50)], "cd": 300, "upd": 9}
+        z6["ld"][zid] = [5400 + n, 6000 + n]
+        if n % 2 == 0:
+            z6["ldr"].append(zid)
+        var = [{"d": "wd" if k % 2 == 0 else "we", "s": 6 + k, "e": 8 + k, "n": 12} for k in range(6)]
+        z6["info"][zid] = {"th": {"wd": ["09-12", "13-17", "20-23"], "we": ["10-12"]}, "var": var, "conf": 0.8, "upd": 9}
+        if n < 24:
+            z6["tune"][zid] = {"cd": 120, "mg": 25}
+            z6["ve"][zid] = ["wd0608"]
+    return z6
+
+
+SIT_AT = ((-6.1, 3.9), (-5.5, 3.9), (-4.9, 3.9))       # the centres of three zones of ``heavy_state`` (records 101-103)
+
+
+def synthetic_batches(n_batches: int, frames: int, boot_id: str = "00c0ffee", t0_dev: int = 100_000, tracks: int = 3,
+                      mode: str = "walk") -> list:
+    """Payload texts of ``n_batches`` batches of ``frames`` frames (10 Hz) with ``tracks`` people, pw 3, LD2412 present:
+    ``walk`` (the stress: they walk along rows of zones at 0.6 m/s, back and forth, so zones change state all the time) or
+    ``sit`` (each sits in one zone: the evaluator has work but no state changes). ``[(dev_ms_of_the_first_frame, payload)]``."""
+    from replay.batcher import Batch, format_frames
+    out = []
+    seq = 0
+    ms = t0_dev
+    rows = (3.9, 4.5, 5.1)[:tracks]
+    for _ in range(n_batches):
+        b = Batch()
+        b.s, b.n = seq, frames
+        b.first_ms, b.last_ms = ms, ms + (frames - 1) * 100
+        for f in range(frames):
+            t = (ms + f * 100) / 1000.0
+            tg = []
+            for slot, y in enumerate(rows):
+                if mode == "sit":
+                    x, y = SIT_AT[slot]
+                    x += 0.01 * ((f + slot) % 3 - 1)
+                    tg.append((slot, int(round(x * 1000)), int(round(y * 1000)), 0))
+                    continue
+                ph = (t * 0.6 + slot * 3.0) % 22.0
+                x = -6.0 + (ph if ph < 11.0 else 22.0 - ph)
+                tg.append((slot, int(round(x * 1000)), int(round(y * 1000)), 60))
+            b.f.append((seq + f, ms + f * 100, tuple(tg)))
+        text = format_frames(b, b.last_ms + 40, boot_id, 1, 1, 3, "A")
+        out.append((ms, text))
+        seq += frames
+        ms += frames * 100
+    return out
+
+
+def _drive(learner, batches: list, base_ms: int, time_calls: bool = True):
+    """Feeds the batches (a tick every second of simulated time); returns the CPU seconds spent in the ``handle`` calls."""
+    from radar_zone_learner.core.types import FramesMessage
+    spent = 0.0
+    pc = time.perf_counter
+    next_tick = None
+    for dev_ms, text in batches:
+        recv = base_ms + dev_ms
+        if next_tick is None:
+            next_tick = recv
+        while next_tick <= recv:
+            learner.tick(next_tick)
+            next_tick += 1000
+        a = pc()
+        learner.handle(FramesMessage(text.encode("ascii"), recv))
+        spent += pc() - a
+    return spent
+
+
+def _build_p6(state: dict, base_ms: int):
+    from radar_zone_learner.core.learner import Learner
+    from radar_zone_learner.core.params import DEFAULT_P5, DEFAULT_P6, DEFAULT_PARAMS
+    from radar_zone_learner.core.types import FixedOffsetTime, NodeStatus
+    lr = Learner(DEFAULT_PARAMS, FixedOffsetTime(0), json.loads(json.dumps(state)), DEFAULT_P5, DEFAULT_P6)
+    lr.handle(NodeStatus(True, base_ms))
+    return lr
+
+
+def _p6_base_ms() -> int:
+    from replay.framegen import BASE_MS
+    return BASE_MS + 12 * 3600 * 1000 + 30 * 24 * 3600 * 1000            # noon of a day after the state's last night
+
+
+def p6_child(state_path: Path, result_path: Path) -> int:
+    """Child process of the P6 probe: loads the full state (100 zone records, 100 labels, zone6), feeds the walking and the sitting
+    people and reports this process's peak RSS (the learner alone, nothing of the probe's own bookkeeping)."""
+    from radar_zone_learner.shell.resources import peak_rss_mb, rss_mb
+    base_ms = _p6_base_ms()
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    lr = _build_p6(state, base_ms)
+    del state
+    _drive(lr, synthetic_batches(60, 5), base_ms)
+    _drive(lr, synthetic_batches(600, 5, t0_dev=130_000), base_ms)
+    _drive(lr, synthetic_batches(600, 5, t0_dev=130_000 + 600 * 500, mode="sit"), base_ms)
+    result_path.write_text(json.dumps({"peak_rss_mb": peak_rss_mb(), "rss_mb": rss_mb()}), encoding="utf-8")
+    return 0
+
+
+def p6_probe(out: Path) -> dict:
+    """The measurements of P6-R3; writes ``out/p6_probe.json`` and returns the report."""
+    import copy
+    import gc
+    import os
+    import statistics
+
+    from radar_zone_learner.core.types import FramesMessage
+
+    state = heavy_state()
+    state["p5"]["zone6"] = zone6_state(state)
+    bare = copy.deepcopy(state)
+    bare["zones"], bare["labels"] = [], []
+    bare["p5"].pop("zone6", None)
+    base_ms = _p6_base_ms()
+    res = {"zones": len(state["zones"]) + len(state["labels"]), "limits": dict(P6_LIMITS)}
+    warm = synthetic_batches(60, 5)                                       # 30 s: the 12 s warm-up and the first frames
+    detections = 600 * 5 * 3
+    # (a) the evaluator's cost per detection: the same frames through the learner with 100 zones and 100 labels and through one
+    # with none (the minimum of three alternating repeats), for people who walk across the zones (the stress: a zone changes
+    # state every second or two) and for people who sit in three zones (no state change)
+    cost = {}
+    for mode in ("walk", "sit"):
+        measure = synthetic_batches(600, 5, t0_dev=130_000, mode=mode)    # 5 simulated minutes, 3 tracks, 10 Hz
+        with_z, without = [], []
+        for _ in range(3):
+            b = _build_p6(bare, base_ms)
+            _drive(b, warm, base_ms)
+            without.append(_drive(b, measure, base_ms))
+            del b
+            a = _build_p6(state, base_ms)
+            _drive(a, warm, base_ms)
+            with_z.append(_drive(a, measure, base_ms))
+            zs = a.zone_states()
+            res["zones_valid_" + mode] = bool(getattr(zs, "valid", False))
+            res["zones_occupied_" + mode] = sum(1 for z in zs.zones if z.occ) if hasattr(zs, "zones") else 0
+            del a
+            gc.collect()
+        cost[mode] = (min(with_z) - min(without)) / detections * 1e6
+        res["with_zones_s_" + mode] = round(min(with_z), 4)
+        res["without_zones_s_" + mode] = round(min(without), 4)
+    res.update(detections=detections, evaluator_us_per_detection=round(cost["walk"], 2),
+               evaluator_us_per_detection_sit=round(cost["sit"], 2), cm4_us_at_x5=round(cost["walk"] * P6_CM4_FACTORS[0], 1),
+               cm4_us_at_x10=round(cost["walk"] * P6_CM4_FACTORS[1], 1), cm4_allowance_us=P6_CM4_ALLOWANCE_US)
+    # (d) one 20-frame batch with 3 tracks inside the zones, through the learner with the zones
+    a = _build_p6(state, base_ms)
+    _drive(a, warm, base_ms)
+    big = synthetic_batches(100, 20, t0_dev=130_000 + 600 * 500)
+    times = []
+    for dev_ms, text in big:
+        t = time.perf_counter()
+        a.handle(FramesMessage(text.encode("ascii"), base_ms + dev_ms))
+        times.append((time.perf_counter() - t) * 1000.0)
+    res["batch20_median_ms"] = round(statistics.median(times), 3)
+    res["batch20_max_ms"] = round(max(times), 3)
+    # (c) the state save with the full zone6 (export, JSON, atomic write)
+    path = out / "p6_state_probe.json"
+    tmp = out / "p6_state_probe.json.tmp"
+
+    def save():
+        text = json.dumps(a.export_state(), separators=(",", ":"))
+        tmp.write_text(text, encoding="utf-8")
+        os.replace(tmp, path)
+    save()
+    saves = _ms(save, 5)
+    res["export_save_ms"] = round(statistics.median(saves), 3)
+    res["export_save_max_ms"] = round(max(saves), 3)
+    res["saved_bytes"] = path.stat().st_size
+    res["zone6_bytes"] = len(json.dumps(state["p5"]["zone6"], separators=(",", ":")))
+    res["zone6_kept"] = bool((a.export_state().get("p5") or {}).get("zone6"))
+    # (b) the peak RSS of a child that holds only the learner with the full state
+    (out / "p6_full_state.json").write_text(json.dumps(state, separators=(",", ":")), encoding="utf-8")
+    rpath = out / "p6_child.json"
+    rc = subprocess.run([sys.executable, "-I", "-B", str(Path(__file__).resolve()), "--child", "p6", "--state",
+                         str(out / "p6_full_state.json"), "--result", str(rpath)]).returncode
+    rss = json.loads(rpath.read_text(encoding="utf-8")).get("peak_rss_mb") if rc == 0 and rpath.is_file() else None
+    res["rss_mb"] = round(rss, 1) if rss is not None else None
+    checks = {"evaluator_us_per_detection": {"value": res["evaluator_us_per_detection"], "limit": P6_LIMITS["evaluator_us_per_detection"],
+                                             "pass": res["evaluator_us_per_detection"] <= P6_LIMITS["evaluator_us_per_detection"]},
+              "rss_mb": {"value": res["rss_mb"], "limit": P6_LIMITS["rss_mb"],
+                         "pass": res["rss_mb"] is not None and res["rss_mb"] < P6_LIMITS["rss_mb"]}}
+    res["checks"] = checks
+    res["pass"] = all(c["pass"] for c in checks.values())
+    (out / "p6_probe.json").write_text(json.dumps(res, indent=1), encoding="utf-8")
+    return res
+
+
+# ---------------------------------------------------------------- P7-R3 (P7 spec 9.1): the cost of the nightly P7 steps
+P7_LIMITS = {"p7_nightly_s": 0.5, "p7_over_p6_s": 0.5, "radar_search_s": 0.25, "rss_mb": 40.0, "frame_cost_ratio": 1.02}
+P7_STEP_NAMES = ("drift", "release", "radar", "tuning")
+
+
+def p7_state(night: int = 30) -> dict:
+    """``heavy_state`` (100 zone records, 100 labels, the P5 caps) plus ``zone6``, 14 covered dates of 300 stays each (4,200 stays at the
+    centres of the 200 zones and labels), 5,000 door events, 400 static-clutter events, the coverage of the newest 42 dates under a
+    night-off schedule (the radars off 00:00-06:00) and 50 moved-from masks in ``zone7``: the state of P7-R3."""
+    import datetime
+
+    from radar_zone_learner.core.grids import rle_encode
+
+    st = heavy_state(night)
+    st["p5"]["zone6"] = zone6_state(st)
+    last = datetime.date(2026, 1, 5) + datetime.timedelta(days=night)
+    ord0 = last.toordinal()
+
+    def epoch(d_ord: int, sec: int) -> int:
+        return (d_ord - 719163) * 86400 + sec
+
+    cov = {}
+    for d in range(ord0 - 42, ord0):
+        cov[datetime.date.fromordinal(d).isoformat()] = [0.0] * 6 + [3600.0] * 18
+    st["coverage"] = cov
+    centres = [(z["cx"], z["cy"]) for z in st["zones"]] + [(lb["x"], lb["y"]) for lb in st["labels"]]
+    stays = []
+    for di, d in enumerate(range(ord0 - 14, ord0)):
+        iso = datetime.date.fromordinal(d).isoformat()
+        for k in range(300):
+            cx, cy = centres[(k * 7 + di) % len(centres)]
+            t0 = epoch(d, (7 + (k * 3) % 16) * 3600 + (k % 12) * 300)
+            dur = 120 + (k % 10) * 60
+            stays.append({"t0": t0, "t1": t0 + dur // 300 * 300 + 300, "dur": dur, "x": int(round(cx * 100)) + (k % 5) - 2,
+                          "y": int(round(cy * 100)) + (k % 3) - 1, "sd": 8 + k % 6, "nf": 1 + k % 4, "ld": round(0.5 + (k % 5) / 10.0, 2),
+                          "he": 0.0, "exit": "moving", "arr": "walk", "day": iso})
+    st["stays"] = stays
+    doors = []
+    sites = ((4.4, 2.6), (-6.0, 1.5), (0.5, 7.4))
+    for di, d in enumerate(range(ord0 - 14, ord0)):
+        for k in range(358):
+            sx, sy = sites[k % 3]
+            doors.append({"t": epoch(d, 6 * 3600 + k * 150), "x": int(round(sx * 100)) + (k % 7) * 4 - 12,
+                          "y": int(round(sy * 100)) + (k % 5) * 4 - 8, "k": "b" if k % 2 == 0 else "d"})
+    st["door_events"] = doors[:5000]
+    st["ghost_events"] = [{"t": epoch(ord0 - 14 + k // 30, 8 * 3600 + (k % 30) * 600), "x": 200 + (k % 4), "y": 80 + (k % 3), "dur": 900,
+                           "why": "identical", "ld": 0.0, "arr": "static"} for k in range(400)]
+    masks = []
+    for k in range(50):
+        i, j = 3 + 3 * (k % 20), 3 + 3 * (k // 20)
+        masks.append({"zid": "z%04d" % (k + 1), "cells": rle_encode(_blob(i, j)), "cx": round(-7.0 + (i + 1.5) * 0.2, 3),
+                      "cy": round((j + 1.5) * 0.2, 3), "day": ord0 - 3 - k % 20, "n0": 12, "why": "moved_from" if k % 2 == 0 else "retired"})
+    st["p5"]["zone7"] = {"v": 1, "mf": masks}
+    return st
+
+
+def _build_p7(state: dict, base_ms: int, on: bool):
+    from radar_zone_learner.core.learner import Learner
+    from radar_zone_learner.core.params import DEFAULT_P5, DEFAULT_P6, DEFAULT_PARAMS, P7Params
+    from radar_zone_learner.core.types import FixedOffsetTime, NodeStatus
+    lr = Learner(DEFAULT_PARAMS, FixedOffsetTime(0), json.loads(json.dumps(state)), DEFAULT_P5, DEFAULT_P6, P7Params(enabled=on))
+    lr.handle(NodeStatus(True, base_ms))
+    return lr
+
+
+NIGHTLY_TICK_MS = 600_000                 # a tick every 10 minutes is enough to cross 03:30 (a tick costs milliseconds, 1,440 a day)
+
+
+def _to_nightly(lr, state: dict):
+    """Ticks ``lr`` every 10 minutes from 03:31 of the state's last run until the first ``NightlyDone``; returns ``(now, outs, seconds the
+    nightly tick took)`` or ``(now, None, None)`` when no nightly run happened within 26 hours."""
+    from radar_zone_learner.core.types import NightlyDone
+    from replay.compat_check import idle_start_ms
+    now = idle_start_ms(state)
+    for _ in range(26 * 3600 * 1000 // NIGHTLY_TICK_MS):
+        now += NIGHTLY_TICK_MS
+        t = time.perf_counter()
+        outs = lr.tick(now)
+        dt = time.perf_counter() - t
+        if any(isinstance(o, NightlyDone) for o in outs):
+            return now, outs, dt
+    return now, None, None
+
+
+def _nightly_cost(state: dict, on: bool) -> dict:
+    """Ticks a learner built on ``state`` (every 10 minutes from 03:31 of the state's last run) until the first ``NightlyDone``; returns the
+    seconds the nightly tick took and, for an enabled learner, the seconds of each of the four P7 steps (the module functions the
+    learner calls are wrapped for the duration)."""
+    from radar_zone_learner.core import drift, movedfrom, radarmoved, tuningagg
+    from radar_zone_learner.core.types import NightlyFailed
+    from replay.compat_check import idle_start_ms
+
+    base = idle_start_ms(state)
+    lr = _build_p7(state, base - 3600 * 1000, on)
+    steps = dict.fromkeys(P7_STEP_NAMES, 0.0)
+    targets = (("drift", drift, "nightly"), ("release", movedfrom, "release"), ("radar", radarmoved, "nightly"),
+               ("tuning", tuningagg, "nightly"))
+    saved = []
+    for name, mod, attr in targets:
+        orig = getattr(mod, attr)
+        saved.append((mod, attr, orig))
+
+        def wrapper(*a, _o=orig, _n=name, **kw):
+            t = time.perf_counter()
+            try:
+                return _o(*a, **kw)
+            finally:
+                steps[_n] += time.perf_counter() - t
+        setattr(mod, attr, wrapper)
+    spent, failed = None, 0
+    try:
+        _, outs, spent = _to_nightly(lr, state)
+        if outs is not None:
+            failed = sum(isinstance(o, NightlyFailed) for o in outs)
+    finally:
+        for mod, attr, orig in saved:
+            setattr(mod, attr, orig)
+    return {"nightly_s": spent, "steps_s": steps, "failed": failed, "p7_errors": (lr.counters() or {}).get("p7_errors")}
+
+
+def p7_child(state_path: Path, result_path: Path, on: bool = True) -> int:
+    """Child process of the P7 probe: loads the full P7 state with P7 enabled, runs one nightly and feeds the walking people; reports
+    this process's peak RSS (the learner alone)."""
+    from radar_zone_learner.shell.resources import peak_rss_mb, rss_mb
+    from replay.compat_check import idle_start_ms
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    base_ms = idle_start_ms(state)
+    lr = _build_p7(state, base_ms - 3600 * 1000, on)
+    now, _, _ = _to_nightly(lr, state)
+    del state
+    base2 = now + 12 * 3600 * 1000
+    _drive(lr, synthetic_batches(60, 5), base2)
+    _drive(lr, synthetic_batches(600, 5, t0_dev=130_000), base2)
+    result_path.write_text(json.dumps({"peak_rss_mb": peak_rss_mb(), "rss_mb": rss_mb()}), encoding="utf-8")
+    return 0
+
+
+def p7_probe(out: Path) -> dict:
+    """The measurements of P7-R3; writes ``out/p7_probe.json`` and returns the report."""
+    import gc
+    import os
+    import statistics
+
+    state = p7_state()
+    res = {"zones": len(state["zones"]) + len(state["labels"]), "stays": len(state["stays"]), "door_events": len(state["door_events"]),
+           "ghost_events": len(state["ghost_events"]), "masks": len(state["p5"]["zone7"]["mf"]), "limits": dict(P7_LIMITS)}
+    # (a) the nightly run of a P6 learner (P7 disabled) and of a P7 learner on the same state: the minimum of three alternating repeats
+    p6s, p7s, steps = [], [], []
+    failed = 0
+    for _ in range(3):
+        a = _nightly_cost(state, False)
+        b = _nightly_cost(state, True)
+        gc.collect()
+        p6s.append(a["nightly_s"])
+        p7s.append(b["nightly_s"])
+        steps.append(b["steps_s"])
+        failed += (a["failed"] or 0) + (b["failed"] or 0) + (b["p7_errors"] or 0)
+    if None in p6s or None in p7s:
+        res.update(error="no nightly run happened", checks={}, **{"pass": False})
+        (out / "p7_probe.json").write_text(json.dumps(res, indent=1), encoding="utf-8")
+        return res
+    best = {k: min(s[k] for s in steps) for k in P7_STEP_NAMES}
+    p7_total = min(sum(s.values()) for s in steps)
+    res.update(nightly_p6_s=round(min(p6s), 3), nightly_p7_s=round(min(p7s), 3), p7_steps_s={k: round(v, 4) for k, v in best.items()},
+               p7_steps_total_s=round(p7_total, 4), nightly_failed_or_errors=failed,
+               p7_other_s=round(min(p7s) - min(p6s) - p7_total, 4))      # what else the P7 learner's nightly tick does (the item plan)
+    # (c) the per-frame cost is unchanged: the P6 probe's walking people through the P6 full state, P7 disabled and enabled
+    s6 = heavy_state()
+    s6["p5"]["zone6"] = zone6_state(s6)
+    base_ms = _p6_base_ms()
+    warm = synthetic_batches(60, 5)
+    measure = synthetic_batches(600, 5, t0_dev=130_000)
+    off, on = [], []
+    for _ in range(5):
+        for flag, acc in ((False, off), (True, on)):
+            lr = _build_p7(s6, base_ms, flag)
+            _drive(lr, warm, base_ms)
+            acc.append(_drive(lr, measure, base_ms))
+            del lr
+            gc.collect()
+    detections = 600 * 5 * 3
+    res.update(frame_off_s=round(min(off), 4), frame_on_s=round(min(on), 4), frame_cost_ratio=round(min(on) / min(off), 4),
+               frame_delta_us_per_detection=round((min(on) - min(off)) / detections * 1e6, 3))
+    # (d) the state save with 100 zones, 100 labels and 50 masks (export, JSON, atomic write) after a nightly run
+    from replay.compat_check import idle_start_ms
+    lr = _build_p7(state, idle_start_ms(state) - 3600 * 1000, True)
+    _to_nightly(lr, state)
+    path = out / "p7_state_probe.json"
+    tmp = out / "p7_state_probe.json.tmp"
+
+    def save():
+        text = json.dumps(lr.export_state(), separators=(",", ":"))
+        tmp.write_text(text, encoding="utf-8")
+        os.replace(tmp, path)
+    save()
+    saves = _ms(save, 5)
+    z7 = (lr.export_state().get("p5") or {}).get("zone7") or {}
+    res.update(export_save_ms=round(statistics.median(saves), 3), export_save_max_ms=round(max(saves), 3), saved_bytes=path.stat().st_size,
+               zone7_bytes=len(json.dumps(z7, separators=(",", ":"))), zone7_entries=len(z7.get("z") or {}), zone7_masks=len(z7.get("mf") or []))
+    # (b) the peak RSS of a child process that holds only the learner with the full state
+    (out / "p7_full_state.json").write_text(json.dumps(state, separators=(",", ":")), encoding="utf-8")
+    rss = {}
+    for child in ("p7", "p7off"):                     # the P7 learner and, on the same state, the P6 learner (P7 disabled)
+        rpath = out / ("%s_child.json" % child)
+        rc = subprocess.run([sys.executable, "-I", "-B", str(Path(__file__).resolve()), "--child", child, "--state",
+                             str(out / "p7_full_state.json"), "--result", str(rpath)]).returncode
+        rss[child] = json.loads(rpath.read_text(encoding="utf-8")).get("peak_rss_mb") if rc == 0 and rpath.is_file() else None
+    res["rss_mb"] = round(rss["p7"], 1) if rss["p7"] is not None else None
+    res["rss_mb_p6"] = round(rss["p7off"], 1) if rss["p7off"] is not None else None
+    res["rss_p7_increment_mb"] = round(rss["p7"] - rss["p7off"], 1) if rss["p7"] is not None and rss["p7off"] is not None else None
+    checks = {
+        "p7_nightly_s": {"value": res["p7_steps_total_s"], "limit": P7_LIMITS["p7_nightly_s"], "pass": res["p7_steps_total_s"] <= P7_LIMITS["p7_nightly_s"]},
+        "p7_over_p6_s": {"value": round(res["nightly_p7_s"] - res["nightly_p6_s"], 4), "limit": P7_LIMITS["p7_over_p6_s"],
+                         "pass": res["nightly_p7_s"] <= res["nightly_p6_s"] + P7_LIMITS["p7_over_p6_s"]},
+        "radar_search_s": {"value": res["p7_steps_s"]["radar"], "limit": P7_LIMITS["radar_search_s"],
+                           "pass": res["p7_steps_s"]["radar"] <= P7_LIMITS["radar_search_s"]},
+        "rss_mb": {"value": res["rss_mb"], "limit": P7_LIMITS["rss_mb"], "pass": res["rss_mb"] is not None and res["rss_mb"] < P7_LIMITS["rss_mb"]},
+        "frame_cost_ratio": {"value": res["frame_cost_ratio"], "limit": P7_LIMITS["frame_cost_ratio"],
+                             "pass": res["frame_cost_ratio"] <= P7_LIMITS["frame_cost_ratio"]},
+        "no_failed_step": {"value": failed, "limit": 0, "pass": failed == 0},
+    }
+    res["checks"] = checks
+    res["pass"] = all(c["pass"] for c in checks.values())
+    (out / "p7_probe.json").write_text(json.dumps(res, indent=1), encoding="utf-8")
+    return res
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="resource_probe.py", allow_abbrev=False)
     ap.add_argument("--p5", action="store_true", help="P5-R3: the cost of the P5 additions on a synthetic full state")
+    ap.add_argument("--p6", action="store_true", help="P6-R3: the cost of the zone evaluator with 100 zones and 3 tracks at 10 Hz")
+    ap.add_argument("--p7", action="store_true", help="P7-R3: the cost of the nightly P7 steps with 100 zones, 4,200 stays and 5,000 door events")
     ap.add_argument("--out", help="output folder (required in the parent)")
     ap.add_argument("--nights", type=int, default=18)
     ap.add_argument("--tail-days", type=int, default=3)
-    ap.add_argument("--child", choices=("cpu", "mem"), default=None)
+    ap.add_argument("--child", choices=("cpu", "mem", "p6", "p7", "p7off"), default=None)
     ap.add_argument("--state")
     ap.add_argument("--events")
     ap.add_argument("--result")
@@ -368,8 +819,53 @@ def main(argv=None) -> int:
         args = ap.parse_args(argv)
     except SystemExit as exc:
         return 2 if exc.code else 0
+    if args.child == "p6":
+        return p6_child(Path(args.state), Path(args.result))
+    if args.child in ("p7", "p7off"):
+        return p7_child(Path(args.state), Path(args.result), on=args.child == "p7")
+    if args.p7:
+        if not args.out:
+            print("usage error: --out is required", file=sys.stderr)
+            return 2
+        out = Path(args.out)
+        out.mkdir(parents=True, exist_ok=True)
+        res = p7_probe(out)
+        if res.get("error"):
+            print("P7-R3: %s" % res["error"], file=sys.stderr)
+            return 1
+        print("P7-R3 with %d zones, %d stays, %d door events, %d masks: nightly of a P6 learner %.3f s, of a P7 learner %.3f s; the P7 steps %s "
+              "(total %.4f s)" % (res["zones"], res["stays"], res["door_events"], res["masks"], res["nightly_p6_s"], res["nightly_p7_s"],
+                                  res["p7_steps_s"], res["p7_steps_total_s"]))
+        for k, c in res["checks"].items():
+            print("%-20s %10s  limit %-6s %s" % (k, c["value"], c["limit"], "PASS" if c["pass"] else "FAIL"))
+        print("per detection: %s microseconds more with P7 enabled; save median %s ms, %d bytes (zone7 %d bytes, %d entries, %d masks)" % (
+            res["frame_delta_us_per_detection"], res["export_save_ms"], res["saved_bytes"], res["zone7_bytes"], res["zone7_entries"],
+            res["zone7_masks"]))
+        print("peak RSS of the child: %s MB with P7, %s MB with P7 disabled on the same state (P7 adds %s MB; Windows CPython has a larger "
+              "baseline than the CM4's Alpine Python, the 24 h run on the CM4 is the arbiter)" % (
+                  res["rss_mb"], res["rss_mb_p6"], res["rss_p7_increment_mb"]))
+        print("probe: %s" % (out / "p7_probe.json"))
+        return 0 if res["pass"] else 1
     if args.child:
         return child(args.child, Path(args.state), Path(args.events), Path(args.result))
+    if args.p6:
+        if not args.out:
+            print("usage error: --out is required", file=sys.stderr)
+            return 2
+        out = Path(args.out)
+        out.mkdir(parents=True, exist_ok=True)
+        res = p6_probe(out)
+        print("P6-R3 with %d zones: %d detections, evaluator %.2f microseconds per detection walking across the zones, %.2f sitting "
+              "(CM4 x5 %.1f, x10 %.1f microseconds for the walking case; allowance %.0f)" % (
+                  res["zones"], res["detections"], res["evaluator_us_per_detection"], res["evaluator_us_per_detection_sit"],
+                  res["cm4_us_at_x5"], res["cm4_us_at_x10"], res["cm4_allowance_us"]))
+        for k, c in res["checks"].items():
+            print("%-30s %10s  limit %-6s %s" % (k, c["value"], c["limit"], "PASS" if c["pass"] else "FAIL"))
+        print("20-frame batch median %s ms, max %s ms; save median %s ms, %d bytes (zone6 %d bytes, kept: %s)" % (
+            res["batch20_median_ms"], res["batch20_max_ms"], res["export_save_ms"], res["saved_bytes"], res["zone6_bytes"],
+            res["zone6_kept"]))
+        print("probe: %s" % (out / "p6_probe.json"))
+        return 0 if res["pass"] else 1
     if args.p5:
         if not args.out:
             print("usage error: --out is required", file=sys.stderr)

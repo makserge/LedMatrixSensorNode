@@ -11,7 +11,9 @@ from radar_zone_learner.core.types import (ContextState, FixedOffsetTime, LuxSam
                                            ReviewAnswer, ReviewChanged, SaveRequested, ScheduleState, StatusChanged)
 from radar_zone_learner.shell import service as service_mod
 from radar_zone_learner.shell.p5 import P5Layer
+from radar_zone_learner.shell.p6 import P6Layer
 from radar_zone_learner.shell.topics_p5 import TopicsP5
+from radar_zone_learner.shell.topics_p6 import TopicsP6
 from tests.fakes import FakeLearner
 from tests.p5_harness import P5Harness, bed_item, changed, place_item, window_item
 
@@ -411,7 +413,7 @@ class DebugMapOffTest(P5Harness, unittest.TestCase):
 
 
 class MainWiringTest(unittest.TestCase):
-    def test_main_builds_the_p5_topics_and_one_p5_layer_as_p4(self):
+    def test_main_builds_the_p6_topics_and_one_p6_layer_as_p4_which_is_a_p5_layer(self):
         from tests._tmp import tmpdir
         from tests.fakes import quiet_logs
         quiet_logs(self)
@@ -438,11 +440,15 @@ class MainWiringTest(unittest.TestCase):
         self.assertEqual(code, 0)
         kwargs = seen["kwargs"]
         self.assertIsInstance(kwargs["p4"], P5Layer)
+        self.assertIsInstance(kwargs["p4"], P6Layer)               # P6: main passes a P6 layer, a P5 layer with the zones (P7: the P7 one)
         self.assertIsInstance(kwargs["topics"], TopicsP5)
+        self.assertIsInstance(kwargs["topics"], TopicsP6)
         self.assertEqual(kwargs["topics"].frames, "node_b/radar/ld2454/frames")
         self.assertFalse(kwargs["p4"].debug_map)
         self.assertFalse(kwargs["p4"].maps.enabled)
-        self.assertEqual(len(kwargs["topics"].subscriptions()), 30)
+        self.assertEqual(len(kwargs["topics"].subscriptions()), 30 + 4 + 1)  # the 30 of P5, the four zone command patterns and P7's export
+        self.assertEqual(len(TopicsP5.subscriptions(kwargs["topics"])), 30)   # the P5 part is exactly P5's, unchanged
+        self.assertEqual(kwargs["topics"].subscriptions()[:30], TopicsP5.subscriptions(kwargs["topics"]))
         self.assertIs(mqtt_cls.call_args.args[1], kwargs["topics"])
         self.assertIsNotNone(kwargs["p4"].capture)
 

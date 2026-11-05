@@ -9,7 +9,11 @@ from dataclasses import replace
 from datetime import date
 from typing import Optional
 
+from . import drift as drift_mod
 from . import labels as labels_mod
+from . import movedfrom as movedfrom_mod
+from . import radarmoved as radarmoved_mod
+from . import tuningagg as tuningagg_mod
 from . import where as where_mod
 from . import zones as zones_mod
 from .advanced import advanced_entries
@@ -21,25 +25,32 @@ from .grids import GridGeom, Grids, rate
 from .night import NightModel
 from .nightlearn import NightLearning
 from .notify import PushPlanner
-from .observation import MIN_BOOT_WALL_MS, Censor, Observation
+from . import zoneinfo
+from .observation import MIN_BOOT_WALL_MS, Censor, Observation, TrackFrames
 from .p5state import P5State
-from .params import DEFAULT_P5, DEFAULT_PARAMS, P5Params, Params
+from .p6state import Zone6, variant_id
+from .p7state import Zone7
+from .zoneeval import ZoneEval
+from .params import DEFAULT_P5, DEFAULT_P6, DEFAULT_P7, DEFAULT_PARAMS, P5Params, P6Params, P7Params, Params
 from .review import ReviewModel, hhmm
 from .state import export_state, load_state
 from .tracker import Tracker
-from .types import (APP_VERSION, ITEM_IDS, SCHEMA_VERSION, SETTING_NAMES, AdvancedChanged, AnswerIgnored,
+from .types import (APP_VERSION, ITEM_IDS, ITEM_RADAR_MOVED, SCHEMA_VERSION, SETTING_NAMES, AdvancedChanged, AnswerIgnored,
                     CandidateView, CommandResult, ContextState, DebugMapChanged, DebugMapData, FixedOffsetTime,
                     FramesMessage, Label, LuxSample, MarkPress, MarkResult, NameEcho, NightLearningChanged,
                     NightLearningSwitch, NightlyDone, NightlyFailed, NightTimeEdit, NodeCommand, NodeStatus,
                     PayloadError, PushAck, PushRequest, ReviewAnswer, ReviewChanged, ReviewSelect, SaveRequested,
                     ScheduleState, SettingSwitch, SpotName, StatusChanged, StayView, Suggestion, TimeModel,
-                    WhereView)
+                    TuningLine, WhereView, ZoneDrift, ZoneEvent, ZoneForget, ZoneStates, ZoneTune, VariantRequest,
+                    RadarMovedView, ZONE_TUNE_FIELDS)
 
-# P5 (spec A.3): the only place a new output class can be lost (an unlisted class is silently dropped)
+# P5 (spec A.3): the only place a new output class can be lost (an unlisted class is silently dropped). P7 (spec A.2):
+# TuningLine goes before SaveRequested, which keeps the P4 subsequence.
 _OUTPUT_ORDER = (MarkResult, NameEcho, NightlyDone, NightlyFailed, NodeCommand, NightLearningChanged,
-                 AnswerIgnored, ReviewChanged, AdvancedChanged, PushRequest, StatusChanged, DebugMapChanged,
-                 SaveRequested)
-_REASON_PRIORITY = {"nightly": 0, "label": 1, "name": 2, "review": 3, "push": 3, "night_learning": 4, "start": 5}
+                 AnswerIgnored, ReviewChanged, AdvancedChanged, ZoneEvent, ZoneStates, PushRequest, StatusChanged,
+                 DebugMapChanged, TuningLine, SaveRequested)
+_REASON_PRIORITY = {"nightly": 0, "label": 1, "name": 2, "review": 3, "push": 3, "zone": 3, "night_learning": 4,
+                    "start": 5}
 P4_STEP_MS = 1000                # night evidence, Night learning timers and the review are looked at this often
 MARK_MIN_INTERVAL_MS = 10000     # a second accepted press within this time is refused ('too_soon')
 
@@ -63,9 +74,12 @@ def _hhmm(minute: Optional[int]) -> Optional[str]:
 
 class Learner:
     def __init__(self, params: Params = DEFAULT_PARAMS, time_model: TimeModel = FixedOffsetTime(0),
-                 state: Optional[dict] = None, p5params: P5Params = DEFAULT_P5) -> None:
+                 state: Optional[dict] = None, p5params: P5Params = DEFAULT_P5,
+                 p6params: P6Params = DEFAULT_P6, p7params: P7Params = DEFAULT_P7) -> None:
         p = self.p = params
         self.p5params = p5params                            # P5 parameters (a separate dataclass, spec D4)
+        self.p6params = p6params                            # P6 parameters (a separate dataclass, P6 spec D4)
+        self.p7params = p7params                            # P7 parameters; ``enabled`` is False by default (P7 spec D4)
         self.tm = time_model
         self.geom = GridGeom(p)
         self.grids = Grids(p, self.geom)
@@ -79,7 +93,14 @@ class Learner:
         self.night_m = NightModel(p, time_model)           # P4: onsets, wakes, the night-window proposal
         self.p5 = P5State(p5params.later_max, p5params.tags_max)   # P5: the persisted `p5` section (spec 9.2)
         self.review = ReviewModel(p, time_model, p5params, self.p5)   # P4/P5: review items, suppressions, zones
-        self.planner = PushPlanner(self.p5, p5params)      # P5: when a push request is due (spec 6.2)
+        self.zone7 = Zone7()                               # P7: the zone7 key, filled in place after the load (spec 5.1)
+        self.p7_errors = 0                                 # failed P7 nightly steps since start (RAM, spec 4.1)
+        self.p7_requalified: set = set()                   # RAM: moved-from entry keys re-qualified in tonight's gate 7
+        self.zone7_pruned = 0
+        self.p7_radar_dbg: dict = {}                       # RAM: the last radar-moved verdict (hit rates, for the replay)
+        self.p7_sp_prev: Optional[dict] = None             # RAM: the hidden-spell lists of the last tuning line
+        self.planner = PushPlanner(self.p5, p5params,      # P5: when a push request is due (spec 6.2)
+                                   self.zone7 if p7params.enabled else None)   # P7: the attention state (None = P5)
         self.guests_ctx: Optional[bool] = None             # the `guests` context (RAM, as before); spec 7.3
         self.nl = NightLearning(p, time_model)             # P4: Night learning (off by default)
         self.bh.on_walk = self._on_walk
@@ -113,6 +134,16 @@ class Learner:
         self.items_now: list = []                    # the review items of the last check (RAM)
         if state is not None:
             load_state(self, state)
+        # P6: the zone6 key (validated here: P5State keeps unknown keys of the p5 section unchecked, spec 6.1) and the
+        # evaluator. Both are built after the state load so a corrupt zone6 raises StateError.
+        self.zone6 = Zone6.load(self.p5.extra.get("zone6"))
+        self.zone7.load(self.p5.extra.get("zone7"), self.geom.nc)      # P7: a wrong container raises StateError (D43)
+        self.zone_eval = ZoneEval(p6params, self.geom, time_model, self.zone6, p.silence_censor_ms,
+                                  p.powerup_birth_ms)
+        self._zkey: Optional[tuple] = None           # what the evaluator's zone set was last synced from
+        self._zones_seen = False                     # a sync has seen at least one zone (orphan pruning, spec 6.2)
+        self.zone6_pruned = 0
+        self.zone_cmds_rejected = 0
 
     # ------------------------------------------------------------ helpers
     def _date_of_s(self, t_s: float) -> int:
@@ -155,7 +186,10 @@ class Learner:
             except PayloadError:
                 self.obs.counters["parse_errors"] += 1
             else:
-                self._run(self.obs.ingest(batch, event.recv_ms, now))
+                acts = self.obs.ingest(batch, event.recv_ms, now)
+                self._run(acts)
+                if any(type(a) is TrackFrames for a in acts):      # an accepted, observed batch: its LD2412 bit
+                    self.zone_eval.on_ld(batch.t_ms, batch.p2, bool(batch.pw & 2))
         elif isinstance(event, NodeStatus):
             self._run(self.obs.node_status(bool(event.online)))
             if event.online:
@@ -181,7 +215,8 @@ class Learner:
         elif isinstance(event, LuxSample):
             self.night_m.on_lux(event.lux, now)
         elif isinstance(event, ReviewSelect):
-            if event.item is None or event.item in ITEM_IDS or self.review.open_tier2(self, event.item):
+            if event.item is None or event.item in ITEM_IDS or self.review.open_tier2(self, event.item) \
+                    or self.review.open_tier1(self, event.item):
                 if (event.item, True) != (self.review.select, self.review.select_chosen):
                     self.review.select = event.item
                     self.review.select_chosen = True
@@ -229,8 +264,12 @@ class Learner:
                 self.spot_name = text
                 outs.append(NameEcho(text))
                 outs.append(SaveRequested("name"))
+        elif isinstance(event, (ZoneTune, ZoneForget, VariantRequest)):
+            if self._zone_command(event):
+                outs.append(SaveRequested("zone"))
         force = self._p4_step(outs, now, p4_now or force) or force
         self._status(outs, force, periodic=False)
+        self._zone_outputs(outs)
         return self._order(outs)
 
     def tick(self, now_ms: int) -> list:
@@ -241,8 +280,11 @@ class Learner:
         self._pause_sync(now)
         force = self._maybe_nightly(outs)
         self._run(self.obs.tick(now))
+        self._zone_sync_check()
+        self.zone_eval.on_tick(now)
         force = self._p4_step(outs, now, False) or force
         self._status(outs, force, periodic=True)
+        self._zone_outputs(outs)
         return self._order(outs)
 
     def _p4_step(self, outs: list, now: int, immediate: bool) -> bool:
@@ -292,6 +334,9 @@ class Learner:
             self.bh.set_paused(on, now_ms / 1000.0)
 
     def export_state(self) -> dict:
+        self.zone_eval.flush_ld()                    # P6: the whole seconds of LD2412 evidence go into zone6 ...
+        self.zone6.sync_into(self.p5)                # ... and zone6 into p5.extra (or out of it when default)
+        self.zone7.sync_into(self.p5)                # P7: the same for zone7 (validated before it is written, D43)
         return export_state(self)
 
     def status(self) -> StatusChanged:
@@ -341,10 +386,16 @@ class Learner:
         """The cells of the selected item: a place, merge or modify item shows its suggestion; a zone or a label its own
         cells; the night-window item, the bed item and None highlight nothing. A suggestion id that is not an open item
         any more (a push head that was answered) is still drawn."""
-        if sel is None or sel in ITEM_IDS:
+        if sel is None or sel in ITEM_IDS or sel == ITEM_RADAR_MOVED:
             return None
         if sel.startswith("mrg-"):
             s = zones_mod.suggestion_of(self, sel[4:])
+        elif sel.startswith("ret-") and self.p7on:
+            z = zones_mod.find_record(self, sel[4:])
+            return frozenset(z["cells"]) if z is not None else None
+        elif sel.startswith("mod-") and self.p7on:
+            kind, prop, _ = self.review.resolve(self, sel)      # P7: the proposal's suggestion, not the zone's ref
+            s = zones_mod.suggestion_of(self, prop["sid"]) if prop is not None else None
         elif sel.startswith("mod-"):
             z = zones_mod.find_record(self, sel[4:])
             s = zones_mod.suggestion_of(self, z["ref"]) if z is not None else None
@@ -369,11 +420,13 @@ class Learner:
     def reset(self) -> "Learner":
         """Forget all (spec 7.2 step 2, D40): a new learner that carries over exactly the node's window mirror, the four
         settings and the push counters ``seq`` and ``acked``; everything else is fresh."""
-        fresh = Learner(self.p, self.tm, None, self.p5params)
+        fresh = Learner(self.p, self.tm, None, self.p5params, self.p6params, self.p7params)
         fresh.window = dict(self.window)
         kept = self.p5.reset_for_forget()
         fresh.p5.settings = kept.settings
         fresh.p5.push = kept.push
+        fresh.zone6 = self.zone6.reset_for_forget()      # P6: all zone data is dropped, the epoch is carried plus one
+        fresh.zone_eval.attach(fresh.zone6)
         fresh.review.touch()
         return fresh
 
@@ -389,6 +442,146 @@ class Learner:
     def paused_stays(self) -> int:
         """Stays dropped by the guests pause (spec 7.3). ``counters()`` is not changed by it."""
         return self.bh.paused_stays
+
+    # ------------------------------------------------------------ P7 interface (P7 spec A.3); read-only views
+    @property
+    def p7on(self) -> bool:
+        return bool(self.p7params.enabled)
+
+    def drift_view(self) -> tuple:
+        """(ZoneDrift, ...) of every zone record, then every label (ordered like ``zones()``); () when P7 is off."""
+        if not self.p7on:
+            return ()
+        return drift_mod.view(self)
+
+    def radar_moved_state(self) -> RadarMovedView:
+        """The radar-moved detector as it is now; ("none", 0, 0, (0, 0, 0), False) when P7 is off."""
+        if not self.p7on:
+            return RadarMovedView("none", 0, 0, (0, 0, 0), False)
+        return radarmoved_mod.view(self)
+
+    def moved_from_count(self) -> int:
+        return len(self.zone7.mf)
+
+    def reset_maps(self) -> None:
+        """Spec 4.7, in place: clears the learned maps, closes the radar-moved item and marks every zone and label
+        'needs re-check'. No output: the answer handler adds DebugMapChanged and SaveRequested."""
+        radarmoved_mod.reset_maps(self)
+        z7 = self.zone7
+        rm = z7.rm
+        rm["open"] = False
+        rm["st"] = 0
+        rm["d0"] = 0
+        today = self.review._today(self)
+        for z in drift_mod.zone_refs(self):
+            e = z7.entry(z.zid, create=True)
+            e["rc"] = True
+            e["rd"] = today
+        self.review.touch()
+
+    def reset_summary(self) -> dict:
+        """Read-only counts for the replay's check of the reset (spec A.3)."""
+        return radarmoved_mod.summary(self)
+
+    # ------------------------------------------------------------ P6 interface (P6 spec A.4); STUBS until CORE lands
+    def zone_states(self) -> ZoneStates:
+        """The current zone snapshot, also before the first output (seeding, like ``review_state``)."""
+        self._zone_sync_check()
+        return self.zone_eval.states()
+
+    def zone_snapshot(self) -> tuple:
+        """Read-only ((id, occ, valid), ...) for P7."""
+        self._zone_sync_check()
+        return self.zone_eval.snapshot()
+
+    def zone_debug(self) -> tuple:
+        """Read-only replay diagnostics (P6-1): per enter (zid, track, first_inside_t_dev_ms, decisive_t_dev_ms,
+        frames_not_counted); not an output, not persisted, bounded to the last 1,000 enters."""
+        return self.zone_eval.debug()
+
+    # ------------------------------------------------------------ P6 wiring (spec 4.2)
+    def _zone_key(self) -> tuple:
+        rv = self.review
+        return (rv.ver, len(rv.zones), len(self.label_list), len(self.ns.suggestions), self.last_run_ord)
+
+    def _zone_sync_check(self, force: bool = False) -> None:
+        """Gives the evaluator the confirmed zones and the shadow door cells when either changed (spec 4.2 step 5)."""
+        key = self._zone_key()
+        if not force and key == self._zkey:
+            return
+        self._zkey = key
+        zones = [(z["zid"], z["kind"], z["cells"]) for z in self.review.zones]
+        zones += [(lb["id"], lb["kind"], lb["cells"]) for lb in self.label_list]
+        doors = [s["cells"] for s in self.ns.suggestions if s["type"] == "entry_zone" and s["state"] == "shadow"]
+        ze = self.zone_eval
+        ze.sync(zones, doors)
+        if zones or self._zones_seen:                 # a state with zone6 data and no zone at all is valid (spec 6.2)
+            n = self.zone6.prune([z[0] for z in zones])
+            if n:
+                self.zone6_pruned += n
+                ze.refresh()
+            n7 = self.zone7.prune([z[0] for z in zones])      # P7 (spec 5.2): the same orphan rule for zone7
+            if n7:
+                self.zone7_pruned += n7
+        if zones:
+            self._zones_seen = True
+
+    def _zone_outputs(self, outs: list) -> None:
+        ze = self.zone_eval
+        outs.extend(ze.drain())
+        st = ze.take_states()
+        if st is not None:
+            outs.append(st)
+
+    def _zone_command(self, ev) -> bool:
+        """ZoneTune, ZoneForget, VariantRequest. True when persisted data changed (the caller requests a save)."""
+        self._zone_sync_check()
+        ze = self.zone_eval
+        p6 = self.p6params
+        z6 = self.zone6
+        zid = ev.zid
+        if type(zid) is not str or zid not in ze.zones:
+            self.zone_cmds_rejected += 1
+            return False
+        if isinstance(ev, ZoneTune):
+            v = ev.value
+            if ev.field not in ZONE_TUNE_FIELDS or type(v) is not int:
+                self.zone_cmds_rejected += 1
+                return False
+            lo, hi = (p6.tune_delay_min_s, p6.tune_delay_max_s) if ev.field == "cd" else \
+                (p6.margin_min_cm, p6.margin_max_cm)
+            if not lo <= v <= hi:
+                self.zone_cmds_rejected += 1
+                return False
+            t = z6.tune.setdefault(zid, {})
+            if t.get(ev.field) == v:
+                return False
+            t[ev.field] = v
+            ze.refresh()
+            return True
+        if isinstance(ev, ZoneForget):
+            z6.forget_zone(zid)
+            self.zone7.forget_zone(zid)               # P7 (H3, D44): the flag and retire runs of that zone only
+            ze.forget(zid)
+            return True
+        info = z6.info.get(zid)
+        ids = {variant_id(x) for x in info["var"]} if info else set()
+        if type(ev.variant) is not str or ev.variant not in ids:
+            self.zone_cmds_rejected += 1
+            return False
+        cur = list(z6.ve.get(zid, ()))
+        if ev.on and ev.variant not in cur:
+            cur.append(ev.variant)
+        elif not ev.on and ev.variant in cur:
+            cur.remove(ev.variant)
+        else:
+            return False
+        if cur:
+            z6.ve[zid] = sorted(cur)
+        else:
+            z6.ve.pop(zid, None)
+        ze.refresh()
+        return True
 
     def suggestions(self) -> tuple:
         out = []
@@ -425,36 +618,67 @@ class Learner:
         return tuple(out)
 
     def counters(self) -> dict:
-        return dict(self.obs.counters)
+        c = dict(self.obs.counters)
+        # P6 counters appear only when they are not zero, so a learner without zones reports what P5 reported
+        for k, v in (("zones_skipped_kind", self.zone_eval.counters["zones_skipped_kind"]),
+                     ("zone6_pruned", self.zone6_pruned), ("zone_cmds_rejected", self.zone_cmds_rejected)):
+            if v:
+                c[k] = v
+        if self.p7on:                                 # P7 (spec 7.2): only when enabled, so a P6 learner reports the same
+            c["zone7_pruned"] = self.zone7_pruned
+            c["zone7_reset"] = self.zone7.reset_count
+            c["p7_errors"] = self.p7_errors
+        return c
 
     # ------------------------------------------------------------ ingest actions
     def _run(self, acts: list) -> None:
-        for a in acts:
+        for k, a in enumerate(acts):
             if isinstance(a, Censor):
-                self._censor()
+                self._censor(a, acts[k + 1] if k + 1 < len(acts) else None)
             else:
                 self._track(a)
 
-    def _censor(self) -> None:
+    # the reasons of ``Observation`` censors that end the radar observation (P6 spec 5.7: POWER); the interruptions
+    # that can have an unobserved span of a few seconds (GAP) are the sequence, frame-gap, spacing and clock reasons.
+    # A reason this table does not know is POWER (the safe side).
+    _CENSOR_GAP = frozenset(("seq_gap", "seq_resync", "gap", "compressed", "clock_step"))
+
+    def censor_class(self, c, nxt=None) -> str:
+        """POWER or GAP for a ``Censor`` (spec 5.7, D28, D42). POWER wins: an interruption of silence_censor_ms or more
+        is POWER whatever its reason."""
+        if c.reason not in self._CENSOR_GAP:
+            return "POWER"
+        if type(nxt) is TrackFrames and nxt.start_dev - c.at_dev >= self.p.silence_censor_ms:
+            return "POWER"
+        return "GAP"
+
+    def _censor(self, c=None, nxt=None) -> None:
         bh = self.bh
         for tr in self.tracker.censor_all():
             bh.finish(tr, censored=True)
+        if c is not None:
+            self.zone_eval.on_censor(self.censor_class(c, nxt), c.at_dev)
         bh.flush_censored()
         bh.hold_times = []
 
     def _track(self, a) -> None:
         tracker = self.tracker
         bh = self.bh
+        ze = self.zone_eval
         off = a.offset
         samples: list = []
+        self._zone_sync_check()
+        ze.begin_batch(a.start_dev, a.end_dev)
         for dev, targets in a.frames:
             dets = [(t.x_mm / 1000.0, t.y_mm / 1000.0) for t in targets]
             tracker.step(dev, dets, off, a.start_dev, samples)
+            ze.on_frame(dev, tracker.live)
             if samples:
                 for tr, t, x, y in samples:
                     bh.on_sample(tr, t, x, y)
                 samples.clear()
         tracker.expire(a.end_dev)
+        ze.on_time(a.end_dev, self.now)
         for tr in tracker.ready(a.end_dev):
             bh.finish(tr, censored=False)
         holds = [((tr.born_dev + off) / 1000.0, tr.bx, tr.by) for tr in tracker.live if bh.can_open(tr)]
@@ -504,10 +728,38 @@ class Learner:
             return True
         self.last_run_ord = lt.date_ord
         self.night = night
+        try:
+            self._zone_sync_check()
+            zoneinfo.nightly(self, night)            # P6: learned delays, ld2412_reliable, variants; contained
+        except Exception as exc:
+            self.nightly_errors += 1
+            outs.append(NightlyFailed(date.fromordinal(lt.date_ord).isoformat(), _where(exc)))
+        if self.p7on:
+            self._p7_nightly(night, date.fromordinal(lt.date_ord).isoformat(), outs)
         outs.append(NightlyDone(night, date.fromordinal(lt.date_ord).isoformat(), n_cands, n_new))
         outs.append(DebugMapChanged("nightly"))
         outs.append(SaveRequested("nightly"))
         return True
+
+    def _p7_nightly(self, night: int, iso: str, outs: list) -> None:
+        """P7 spec 4.1: four steps, each in its own ``try``, counted in ``p7_errors`` and reported as a
+        ``NightlyFailed`` whose error starts with the step's tag; a failing step never stops the others, the review or
+        the save. The tuning line, when the last step made one, is appended to the outputs."""
+        line = None
+        for tag, step in (("p7:drift", lambda: drift_mod.nightly(self, night)),
+                          ("p7:release", lambda: movedfrom_mod.release(self)),
+                          ("p7:radar", lambda: radarmoved_mod.nightly(self, night)),
+                          ("p7:tuning", lambda: tuningagg_mod.nightly(self, night))):
+            try:
+                res = step()
+                if tag == "p7:tuning":
+                    line = res
+            except Exception as exc:
+                self.p7_errors += 1
+                outs.append(NightlyFailed(iso, "%s %s" % (tag, _where(exc))))
+        self.review.touch()
+        if isinstance(line, TuningLine):
+            outs.append(line)
 
     # ------------------------------------------------------------ 'Mark spot here'
     def _mark(self, outs: list) -> None:
@@ -594,7 +846,7 @@ class Learner:
         today = self.tm.local(now).date_ord if self.now is not None else None
         covered = len(obs.covered_dates(today)[-self.p.retention_covered_days:]) if today is not None else 0
         rv = self.review.attributes(self)
-        return {
+        attrs = {
             "version": APP_VERSION, "schema": SCHEMA_VERSION, "mode": "shadow",
             "state_since": _utc_min(self.state_since_ms),
             "node_online": obs.node_online, "observing": obs.observing, "boot_id": obs.boot_id,
@@ -629,7 +881,29 @@ class Learner:
             "learning_paused": self._paused_on,
             "settings": {name: bool(self.p5.settings.get(name, False)) for name in SETTING_NAMES},
             "pet_spots": sum(1 for s in shadow if s["kind"] == "pet"),
+            # P6 (spec 7.2): counts only, no name, no id, no coordinate
+            "zones_live": len(self.zone_eval.zones) if self.zone_eval.valid and not self.zone_eval.suspended else 0,
+            "zones_occupied": self.zone_eval.zones_occupied(),
+            "zone_events_24h": self.zone_eval.events_24h(),
+            "zones_over_budget": self.zone_eval.zones_over_budget(),
         }
+        if self.p7on:
+            attrs.update(self._p7_attributes())
+        return attrs
+
+    def _p7_attributes(self) -> dict:
+        """P7 (spec 7.2): counts only, no name, no id, no coordinate; added only when P7 is enabled."""
+        z7 = self.zone7
+        ids = {z["zid"] for z in self.review.zones} | {lb["id"] for lb in self.label_list}
+        ents = [e for zid, e in z7.z.items() if zid in ids]
+        rstate = radarmoved_mod.state_name(z7.rm)
+        return {"zones_frozen": sum(1 for v in zones_mod.zone_views(self) if v.frozen),
+                "zones_blind": sum(1 for e in ents if e["vs"] == "blind"),
+                "zones_falling": sum(1 for e in ents if e["vs"] == "falling"),
+                "zones_unused": sum(1 for e in ents if e["lo"] >= self.p7params.flag_nights),
+                "zones_recheck": sum(1 for e in ents if e["rc"]),
+                "moved_from": len(z7.mf), "radar_moved": rstate,
+                "places_probation": self.review.probation_held, "places_recheck_held": self.review.recheck_held}
 
     def _night_attributes(self) -> dict:
         nm = self.night_m

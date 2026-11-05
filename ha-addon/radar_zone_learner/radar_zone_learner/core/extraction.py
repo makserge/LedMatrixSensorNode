@@ -12,7 +12,7 @@ import statistics
 from datetime import date
 from typing import Optional
 
-from . import geometry, profiles, rejections
+from . import geometry, movedfrom, profiles, rejections
 from .grids import rate
 
 PLACE_TYPES = ("dwell_zone", "short_task_zone")
@@ -77,6 +77,7 @@ def _date_ord(iso: str) -> int:
 def run_nightly(L, run_ord: int, night: int) -> tuple:
     """One nightly run for local date run_ord. Returns (candidates, new_suggestions)."""
     p, geom, G, obs, bh, tm, ns = L.p, L.geom, L.grids, L.obs, L.bh, L.tm, L.ns
+    movedfrom.begin(L)                       # P7 (spec 4.4): the entries re-qualified in the last run were consumed
 
     # 1. decay per covered hour (7.6), COVIS with the same factor
     hours = obs.obs_s_since_extraction / 3600.0
@@ -225,7 +226,8 @@ def run_nightly(L, run_ord: int, night: int) -> tuple:
         g["g4_covis"] = c.covis < p.covis_thr
         g["g5_stable"] = c.streak >= p.stable_nights
         g["g6_move"] = move_check(c) is None
-        g["g7_suppression"] = not rejections.blocks_candidate(L, c, night)   # P5: a rejected region (OA 7.3, 7.9)
+        g["g7_suppression"] = not (rejections.blocks_candidate(L, c, night)   # P5: a rejected region (OA 7.3, 7.9)
+                                   or movedfrom.blocks(L, c, night))          # P7: the old spot of a modify or retire
         base = (1.0 - math.exp(-c.n / p.conf_n_scale)) * min(1.0, c.core_days / p.conf_days) \
             * min(1.0, c.streak / p.stable_nights) * (1.0 - c.gsh)
         c.conf_base = base

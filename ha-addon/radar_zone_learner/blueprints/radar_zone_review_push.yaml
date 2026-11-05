@@ -15,13 +15,19 @@
 # The text is generic: it says how many items are waiting and nothing else. The item text is used only when
 # BOTH this blueprint's 'Show the item text' and the app's switch 'Detailed review text' are on.
 #
+# Since app version 0.7.0 a request can also have the kind 'attention': the learner believes the radar was moved or turned
+# and asks for a decision ('Radar needs attention'; no name, time or distance, and no actions: open the review device).
+# If you installed an earlier copy of this blueprint, copy this file again over it: the old copy ignores that kind.
+#
 # This blueprint has not been loaded by Home Assistant yet (neither has radar_zone_context.yaml): check the first run
-# of the automation in its trace, for the request (the push sensor changes) and for a tap on an action.
+# of the automation in its trace, for the request (the push sensor changes), for the kind 'attention' (assumption
+# HA[U9] of the P7 specification) and for a tap on an action.
 blueprint:
   name: Radar zone learner - review notifications
   description: >-
     Sends one generic notification when the Radar Zone Learner has places to review, with a map of the item as
-    image and the actions Approve, Rename and Reject, and passes your taps back to the app.
+    image and the actions Approve, Rename and Reject, and passes your taps back to the app. A second, equally generic
+    notification says that the radar needs attention (it seems to have been moved or turned).
   domain: automation
   homeassistant:
     min_version: 2024.10.0
@@ -107,13 +113,13 @@ actions:
                       tag: "{{ tag }}"
               - conditions:
                   - condition: template
-                    value_template: "{{ snap[0] | int > 0 and snap[2] in ['setup', 'daily'] and snap[3] | int > 0 and me not in snap[6].split(',') }}"
+                    value_template: "{{ snap[0] | int > 0 and snap[2] in ['setup', 'daily', 'attention'] and snap[3] | int > 0 and me not in snap[6].split(',') }}"
                 sequence:
                   - delay: "00:00:15"
                   - variables:
                       cur: "{{ states(push_entity).split('|') }}"
                   - condition: template
-                    value_template: "{{ cur | length == 8 and cur[0] == snap[0] and cur[2] in ['setup', 'daily'] and cur[3] | int(0) > 0 and me not in cur[6].split(',') }}"
+                    value_template: "{{ cur | length == 8 and cur[0] == snap[0] and cur[2] in ['setup', 'daily', 'attention'] and cur[3] | int(0) > 0 and me not in cur[6].split(',') }}"
                   - variables:
                       seq: "{{ cur[0] | int }}"
                       kind: "{{ cur[2] }}"
@@ -121,7 +127,7 @@ actions:
                       rev: "{{ cur[4] }}"
                       item: "{{ cur[5] }}"
                       # BEGIN generic message
-                      message_generic: "{{ 'Radar setup review is ready (' ~ count ~ ' items)' if kind == 'setup' else 'Radar zone review: ' ~ count ~ ' item(s) to look at' }}"
+                      message_generic: "{{ 'Radar setup review is ready (' ~ count ~ ' items)' if kind == 'setup' else ('Radar needs attention' if kind == 'attention' else 'Radar zone review: ' ~ count ~ ' item(s) to look at') }}"
                       # END generic message
                       message: "{{ cur[7] if detailed_text and cur[7] | length > 0 else message_generic }}"
                   - choose:

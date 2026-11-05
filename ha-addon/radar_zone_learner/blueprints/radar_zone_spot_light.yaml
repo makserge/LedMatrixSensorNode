@@ -1,0 +1,156 @@
+# Radar Zone Learner: Radar spot occupied -> light/scene (P6 spec 9).
+#
+# Copy this file to  <config>/blueprints/automation/radar_zone_learner/radar_zone_spot_light.yaml  in Home
+# Assistant (Samba share or Terminal & SSH app), then Settings > Automations & scenes > Blueprints > Create
+# automation. Create one automation per spot. It is not an entity and not part of the app. The app has no access to
+# Home Assistant's services, so this automation is the only place where a light or a scene is switched.
+#
+# On: the zone becomes occupied (also straight from unavailable, for example someone is at the spot when the radars
+# come back in the morning). Off: the zone becomes clear, but NOT from unavailable or unknown, so the morning power-up
+# of the radars does not switch anything. While the zone is unavailable (the radars are off, warming up or faulty, the
+# node or the app is down) the light is left as it is.
+#
+# STUCK LIGHT: if this blueprint switched the light on and the zone is on (or waiting out the delay) when it becomes
+# unavailable (the radars go off at night, the app restarts, the node reboots), and the zone comes back as off, the
+# zone returns as unavailable -> off at the next power-up; leaving the room before or during the outage is enough. That transition is ignored on purpose, so the light stays on until someone switches it. Set 'Also switch
+# off when the zone returns unavailable -> off' to switch it off on that transition too (after the delay); it also
+# fires at every morning power-up with nobody there, so it is off by default.
+#
+# Choose a light, a scene for 'occupied', a scene for 'clear', or any of them. With none chosen the automation does
+# nothing. The spot can be a zone's occupancy sensor or one of its optional variant sensors.
+#
+# This blueprint has not been loaded by Home Assistant yet (neither have the other two): check the first run of the
+# automation in its trace, for each of the three triggers.
+blueprint:
+  name: Radar zone learner - spot occupied -> light/scene
+  description: >-
+    Switches a light or activates a scene when a spot of the Radar Zone Learner becomes occupied and again when it has
+    been clear for a while. A spot that is unavailable (the radars are off) changes nothing.
+  domain: automation
+  homeassistant:
+    min_version: 2024.10.0
+  input:
+    zone:
+      name: Spot (zone occupancy)
+      description: The occupancy sensor of a zone of the app (or of one of its variants).
+      selector:
+        entity:
+          domain: binary_sensor
+          device_class: occupancy
+    light:
+      name: Light (optional)
+      description: Switched on when the spot is occupied and off after the delay.
+      default: {}
+      selector:
+        target:
+          entity:
+            domain: light
+    scene_on:
+      name: Scene when occupied (optional)
+      default: ""
+      selector:
+        entity:
+          domain: scene
+    scene_off:
+      name: Scene when clear (optional)
+      default: ""
+      selector:
+        entity:
+          domain: scene
+    off_delay:
+      name: Switch off after (seconds)
+      description: How long the spot must stay clear. 0 switches off at once.
+      default: 60
+      selector:
+        number:
+          min: 0
+          max: 3600
+          unit_of_measurement: s
+          mode: box
+    brightness_pct:
+      name: Brightness on switch-on (0 = do not set)
+      default: 0
+      selector:
+        number:
+          min: 0
+          max: 100
+          unit_of_measurement: "%"
+          mode: slider
+    off_after_unavailable:
+      name: Also switch off when the zone returns unavailable -> off
+      description: >-
+        Off by default. On: the morning power-up of the radars with nobody there also switches the light off (see
+        the note at the top of the file).
+      default: false
+      selector:
+        boolean:
+
+mode: restart
+
+variables:
+  light_t: !input light
+  scene_on_e: !input scene_on
+  scene_off_e: !input scene_off
+  brightness_pct: !input brightness_pct
+  off_after_unavailable: !input off_after_unavailable
+
+triggers:
+  - trigger: state
+    entity_id: !input zone
+    to: "on"
+    id: occupied
+  - trigger: state
+    entity_id: !input zone
+    to: "off"
+    not_from:
+      - "unavailable"
+      - "unknown"
+    for:
+      seconds: !input off_delay
+    id: clear
+  - trigger: state
+    entity_id: !input zone
+    from: "unavailable"
+    to: "off"
+    for:
+      seconds: !input off_delay
+    id: back_clear
+
+actions:
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: "{{ trigger.id == 'occupied' }}"
+        sequence:
+          - if:
+              - condition: template
+                value_template: "{{ light_t | length > 0 }}"
+            then:
+              - action: light.turn_on
+                target: !input light
+                data: >-
+                  {{ {'brightness_pct': brightness_pct | int(0)} if brightness_pct | int(0) > 0 else {} }}
+          - if:
+              - condition: template
+                value_template: "{{ scene_on_e != '' }}"
+            then:
+              - action: scene.turn_on
+                target:
+                  entity_id: "{{ scene_on_e }}"
+      - conditions:
+          - condition: template
+            value_template: "{{ trigger.id == 'clear' or (trigger.id == 'back_clear' and off_after_unavailable) }}"
+        sequence:
+          - if:
+              - condition: template
+                value_template: "{{ light_t | length > 0 }}"
+            then:
+              - action: light.turn_off
+                target: !input light
+          - if:
+              - condition: template
+                value_template: "{{ scene_off_e != '' }}"
+            then:
+              - action: scene.turn_on
+                target:
+                  entity_id: "{{ scene_off_e }}"

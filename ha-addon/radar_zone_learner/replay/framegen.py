@@ -15,6 +15,13 @@ the learner core, in reception order:
 * P4 (OA 7.5): the BH1750 lux samples every 10 s (``LuxModel``; off by default, ``lux=True``), the sleep onsets
   after 00:00 that the simulator drops (``late_overlay``: the sleeper walks in at the true onset), and optional
   scripted extra people (``extras``, for the 'two people in bed' check of OA 12 P4);
+* P6 (spec 11.1, 11.6): ``quiet_from_day`` drops the world's own agents (the reflector ``refl``, the first-day extras and
+  the agents named in ``quiet_keep`` stay), ``scripted`` (``replay.p6_people.ScriptedPeople``) adds the scripted people of
+  a day (1 Hz waypoints, per-day random stream, fed to the LD2412 model except where flagged), ``gaps`` drops scripted
+  windows of messages, and every dropped message and every run of dropped messages is recorded (``dropped``, ``spans``);
+* P7 (spec 8.2): ``rot`` rotates and shifts every emitted point about the origin from a simulated time on (a radar that was
+  turned or moved, W2) and ``empty_off`` switches the radars off during the home-empty intervals of the world (W5, the user's
+  own automation); neither draws a random number;
 * the MqttTask loop and the P1 batcher of ``replay.batcher``; latency 5-30 ms per message.
 
 All random numbers come from separate ``random.Random`` streams per run, seeded from the run's seed; the
@@ -145,10 +152,11 @@ def _phase_segments(start: int, power_up_at: Optional[int], offs: list, end: int
 class Timeline:
     """The run's radar timeline: epochs (boots), off intervals, and fault windows."""
 
-    def __init__(self, cfg: dict, seed: int, horizon_days: int, faults: bool = False):
+    def __init__(self, cfg: dict, seed: int, horizon_days: int, faults: bool = False, extra_offs=()):
         offs = []
         for d in range(horizon_days + 1):
             offs.extend(W.night_window_off(d, cfg))
+        offs.extend((int(a), int(b)) for a, b in extra_offs)           # P7 W5: the user's own empty-room switch-off
         merged = [(a * 1000, b * 1000) for a, b in W.union(offs)]
         self.offs = merged
         self.end = (horizon_days + 1) * DAY_MS
@@ -206,11 +214,17 @@ class _TrackState:
 class TargetFrames:
     """Target frames of every track, in time order, materialised one simulated second at a time."""
 
-    def __init__(self, seed: int, noise_m: float = NOISE_M, p_miss: float = P_MISS):
+    def __init__(self, seed: int, noise_m: float = NOISE_M, p_miss: float = P_MISS, rot=None):
         self.heap = []
         self.serial = 0
         self.noise_m = noise_m
         self.p_miss = p_miss
+        # P7 W2: ``rot`` = (day, second_of_day, degrees, dx_m, dy_m): from that simulated second on every emitted point of every
+        # kind is rotated about the origin (the radar) and shifted before the noise is added. No random number is drawn for it.
+        self.rot = None
+        if rot is not None:
+            a = math.radians(rot[2])
+            self.rot = (int(rot[0]) * W.DAY + int(rot[1]), math.cos(a), math.sin(a), float(rot[3]), float(rot[4]))
         self.rng_noise = _rng(seed, 5)
         self.rng_miss = _rng(seed, 7)
         self.buf = deque()           # (ms, [(serial, x_mm, y_mm, v_cms), ...]) with >= 1 target
@@ -243,6 +257,7 @@ class TargetFrames:
         nm = self.noise_m
         pm = self.p_miss
         hyp = math.hypot
+        rot = self.rot if self.rot is not None and t >= self.rot[0] else None
         while heap and heap[0][0] == t:
             item = heapq.heappop(heap)
             st = item[4]
@@ -263,9 +278,18 @@ class TargetFrames:
                     yi = y + dy * q / 10.0
                     f1 = (q + 1) / 10.0
                     # radial speed of the noise-free position over the next 100 ms, cm/s
-                    v = int(round((hyp(x + dx * f1, y + dy * f1) - hyp(xi, yi)) * 1000.0))
+                    if rot is None:
+                        v = int(round((hyp(x + dx * f1, y + dy * f1) - hyp(xi, yi)) * 1000.0))
+                    else:                                  # the same speed of the transformed positions (a rotation keeps the range)
+                        _, rc, rs, rx, ry = rot
+                        xe, ye = x + dx * f1, y + dy * f1
+                        v = int(round((hyp(rc * xe - rs * ye + rx, rs * xe + rc * ye + ry)
+                                       - hyp(rc * xi - rs * yi + rx, rs * xi + rc * yi + ry)) * 1000.0))
                 else:
                     xi, yi, v = x, y, 0
+                if rot is not None:
+                    _, rc, rs, rx, ry = rot
+                    xi, yi = rc * xi - rs * yi + rx, rs * xi + rc * yi + ry
                 if st.noised:
                     xi += gauss(0.0, nm)
                     yi += gauss(0.0, nm)
@@ -563,6 +587,25 @@ def extra_tracks(rng: random.Random, extras) -> list:
     return out
 
 
+# ---------------------------------------------------------------- P7 W5: the empty-room switch-off
+EMPTY_OFF_LEAD_S = 600
+
+
+def empty_off_intervals(seed: int, cfg: dict, horizon_days: int) -> list:
+    """The radar-off intervals ``[a + 600 s, b)`` (simulated seconds) of every home-empty interval ``(a, b)`` of the world of
+    ``(seed, cfg)`` over days 0..``horizon_days`` (P7 W5, DV4). The world is generated again from its own seed, day by day, and
+    each day is dropped after its intervals were read, so this costs the world's generation time and no memory."""
+    rw = W.RunWorld(seed, cfg)
+    out = []
+    for d in range(horizon_days + 1):
+        rec = rw.day(d)
+        for a, b in W.union([tuple(x) for x in rec.he]):
+            if b - (a + EMPTY_OFF_LEAD_S) > 0:
+                out.append((a + EMPTY_OFF_LEAD_S, b))
+        rw.forget_before(d)
+    return out
+
+
 # ---------------------------------------------------------------- the run's event stream
 class RunStream:
     """All non-interactive input events of one run, in reception order (frames, home_empty, node status).
@@ -572,12 +615,17 @@ class RunStream:
     """
 
     def __init__(self, cfg: dict, seed: int, horizon_days: int, faults: bool = False,
-                 noise_m: float = NOISE_M, p_miss: float = P_MISS, lux: bool = False, extras=()):
+                 noise_m: float = NOISE_M, p_miss: float = P_MISS, lux: bool = False, extras=(),
+                 quiet_from_day: Optional[int] = None, quiet_keep=(), scripted=None, gaps=(), rot=None,
+                 empty_off: bool = False):
         self.cfg = cfg
         self.seed = seed
         self.world = W.RunWorld(seed, cfg)
-        self.timeline = Timeline(cfg, seed, horizon_days, faults)
-        self.targets = TargetFrames(seed, noise_m, p_miss)
+        # P7 W5: the radars are off from 10 minutes into every home-empty interval of the world to its end (the user's own
+        # automation, DV4); the intervals come from a pre-pass over the same world (generated again, day by day, and dropped)
+        self.empty_off = empty_off_intervals(seed, cfg, horizon_days) if empty_off else []
+        self.timeline = Timeline(cfg, seed, horizon_days, faults, extra_offs=self.empty_off)
+        self.targets = TargetFrames(seed, noise_m, p_miss, rot=rot)
         self.ld = Ld2412Out(seed)
         self.rng_lat = _rng(seed, 13)
         self.rng_fault = _rng(seed, 19)
@@ -603,6 +651,15 @@ class RunStream:
         self.extras = list(extras)
         self.rng_extra = _rng(seed, 47)
         self._extras_done = False
+        # P6: quiet days, scripted people, scripted drop windows and what was dropped (all empty for a P3-P5 job)
+        self.quiet_from_day = quiet_from_day
+        self.quiet_keep = tuple(quiet_keep)
+        self.scripted = scripted
+        self.gap_windows = [(int(a) * 1000, (int(a) + int(d)) * 1000) for a, d in gaps]
+        self.dropped = []              # (t_sim_ms, cause) of every dropped message: random, window, gap
+        self.spans = []                # [a_ms, b_ms, causes, n]: runs of dropped messages with the delivered ones around them
+        self._last_delivered = None
+        self._open_span = None
 
     # day consumer: targets, LD2412 occupancy, home_empty edges
     def _on_day(self, rec) -> None:
@@ -616,12 +673,23 @@ class RunStream:
                 self.late_nights.append(rec.d)
         if self.lux is not None:
             self.lux.add_day(rec)
+        if self.quiet_from_day is not None and rec.d >= self.quiet_from_day:     # P6: no world agents, only the reflector
+            keep = ("refl",) + self.quiet_keep
+            tracks = [t for t in tracks if t["agent"] in keep]
+            occ = [o for o in occ if o[2] in self.quiet_keep]
         if self.extras and not self._extras_done:
             self._extras_done = True
             self.targets.add_tracks(rec.d, extra_tracks(self.rng_extra, self.extras))
-            self.ld.add_occupancy([(t0, t1) for _, _, _, t0, t1 in self.extras])
+            # an extra named Y... is not fed to the LD2412 model (P6-9: a label stayer at the reflector)
+            self.ld.add_occupancy([(t0, t1) for ag, _, _, t0, t1 in self.extras if not ag.startswith("Y")])
         self.targets.add_tracks(rec.d, tracks)
         self.ld.add_occupancy([(a, b) for a, b, _ in occ])
+        if self.scripted is not None:
+            sc_tracks, sc_occ = self.scripted.day(rec.d, _rng(self.seed, 1000 + rec.d))
+            if sc_tracks:
+                self.targets.add_tracks(rec.d, sc_tracks)
+            if sc_occ:
+                self.ld.add_occupancy(sc_occ)
         for a, b in W.union([tuple(x) for x in rec.he]):
             self.ctx_pending.append((BASE_MS + a * 1000, ContextState("home_empty", True, BASE_MS + a * 1000)))
             self.ctx_pending.append((BASE_MS + b * 1000, ContextState("home_empty", False, BASE_MS + b * 1000)))
@@ -646,14 +714,22 @@ class RunStream:
         if self.faults:
             if self.rng_fault.random() < FAULT_LOSS_P:
                 self.stats["lost_fault"] += 1
+                self._dropped(t_sim, "random")
                 return
             loss = self.timeline.loss
             if loss is not None and loss[0] <= t_sim < loss[1]:
                 self.stats["lost_window"] += 1
+                self._dropped(t_sim, "window")
+                return
+        for ga, gb in self.gap_windows:                # P6: a scripted drop window, applied like the loss window
+            if ga <= t_sim < gb:
+                self.stats["lost_gap"] = self.stats.get("lost_gap", 0) + 1
+                self._dropped(t_sim, "gap")
                 return
         if recv < BASE_MS:
             self.stats["pre_base"] += 1
             return
+        self._delivered(t_sim)
         data = payload.encode("ascii")
         out.append((recv, 1, FramesMessage(data, recv)))
         self.stats["delivered"] += 1
@@ -664,6 +740,22 @@ class RunStream:
                 del self.dup_at[d]
                 out.append((recv + 1, 1, FramesMessage(data, recv + 1)))
                 self.stats["duplicated"] += 1
+
+    def _dropped(self, t_sim: int, cause: str) -> None:
+        """Records a dropped message (P6-4): the message itself and the run of drops it belongs to."""
+        self.dropped.append((t_sim, cause))
+        sp = self._open_span
+        if sp is None:
+            sp = self._open_span = [self._last_delivered, t_sim, {cause}, 0]
+        sp[2].add(cause)
+        sp[3] += 1
+
+    def _delivered(self, t_sim: int) -> None:
+        sp = self._open_span
+        if sp is not None:                       # the first delivered message after a run of drops closes it
+            self.spans.append([sp[0], t_sim, "+".join(sorted(sp[2])), sp[3]])
+            self._open_span = None
+        self._last_delivered = t_sim
 
     def _lux_events(self, a: int, b: int) -> list:
         """LuxSample events for the sim ms range [a, b) (the sensors/state publishes every 10 s)."""

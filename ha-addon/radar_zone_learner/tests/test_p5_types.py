@@ -44,7 +44,7 @@ class TypesTest(unittest.TestCase):
     def test_constants(self):
         self.assertEqual(T.ANSWER_OPS, ("approve", "reject", "later", "rename", "undo", "forget", "advanced"))
         self.assertEqual(T.ANSWER_IGNORED_REASONS, ("no_item", "no_such_item", "stale", "not_pending", "not_applicable",
-                                                    "name_needed", "zone_limit", "times_invalid"))
+                                                    "name_needed", "zone_limit", "times_invalid", "zone_busy"))
         self.assertEqual(T.PUSH_KINDS, ("none", "setup", "daily"))
         self.assertEqual(T.SETTING_NAMES, ("approve_sched", "guests_pause", "pets", "detail_text"))
         self.assertEqual(T.ZONE_SRC, ("approve", "mark"))
@@ -53,13 +53,15 @@ class TypesTest(unittest.TestCase):
         self.assertEqual(T.ITEM_IDS, ("night_window", "bed_needs_data"))
         self.assertEqual(T.MARK_FAIL_REASONS, ("not_observing", "no_stay", "several_stays", "too_soon"))
         self.assertEqual(T.NODE_COMMAND_KINDS, ("schedule", "window"))
-        self.assertEqual((T.SCHEMA_VERSION, T.MIN_SCHEMA_VERSION, T.APP_VERSION), (4, 3, "0.5.0"))
+        self.assertEqual((T.SCHEMA_VERSION, T.MIN_SCHEMA_VERSION, T.APP_VERSION), (4, 3, "0.7.0"))
 
     def test_id_grammars(self):
         item = re.compile(T.ITEM_ID_RE)
-        for ok in ("night_window", "bed_needs_data", "s0005-1", "s12345-22", "mrg-s0005-1", "mod-z0001"):
+        for ok in ("night_window", "bed_needs_data", "s0005-1", "s12345-22", "mrg-s0005-1", "mod-z0001", "ret-z0001",
+                   "radar_moved"):
             self.assertTrue(item.match(ok), ok)
-        for bad in ("night", "s5-1", "mrg-z0001", "mod-s0005-1", "s0005-1|x", "adv:undo:bed", "", "z0001"):
+        for bad in ("night", "s5-1", "mrg-z0001", "mod-s0005-1", "s0005-1|x", "adv:undo:bed", "", "z0001", "ret-s0005-1",
+                    "ret-z1", "radar_moved2", "radar_moved|x"):
             self.assertFalse(item.match(bad), bad)
         adv = re.compile(T.ADV_ID_RE)
         for ok in ("adv:undo:bed", "adv:undo:nw", "adv:undo:s0005-1", "adv:real:s0004-2", "adv:rename:z0001",

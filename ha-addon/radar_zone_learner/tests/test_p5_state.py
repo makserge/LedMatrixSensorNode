@@ -294,7 +294,7 @@ class CompatibilityTest(unittest.TestCase):
 
     def test_phase_and_writer(self):
         st = Learner(P, FixedOffsetTime(0)).export_state()
-        self.assertEqual((st["schema"], st["writer"], st["phase"]), (4, "radar_zone_learner 0.5.0", "p5"))
+        self.assertEqual((st["schema"], st["writer"], st["phase"]), (4, "radar_zone_learner 0.7.0", "p5"))
 
 
 class P5StateUnitTest(unittest.TestCase):

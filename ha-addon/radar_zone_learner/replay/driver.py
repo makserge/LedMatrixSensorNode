@@ -25,6 +25,20 @@ trip, a new learner from the state, the node's retained topics fed again). A P5 
 run, the review items, the zones, the Advanced ids, the push request, the suppressions and the ``p5`` section
 (``rec["p5"]``), and over the whole run the push requests, the refused answers and the restarts (``result["p5"]``).
 
+P6 additions (P6 spec 11.6; ``replay.p6_scenarios``, ``replay.p6_people``): ``LearnerFactory`` also builds the learner's
+``P6Params``; a P6 job runs with the replay tick of ``JobSpec.tick_ms`` (1 s, hold deadlines are judged to that resolution),
+carries the scripted people, the quiet days and the drop windows of its ``JobSpec`` in its ``RunStream`` and the
+detection noise ``JobSpec.noise_m``; the P5 recorder is also made for it. ``P6Recorder`` (``Run.p6``) records every ``ZoneEvent``
+and ``ZoneStates`` with the emission time, the ``recv_ms`` of the batch in progress and the boot offset, and after every
+nightly run the zones, ``Learner.zone_states()``, ``zone6`` of the state and the door suggestions (``rec["p6"]``); the run
+result gains the section ``p6``.
+
+P7 additions (P7 spec 8.4, 8.5; ``replay.p7_scenarios``): ``LearnerFactory`` builds the learner's ``P7Params`` (enabled for a P7 job
+only: every other job has the default, which is a P6 learner); the job's ``rot`` and ``empty_off`` go to the ``RunStream``; the P5 recorder
+is also made for a P7 job; after every nightly run the record gains ``rec["p7"]`` (``Run._p7_night``: the items, zones, drift view, radar
+state, the owner's answers, the truth region of the moved sofa, the tuning line) and the run result the section ``p7`` (the tuning lines,
+the owner's reset readings and summary).
+
 Labels (D37): a desk label in both worlds (``SpotName("Desk")`` at the start of the first desk session of
 >= 20 min on a work-from-home day, then ``MarkPress`` every 30 s from 60 s after its start until a
 ``MarkResult(ok=True)`` or the session ends, then on later such sessions until success), and in the bedroom a
@@ -44,12 +58,14 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from radar_zone_learner.core.params import DEFAULT_PARAMS, Params, params_digest
-from radar_zone_learner.core.types import (ContextState, FixedOffsetTime, MarkPress, MarkResult, NightlyDone,
-                                           NightlyFailed, NodeCommand, NodeStatus, ReviewChanged, ScheduleState,
-                                           SpotName)
+from radar_zone_learner.core.types import (ContextState, FixedOffsetTime, FramesMessage, MarkPress, MarkResult,
+                                           NightlyDone, NightlyFailed, NodeCommand, NodeStatus, ReviewChanged,
+                                           ScheduleState, SpotName, TuningLine)
 
 from . import p4_scenarios as P4
 from . import p5_scenarios as P5
+from . import p6_people as P6P
+from . import p6_scenarios as P6
 from . import world as W
 from .framegen import BASE_MS, DAY_MS, OBSERVE_MS, RunStream
 from .jobs import JobSpec
@@ -200,18 +216,44 @@ class LearnerFactory:
 
     def __init__(self, zone_change_items: bool = False):
         self.zone_change_items = bool(zone_change_items)
+        self.p6params_ = None                # P6: a P6Params to use instead of the default (None: the default)
+        self.p7_enabled = False              # P7: the learner of a P7 job has P7Params(enabled=True); every other job the default
+        self.p7_static_freeze = True
+        self.p7_span = None                  # P7Params.probation_min_span (None: the default)
+        self.p7params_ = None                # P7: a P7Params to use instead of what the job says (None: the job's)
 
     @classmethod
     def for_job(cls, job: JobSpec) -> "LearnerFactory":
-        return cls(job.zone_change_items)
+        f = cls(job.zone_change_items)
+        f.p7_enabled = bool(job.is_p7)
+        f.p7_static_freeze = bool(job.p7_static_freeze)
+        f.p7_span = job.p7_span
+        return f
 
     def p5params(self):
         from radar_zone_learner.core.params import P5Params
         return P5Params(zone_change_items=self.zone_change_items)
 
+    def p6params(self):
+        from radar_zone_learner.core.params import DEFAULT_P6
+        return self.p6params_ if self.p6params_ is not None else DEFAULT_P6
+
+    def p7params(self):
+        """``P7Params(enabled=job.is_p7, static_freeze=..., probation_min_span=...)`` for a P7 job; the default (disabled: a P6 learner
+        byte for byte, P7-R1) for every other job."""
+        from radar_zone_learner.core.params import DEFAULT_P7, P7Params
+        if self.p7params_ is not None:
+            return self.p7params_
+        if not self.p7_enabled:
+            return DEFAULT_P7
+        kw = {"enabled": True, "static_freeze": self.p7_static_freeze}
+        if self.p7_span is not None:
+            kw["probation_min_span"] = int(self.p7_span)
+        return P7Params(**kw)
+
     def __call__(self, params, time_model, state=None):
         from radar_zone_learner.core.learner import Learner
-        return Learner(params, time_model, state, self.p5params())
+        return Learner(params, time_model, state, self.p5params(), self.p6params(), self.p7params())
 
 
 class Run:
@@ -227,7 +269,14 @@ class Run:
         self.budget = cpu_budget_s_per_day
         self.cfg = job.cfg()
         self.horizon = horizon_days if horizon_days is not None else job.nights + 2
-        self.stream = RunStream(self.cfg, seed, self.horizon, job.faults, lux=job.lux, extras=job.extras())
+        # P6: scripted people, quiet days, drop windows and the detection noise of the job (all inert for a P3-P5 job)
+        self.scripted = P6P.ScriptedPeople(job, seed) if job.is_p6 and job.programs else None
+        quiet_keep = ("G", "V") if job.script.startswith("p6guests") else ()
+        self.stream = RunStream(self.cfg, seed, self.horizon, job.faults, noise_m=job.noise_m, lux=job.lux,
+                                extras=job.extras(), quiet_from_day=job.quiet_from_day if job.is_p6 else None,
+                                quiet_keep=quiet_keep, scripted=self.scripted, gaps=job.gaps, rot=job.rot,
+                                empty_off=job.empty_off)
+        self.tick_ms = job.tick_ms
         self.truth = Truth(self.cfg)
         self.labels = LabelPlanner(self.cfg, self.stream.timeline, enabled=job.labels)
         self.stream.world.on_day.append(self.truth.add_day)
@@ -263,7 +312,10 @@ class Run:
         self.node_online = True
         self.home_empty = False
         self.restarts = []
-        self.p5 = P5.P5Recorder() if job.is_p5 else None
+        self.p5 = P5.P5Recorder() if (job.is_p5 or job.is_p6 or job.is_p7) else None
+        self.p6 = P6.P6Recorder(self) if job.is_p6 else None
+        self.p7_tuning = []              # P7: the text of every ``TuningLine`` of the run, oldest first
+        self.p7_reset_seen = 0           # P7: how many of the P7 user's reset readings the night records carry already
 
     def _new_learner(self, state: Optional[dict]):
         if state is None:
@@ -297,8 +349,14 @@ class Run:
                     heapq.heappush(self.inject, (t, self.inject_seq, ev))
             elif isinstance(o, ReviewChanged):
                 self.review_items = {i.id: i for i in o.items}
+            elif isinstance(o, TuningLine):          # P7: emitted after NightlyDone, so it joins the record that was just made
+                self.p7_tuning.append(o.text)
+                if self.job.is_p7 and self.nights and "p7" in self.nights[-1]:
+                    self.nights[-1]["p7"]["tuning"].append(o.text)
             if self.p5 is not None:
                 self.p5.on_output(o, self.now - BASE_MS)
+            if self.p6 is not None:
+                self.p6.on_output(o, self.now)
             for a in self.actors:
                 a.on_output(o)
 
@@ -329,11 +387,27 @@ class Run:
             self.node_online = bool(ev.online)
         elif isinstance(ev, ContextState) and ev.name == "home_empty":
             self.home_empty = ev.value
-        self._call(self.learner.handle, ev)
+        if self.p6 is None:
+            self._call(self.learner.handle, ev)
+            return
+        batch = isinstance(ev, FramesMessage)
+        if batch:
+            self.p6.note_batch(ev.recv_ms)
+        self.p6.ctx = "b" if batch else "e"
+        try:
+            self._call(self.learner.handle, ev)
+        finally:
+            self.p6.ctx = "e"
 
     def _tick(self, t: int) -> None:
         self.counts["tick"] += 1
-        self._call(self.learner.tick, t)
+        if self.p6 is not None:
+            self.p6.ctx = "t"
+        try:
+            self._call(self.learner.tick, t)
+        finally:
+            if self.p6 is not None:
+                self.p6.ctx = "e"
 
     def _advance_to(self, t: int) -> None:
         """Ticks, the node's answers and the actors' actions (labels, P4 users) due at or before ``t``, in time
@@ -351,7 +425,7 @@ class Run:
             if nt <= ti and nt <= ta:
                 self.now = nt
                 self._tick(nt)
-                self.next_tick += TICK_MS
+                self.next_tick += self.tick_ms
             elif ti <= ta:
                 _, _, ev = heapq.heappop(self.inject)
                 self.now = max(self.now, ti)
@@ -471,8 +545,12 @@ class Run:
                "counters": self._counters()}
         if self.job.is_p4:
             rec["p4"] = self._p4_night(rec)
-        if self.job.is_p5:
+        if self.job.is_p5 or self.job.is_p6 or self.job.is_p7:
             rec["p5"] = self._p5_night(rec)
+        if self.p6 is not None:
+            rec["p6"] = self.p6.night(self, rec)
+        if self.job.is_p7:                                  # before the truth regions of this night are forgotten (sofa_rle)
+            rec["p7"] = self._p7_night(rec)
         self.nights.append(rec)
         self.truth.forget_regions_before(night - 1)
         for a in self.actors:
@@ -564,6 +642,79 @@ class Run:
             pass
         return out
 
+    def _p7_actor(self):
+        return next((a for a in self.actors if getattr(a, "name", "") == "p7user"), None)
+
+    def _p7_night(self, rec: dict) -> dict:
+        """What the learner shows after a nightly run for the P7 checks (P7 spec 8.4): the item list (id, rev, type, tier, tag, sid,
+        zid, shift_cm, r, weeks, src), the zones (id, kind, cx, cy, cells_rle, rev, ref, frozen), the drift view (id, vs, ratio, fz,
+        lo, rt, lu, rc, held), the number of moved-from masks, the radar-moved state, the P7 status counts, the answers the owner took
+        since the last record, ``sofa_rle`` (the truth region of the sofa, for the move jobs from the day before the move), the
+        tuning lines (this night's, appended when the learner's ``TuningLine`` arrives) and ``reset`` (the owner's reading after the
+        Approve of the radar-moved item). Every accessor is read in its own ``try``: a stub learner leaves its key out."""
+        L = self.learner
+        night = rec["night"]
+        out = {"tuning": []}
+        try:
+            items, sel = L.review_state()
+            out["items"] = []
+            for i in items:
+                d = i.data
+                out["items"].append({"id": i.id, "rev": i.rev, "type": i.type, "tier": i.tier, "tag": d.get("tag", ""),
+                                     "sid": d.get("sid") if i.type in ("modify_zone", "merge_into") else i.id,
+                                     "zid": d.get("zid"), "shift_cm": d.get("shift_cm"), "r": d.get("r"),
+                                     "weeks": d.get("weeks"), "src": d.get("src"), "ext_cm": d.get("ext_cm"),
+                                     "deg": d.get("deg"), "streak": d.get("streak")})
+            out["selected"] = sel
+        except Exception:
+            pass
+        try:
+            out["zones"] = [{"id": v.id, "kind": v.kind, "cx": round(v.cx_m, 3), "cy": round(v.cy_m, 3), "cells_rle": rle(v.cells),
+                             "rev": v.rev, "ref": v.ref, "frozen": bool(v.frozen), "name": v.name, "src": v.src, "night": v.night}
+                            for v in L.zones()]
+        except Exception:
+            pass
+        try:
+            out["drift"] = [{"id": z.id, "vs": z.state, "ratio": z.ratio, "fz": bool(z.frozen), "lo": z.lo, "rt": z.rt,
+                             "lu": z.lu, "rc": bool(z.rc), "held": bool(z.held)} for z in L.drift_view()]
+        except Exception:
+            pass
+        try:
+            out["mf"] = L.moved_from_count()
+        except Exception:
+            pass
+        try:
+            rm = L.radar_moved_state()
+            out["rm"] = {"state": rm.state, "rev": rm.rev, "streak": rm.streak, "tx": list(rm.tx), "hold": bool(rm.hold)}
+        except Exception:
+            pass
+        dbg = getattr(L, "p7_radar_dbg", None)
+        if isinstance(dbg, dict):
+            out["radar_dbg"] = dict(dbg)
+        try:
+            a = L.status().attributes
+            out["status"] = {k: a.get(k) for k in ("zones_total", "zones_frozen", "zones_blind", "zones_falling", "zones_unused",
+                                                   "zones_recheck", "moved_from", "radar_moved", "places_probation",
+                                                   "places_recheck_held", "pending_places")}
+        except Exception:
+            pass
+        try:
+            c = L.counters()
+            out["errors"] = {k: c.get(k) for k in ("p7_errors", "zone7_pruned", "zone7_reset")}
+        except Exception:
+            pass
+        user = self._p7_actor()
+        out["answers"] = user.take_answers() if user is not None else []
+        if user is not None and len(user.resets) > self.p7_reset_seen:
+            out["reset"] = dict(user.resets[self.p7_reset_seen])
+            self.p7_reset_seen = len(user.resets)
+        if self.job.move and night >= self.job.move_day - 1:
+            try:
+                out["sofa_rle"] = rle(self.truth.regions(night)["sofaAB"][0])
+            except Exception:
+                pass
+        return out
+
     def _p4_result(self) -> dict:
         tl = self.stream.timeline
 
@@ -630,6 +781,13 @@ class Run:
             res["p4"] = self._p4_result()
         if self.p5 is not None:
             res["p5"] = self.p5.result(self.restarts)
+        if self.p6 is not None:
+            res["p6"] = self.p6.result()
+        if self.job.is_p7:
+            user = self._p7_actor()
+            res["p7"] = {"tuning": list(self.p7_tuning), "resets": list(user.resets) if user is not None else [],
+                         "user": user.summary() if user is not None else None,
+                         "empty_off_s": sum(b - a for a, b in getattr(self.stream, "empty_off", ()))}
         return res
 
     def _seated_capture(self, n_last: int):

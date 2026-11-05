@@ -4,8 +4,9 @@ Learner device: 'Radar data valid' (binary sensor), 'RF on time 24 h', 'RF savin
 (diagnostic sensors) and the 'Night learning' switch. Review device: the item select, 'Review pending',
 'Review item text', Approve / Reject / Later and the 'Review event' entity.
 
-No zone, room occupancy or presence entity: those come with P6 (shadow mode until then). Discovery is
-published not retained, like the P3 configs, and the message order here is the order of ``p4_discovery_messages``.
+No zone, room occupancy or presence entity here: the zone entities of P6 are in ``discovery_p6`` (there is no room occupancy
+entity). Discovery is published not retained, like the P3 configs, and the message order here is the order of
+``p4_discovery_messages``.
 """
 from __future__ import annotations
 
@@ -33,8 +34,9 @@ def _answer_payload(op: str) -> str:
 
 
 def valid_config(topics) -> dict:
-    # 'online'/'offline' is also the availability vocabulary the zone entities of P6 will use as a second
-    # availability topic (design 6.3 'Radar data valid').
+    # 'online'/'offline' is also the availability vocabulary of the P6 zone entities. They do NOT use this topic as their
+    # availability: it does not know whether the core's zones have resumed (P6 spec 5.7, D19); they have their own
+    # retained topic ``radar_zones/zone/availability``.
     return {
         "name": "Radar data valid",
         "unique_id": VALID_ID,

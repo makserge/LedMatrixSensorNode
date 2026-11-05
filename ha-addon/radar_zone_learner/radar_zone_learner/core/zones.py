@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from . import geometry, profiles
+from . import geometry, movedfrom, profiles
 from . import labels as labels_mod
 from .extraction import PLACE_TYPES, _kind_of
 from .types import NameEcho, ZoneView
@@ -181,6 +181,35 @@ def update_zone(L, zid: str, s: dict) -> Optional[dict]:
     return z
 
 
+def move_zone(L, zid: str, s: dict, src: str = "cand") -> Optional[dict]:
+    """P7 spec 6.2 (modify): (1) the old cells go into a ``moved_from`` mask before they are replaced, (2) cells, centre
+    and polygon are taken from the suggestion, ``srev`` = its rev, rev + 1, ``upd`` = the night (``update_zone``), (3)
+    ``ref`` becomes the suggestion's id and the old ``ref`` joins ``also`` (at most zones_also_max, the oldest dropped):
+    without the swap the new suggestion would stay uncovered and come back as a plain place the night after the answer,
+    (4) the zone's drift entry restarts its runs, ``lu`` is today, ``rc`` falls and ``ms`` is cleared (``mr`` is never
+    reset, D40). The zone id, the name and the kind do not change. ``zone6`` and the P6 evaluator state are untouched."""
+    z = find_record(L, zid)
+    if z is None:
+        return None
+    movedfrom.add(L, "moved_from", z)
+    update_zone(L, zid, s)
+    old = z.get("ref")
+    z["ref"] = s["id"]
+    also = [x for x in z.get("also", []) if x != s["id"]]
+    if old is not None and old != s["id"]:
+        also = [x for x in also if x != old]
+        also.append(old)
+    cap = L.p5params.zones_also_max
+    z["also"] = also[-cap:] if cap > 0 else []
+    e = L.zone7.entry(zid, create=True)
+    e["lo"] = 0
+    e["rt"] = 0
+    e["lu"] = L.review._today(L)
+    e["rc"] = False
+    e["ms"] = ""
+    return z
+
+
 def rename(L, target_id: str, name: str) -> bool:
     """Renames a zone record or a label (spec 3.7 ``adv:rename``): a unique name, kind up to ``bed`` (a bed is never
     downgraded), rev + 1 for a record. True when something changed."""
@@ -213,6 +242,7 @@ def remove(L, target_id: str) -> bool:
     z = find_record(L, target_id)
     if z is not None:
         L.review.zones.remove(z)
+        L.zone7.drop(target_id)                          # P7 (spec 5.3): the zone's entry and its retire snooze go too
         s = suggestion_of(L, z.get("ref"))
         if s is not None and z["kind"] == "bed" and s["kind"] == "bed" and (s["name_hint"] or "") == z["name"] \
                 and s["type"] in PLACE_TYPES:
@@ -226,6 +256,7 @@ def remove(L, target_id: str) -> bool:
     if lb is None:
         return False
     L.label_list.remove(lb)
+    L.zone7.drop(target_id)
     for s in L.ns.suggestions:
         if s["type"] not in PLACE_TYPES:
             continue
@@ -243,18 +274,26 @@ def window_hours(L) -> frozenset:
     return profiles.window_hours(L.window["start"], L.window["end"])
 
 
-def is_frozen(L, kind: str, ref: Optional[str], win: Optional[frozenset] = None) -> bool:
+def is_frozen(L, kind: str, ref: Optional[str], win: Optional[frozenset] = None, zid: Optional[str] = None) -> bool:
     """The OA 7.4 predicate (spec 4.2): ``profiles.frozen`` with the confirmation-time hour profile of the ``ref``
-    suggestion; a label, or a zone whose suggestion is gone, has none (a bed is frozen while the schedule is ON)."""
+    suggestion; a label, or a zone whose suggestion is gone, has none (a bed is frozen while the schedule is ON).
+
+    P7 (spec 4.2.7, DV3): with ``zid`` given and P7 enabled the result is that static predicate (when
+    ``P7Params.static_freeze``) OR the coverage freeze of the last nightly verdict (``zone7.frozen``). A caller that
+    passes no ``zid`` (the P5 scaffolding in ``zonework``) keeps the P5 meaning."""
     s = suggestion_of(L, ref)
     hours_at = None
     if s is not None:
         hours_at = (s.get("evidence") or {}).get("hours_at_suggestion")
-    return profiles.frozen(L.window["sched"], kind, hours_at, win if win is not None else window_hours(L), L.p)
+    static = profiles.frozen(L.window["sched"], kind, hours_at, win if win is not None else window_hours(L), L.p)
+    p7 = L.p7params
+    if zid is None or not p7.enabled:
+        return static
+    return (static and p7.static_freeze) or L.zone7.frozen(zid)
 
 
 def frozen_view(L, view: ZoneView) -> bool:
-    return is_frozen(L, view.kind, view.ref)
+    return is_frozen(L, view.kind, view.ref, zid=view.id)
 
 
 def _label_night(L, lb: dict) -> int:
@@ -270,9 +309,9 @@ def zone_views(L) -> tuple:
     for z in sorted(L.review.zones, key=lambda r: r["zid"]):
         out.append(ZoneView(z["zid"], z["name"], z["kind"], "approve", z.get("ref"), z["rev"], float(z["cx"]),
                             float(z["cy"]), frozenset(z["cells"]), tuple(tuple(v) for v in z["poly_cm"]),
-                            z["created_s"], z["night"], is_frozen(L, z["kind"], z.get("ref"), win)))
+                            z["created_s"], z["night"], is_frozen(L, z["kind"], z.get("ref"), win, z["zid"])))
     for lb in sorted(L.label_list, key=lambda d: d["id"]):
         out.append(ZoneView(lb["id"], lb["name"], lb["kind"], "mark", None, 0, float(lb["x"]), float(lb["y"]),
                             frozenset(lb["cells"]), tuple(tuple(v) for v in polygon(L, lb["cells"])),
-                            lb["created_s"], _label_night(L, lb), is_frozen(L, lb["kind"], None, win)))
+                            lb["created_s"], _label_night(L, lb), is_frozen(L, lb["kind"], None, win, lb["id"])))
     return tuple(out)

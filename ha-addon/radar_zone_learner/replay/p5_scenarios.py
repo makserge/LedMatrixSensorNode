@@ -71,6 +71,10 @@ def push_problems(r) -> list:
         names = tuple(f.name for f in dataclasses.fields(r))
     except TypeError:
         names = ()
+    if "attention" in names:                         # P7: a trailing bool (a radar-moved request), no text, no time, no name
+        if type(getattr(r, "attention", None)) is not bool:
+            out.append("attention=%r" % (getattr(r, "attention", None),))
+        names = tuple(n for n in names if n != "attention")
     if names != PUSH_FIELDS:
         out.append("fields %s" % (names,))
     for k in ("seq", "acked", "count"):

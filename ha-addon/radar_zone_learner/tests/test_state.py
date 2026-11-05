@@ -61,7 +61,7 @@ class StateTest(unittest.TestCase):
     def test_shape(self):
         st = self.state
         self.assertEqual(list(st)[:len(TOP)], TOP)
-        self.assertEqual((st["schema"], st["writer"], st["phase"]), (4, "radar_zone_learner 0.5.0", "p5"))
+        self.assertEqual((st["schema"], st["writer"], st["phase"]), (4, "radar_zone_learner 0.7.0", "p5"))
         self.assertEqual(len(st["params"]), 12)
         self.assertEqual(st["meta"]["created_date"], "2026-01-05")
         self.assertEqual(st["meta"]["last_extraction_date"], "2026-01-14")

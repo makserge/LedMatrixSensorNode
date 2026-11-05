@@ -3,14 +3,16 @@
 ``SelectModel`` turns the core's item list into the option list Home Assistant shows and back: a label is what the user
 picks, an item id is what the core knows.
 
-- **dynamic mode** (``SELECT_MODE``, the default): ``No item``, ``Night window``, ``Bed zone`` and one option per open
-  tier-2 item, ``Place <tag>``, ``Extend <tag>`` or ``Moved <tag>``. The tags are the core's persistent tags (spec 2.3),
-  so a label means the same place for as long as the item exists. The option list changes with the items, so the
-  select's discovery config has to be published again whenever ``update`` returns True (the layer does that);
+- **dynamic mode** (``SELECT_MODE``, the default): ``No item``, ``Night window``, ``Bed zone``, ``Radar moved`` (P7, only
+  while that item is open) and one option per open tier-2 item, ``Place <tag>``, ``Extend <tag>``, ``Moved <tag>`` or
+  ``Retire <tag>`` (P7). The tags are the core's persistent tags (spec 2.3), so a label means the same place for as long as
+  the item exists. The option list changes with the items, so the select's discovery config has to be published again
+  whenever ``update`` returns True (the layer does that);
 - **slot mode** (the fallback of spec 2.6 if Home Assistant does not apply a changed option list in place; the owner
   switches it with the one constant): the options never change, ``No item``, ``Night window``, ``Bed zone`` and
   ``Place 1`` .. ``Place 12``, slot ``k`` being the k-th tier-2 item in list order. The meaning of a slot label can change
-  when the list shifts, so the state is published at every change and the user confirms with the map.
+  when the list shifts, so the state is published at every change and the user confirms with the map. The fixed list has
+  no ``Radar moved`` option (P5's list is pinned): an open radar-moved item takes the next slot, like a tier-2 item.
 
 The first option is always ``No item``: Home Assistant turns a select state payload ``None`` into ``unknown`` (spec D8),
 so the P4 option ``None`` could never be shown. ``resolve`` still accepts ``None``, ``none`` and the empty string.
@@ -22,6 +24,7 @@ from __future__ import annotations
 
 from typing import Callable, Optional
 
+from ..core.types import ITEM_RADAR_MOVED
 from .p4_types import ITEM_BED, ITEM_NIGHT_WINDOW
 from .review_p5 import advanced_label
 
@@ -31,10 +34,12 @@ NO_ITEM = "No item"
 NO_ENTRY = "No entry"
 LABEL_NIGHT_WINDOW = "Night window"
 LABEL_BED = "Bed zone"
+LABEL_RADAR_MOVED = "Radar moved"         # P7 spec 6.4: static in the dynamic mode
 MAX_TIER2 = 12                           # tier-2 items shown at once (P5Params.review_max_places)
 MAX_ADVANCED = 60                        # Advanced entries (P5Params.advanced_max)
 STATIC_LABELS = {ITEM_NIGHT_WINDOW: LABEL_NIGHT_WINDOW, ITEM_BED: LABEL_BED}
-_TYPE_PREFIX = {"merge_into": "Extend", "modify_zone": "Moved"}      # every other tier-2 type is a place
+RESOLVE_LABELS = dict(STATIC_LABELS, **{ITEM_RADAR_MOVED: LABEL_RADAR_MOVED})     # what a label text may name (any mode)
+_TYPE_PREFIX = {"merge_into": "Extend", "modify_zone": "Moved", "retire_zone": "Retire"}    # every other tier-2 type is a place
 _NONE_TEXTS = ("", "none", NO_ITEM.casefold())
 
 
@@ -81,6 +86,10 @@ class SelectModel:
             if it.id in STATIC_LABELS:
                 entries.append((it.id, STATIC_LABELS[it.id]))
                 used.add(STATIC_LABELS[it.id])
+                continue
+            if it.id == ITEM_RADAR_MOVED and self.mode == "dynamic":
+                entries.append((it.id, LABEL_RADAR_MOVED))      # tier 1 and never cut by the tier-2 cap
+                used.add(LABEL_RADAR_MOVED)
                 continue
             if len(tier2) >= self.max_tier2:
                 continue
@@ -141,7 +150,7 @@ class SelectModel:
         cf = t.casefold()
         if cf in _NONE_TEXTS:
             return True, None
-        for item_id, label in STATIC_LABELS.items():
+        for item_id, label in RESOLVE_LABELS.items():
             if cf in (label.casefold(), item_id):
                 return True, item_id
         for item_id, label in self._entries:

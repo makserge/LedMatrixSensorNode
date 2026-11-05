@@ -11,7 +11,7 @@ from typing import Optional, Protocol, Union
 
 SCHEMA_VERSION = 4
 MIN_SCHEMA_VERSION = 3            # older files are migrated on load (state.migrate_3_to_4)
-APP_VERSION = "0.5.0"
+APP_VERSION = "0.7.0"
 STATUS_STATES = ("starting", "learning", "not_observing", "no_data")
 SUGGESTION_TYPES = ("dwell_zone", "short_task_zone", "reflection", "ignore_zone", "room_outline", "entry_zone")
 KINDS = ("dwell", "short_task", "bed", "reflection", "ignore", "entry", "outline", "pet")   # documentation only
@@ -27,13 +27,31 @@ NODE_COMMAND_KINDS = ("schedule", "window")
 # P5 (spec Appendix A.1): why an answer changed nothing, push request kinds, persistent settings, zone sources and the
 # id grammars (the shell's parser and the core use these same expressions)
 ANSWER_IGNORED_REASONS = ("no_item", "no_such_item", "stale", "not_pending", "not_applicable", "name_needed",
-                          "zone_limit", "times_invalid")
+                          "zone_limit", "times_invalid", "zone_busy")   # the eight of P5 first; zone_busy is P7 (spec 6.2)
 PUSH_KINDS = ("none", "setup", "daily")
 SETTING_NAMES = ("approve_sched", "guests_pause", "pets", "detail_text")
 ZONE_SRC = ("approve", "mark")           # a record made by approval (merge and modify included) / a label
-ITEM_ID_RE = r"^(night_window|bed_needs_data|s[0-9]{4,}-[0-9]+|mrg-s[0-9]{4,}-[0-9]+|mod-z[0-9]{4,})$"
+ITEM_RADAR_MOVED = "radar_moved"         # P7 (spec A.1): the tier-1 item after the two P4 ones; ITEM_IDS stays the P4 pair
+ITEM_ID_RE = r"^(night_window|bed_needs_data|radar_moved|s[0-9]{4,}-[0-9]+|mrg-s[0-9]{4,}-[0-9]+|mod-z[0-9]{4,}|ret-z[0-9]{4,})$"
 ADV_ID_RE = r"^adv:(undo|real|rename|remove):[A-Za-z0-9_-]{1,24}$"
 PUSH_TARGET_RE = r"^[A-Za-z0-9]{1,12}$"  # the blueprint's phone id in the push ack and in PushRequest.acks
+
+# P6 (spec Appendix A.1): confirmed-zone evaluation. The shell's parser and the core use these same expressions.
+ZONE_EVENT_KINDS = ("enter", "leave")
+ZONE_EVENT_VIA = ("edge", "hold_expired", "door_death", "early")   # first three: the design; early: spec proposal
+CENSOR_CLASSES = ("POWER", "GAP")
+ZONE_ID_RE = r"^[zl][0-9]{4,}$"
+VARIANT_ID_RE = r"^(wd|we)[0-9]{4}$"
+ZONE_KINDS_EVALUATED = ("dwell", "short_task", "bed", "manual")
+ZONE_KINDS_DWELL = ("dwell", "bed", "manual")      # the pass-speed rule applies (design: 'dwell zones')
+ZONE_TUNE_FIELDS = ("cd", "mg")                    # clear delay in seconds, margin in centimetres
+DELAY_SRC = ("default", "learned", "manual")
+
+# P7 (spec Appendix A.1): drift verdicts, moved-from masks, radar-moved states, the source of a modify proposal
+DRIFT_STATES = ("young", "blind", "frozen", "none", "collapsed", "ok", "falling")
+MF_WHY = ("moved_from", "retired")
+RADAR_STATES = ("none", "watching", "open", "ignored")
+MOD_SRC = ("cand", "own")                # 'cand': a different pending candidate (4.3.3); 'own': the zone's own suggestion moved
 
 
 # ---------------------------------------------------------------- inputs (shell or replay -> core)
@@ -137,9 +155,31 @@ class PushAck:
     target: str = ""          # the phone's id (PUSH_TARGET_RE); "" for a plain "<seq>"
 
 
+@dataclass(frozen=True, slots=True)
+class ZoneTune:
+    zid: str                  # ZONE_ID_RE
+    field: str                # one of ZONE_TUNE_FIELDS: cd 3..900 seconds, mg -50..100 centimetres
+    value: int
+    recv_ms: int
+
+
+@dataclass(frozen=True, slots=True)
+class ZoneForget:
+    zid: str                  # discards the learned evidence and the tuning of one zone, not the zone (spec D15)
+    recv_ms: int
+
+
+@dataclass(frozen=True, slots=True)
+class VariantRequest:
+    zid: str
+    variant: str              # VARIANT_ID_RE: asks for (on) or drops (off) the variant's occupancy entity
+    on: bool
+    recv_ms: int
+
+
 InputEvent = Union[FramesMessage, NodeStatus, ScheduleState, ContextState, MarkPress, SpotName, LuxSample,
                    ReviewSelect, ReviewAnswer, NightLearningSwitch, CommandResult, NightTimeEdit, SettingSwitch,
-                   PushAck]
+                   PushAck, ZoneTune, ZoneForget, VariantRequest]
 
 
 # ---------------------------------------------------------------- decoded frames batch (core.frames)
@@ -218,7 +258,7 @@ class NightlyFailed:
 
 @dataclass(frozen=True, slots=True)
 class SaveRequested:
-    reason: str               # "nightly" | "label" | "name" | "review" | "push" | "night_learning"
+    reason: str               # "nightly" | "label" | "name" | "review" | "push" | "night_learning" | "zone"
 
 
 @dataclass(frozen=True, slots=True)
@@ -238,7 +278,8 @@ class ReviewItem:
     id: str                   # an item id (ITEM_ID_RE): night_window, bed_needs_data, "s0005-1", "mrg-s0005-1", ...
     rev: int
     type: str                 # night_window | bed_needs_data | dwell_zone | short_task_zone | merge_into | modify_zone
-    data: dict                # flat, hashable values only (P5 spec 2.4). night_window: start_min, end_min, saving_pct,
+                              # | retire_zone | radar_moved (P7: radar_moved is tier 1, retire_zone tier 2)
+    data: dict               # flat, hashable values only (P5 spec 2.4). night_window: start_min, end_min, saving_pct,
                               # current_saving_pct, late_nights, late_of, from_lights_off, basis, text (P5 adds
                               # edit_start, edit_end, sched_box); bed_needs_data: start_min, end_min, sched,
                               # show_window, text
@@ -281,10 +322,54 @@ class PushRequest:            # P5 spec 6.2; no text field by design
     head_id: Optional[str]    # the first tier-2 item when the request was created, fixed per seq, or None
     head_rev: Optional[int]
     acks: tuple = ()          # the targets that acknowledged this seq (at most 8)
+    attention: bool = False   # P7 (spec 6.5): the current request is a radar-moved request; the shell writes kind "attention"
+
+
+@dataclass(frozen=True, slots=True)
+class ZoneEvent:              # P6 spec A.3: a real transition of one zone; no zone name, no coordinate
+    id: str                   # zone id
+    kind: str                 # one of ZONE_EVENT_KINDS
+    via: str                  # leave: one of ZONE_EVENT_VIA; enter: ""
+    t_dev_ms: int             # device time of the decisive frame (enter, edge leave) or the computed deadline
+    track: int                # persistent track id, published as "t<id>"; the last track to leave or vanish for a leave
+    dwell_s: int              # leave only: seconds since the zone became occupied; 0 for an enter
+    variant: str              # variant_now at the event, "" when none
+
+
+@dataclass(frozen=True, slots=True)
+class ZoneState:
+    id: str
+    occ: bool
+    count: int                # confirmed tracks counted inside, 0..3
+    held: bool                # occupied with nobody inside now: a delay, an early or a fast clear is pending
+    variant: str              # variant_now, "" when none
+    ldr: bool                 # ld2412_reliable
+    delay_s: int              # the clear delay in force
+    delay_src: str            # one of DELAY_SRC
+    margin_cm: int            # the margin in force
+    variants: tuple = ()      # ids of the zone's variants (for the optional entities)
+    requested: tuple = ()     # ids whose occupancy entity was requested (zone6.ve)
+    # trailing fields the occupancy attributes need (spec 8.3): the shell has no other source for them
+    typical_hours: str = ""   # "wd 09-12,13-17; we 10-22" (day class, whole-hour ranges); "" when unknown
+    confidence: Optional[float] = None   # Suggestion.conf rounded to two decimals; None for a label or a manual zone
+
+
+@dataclass(frozen=True, slots=True)
+class ZoneStates:
+    valid: bool               # False: every zone is unavailable (radars off, warming up, faulted, learner not resumed)
+    t_dev_ms: int             # not part of the emission signature
+    zones: tuple              # ZoneState, ordered by id
+
+
+@dataclass(frozen=True, slots=True)
+class TuningLine:             # P7 spec A.2: one nightly count line, emitted once per nightly run when P7 is enabled
+    night: int                # the learner's night counter (the shell may drop a re-delivery by it; not part of `text`)
+    text: str                 # one JSON line, at most P7Params.agg_night_bytes_max bytes, whitelisted keys only (4.8)
 
 
 Output = Union[StatusChanged, DebugMapChanged, MarkResult, NameEcho, NightlyDone, NightlyFailed, SaveRequested,
-               NodeCommand, ReviewChanged, NightLearningChanged, AnswerIgnored, AdvancedChanged, PushRequest]
+               NodeCommand, ReviewChanged, NightLearningChanged, AnswerIgnored, AdvancedChanged, PushRequest,
+               ZoneEvent, ZoneStates, TuningLine]
 
 
 # ---------------------------------------------------------------- read-only views
@@ -372,6 +457,28 @@ class ZoneView:               # Learner.zones(): records (ordered by zid) then l
     created_s: int
     night: int
     frozen: bool              # the OA 7.4 predicate
+
+
+@dataclass(frozen=True, slots=True)
+class ZoneDrift:              # P7 spec A.3: Learner.drift_view(): one per zone record, then one per label
+    id: str
+    state: str                # one of DRIFT_STATES: the last night's verdict (the stored `vs`)
+    ratio: float              # 3 decimals; 0.0 for collapsed; -1.0 when not computed (young, blind, none)
+    frozen: bool              # ZoneView.frozen: the static predicate OR the coverage freeze
+    lo: int                   # flag run
+    rt: int                   # retire run
+    lu: int                   # date ordinal of the last use, 0 = none
+    rc: bool                  # needs re-check
+    held: bool                # the last night was held (rc or radar hold)
+
+
+@dataclass(frozen=True, slots=True)
+class RadarMovedView:         # P7 spec A.3: Learner.radar_moved_state()
+    state: str                # one of RADAR_STATES
+    rev: int                  # rm.rev
+    streak: int               # rm.st
+    tx: tuple                 # (dx_cm, dy_cm, tenths of a degree) of the last moved night
+    hold: bool                # the radar hold is in force (spec 4.6)
 
 
 @dataclass(frozen=True, slots=True)

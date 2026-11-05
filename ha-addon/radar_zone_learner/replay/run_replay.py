@@ -1,6 +1,6 @@
 """Replay CLI: run jobs in parallel (at most 3 workers), evaluate, write the report (P3 spec 11.9).
 
-    python -I -B replay/run_replay.py --out DIR [--profile smoke|quick|p3|p4smoke|p4|p5smoke|p5] [--jobs NAME,...]
+    python -I -B replay/run_replay.py --out DIR [--profile smoke|quick|p3|p4smoke|p4|p5smoke|p5|p6smoke|p6|p7smoke|p7move|...] [--jobs NAME,...]
                                       [--seeds 1-5] [--nights N] [--workers N] [--cpu-budget-per-day S]
                                       [--params-json FILE]
 
@@ -19,9 +19,21 @@ has its own report (``replay.evaluate_p5``): P5-1 to P5-8, the three P4 re-runs,
 separate commands of P5-R1 (``replay/dump_run.py`` and ``replay/compare_runs.py``), P5-R2 (``replay/compat_check.py``) and
 P5-R3 (``replay/resource_probe.py --p5``); it says that G1-G6 and P4-1 to P4-7 were not run.
 
-Bounds: ``--workers`` is clamped to ``min(3, cpu_count - 1)``; ``--nights`` <= 28; seeds within 1..5; more than
+``p6`` is the P6 gate (P6-1 to P6-11, P6-14 and P6-15: the jobs ``p6edge``, ``p6edge05``, ``p6edge08``, ``p6hold``, ``p6pow``, ``p6door``,
+``p6ld``, ``p6ldghost``, ``p6count``, ``p6setup``, ``p6guests`` and ``p6guestsc``, about 800 simulated days, about 20 minutes on 3
+workers) and ``p6smoke`` its smoke run (seed 1 of ``p6edge``, ``p6hold`` and ``p6door``, 10 nights each). A p6 invocation has its own
+report (``replay.evaluate_p6``) and says that G1-G6, P4-1 to P4-7 and P5-1 to P5-8 were not run; P6-R1 (``replay/dump_run.py`` and
+``replay/compare_runs.py``), P6-R2 (``replay/compat_check.py --p6``) and P6-R3 (``replay/resource_probe.py --p6``) are separate commands.
+
+``p7`` profiles (P7 spec 8.3, about 5,400 simulated days in all; every one is under the 1,500-day limit of one invocation): ``p7smoke``
+(seed 1 of ``p7mv11`` for 46 nights, ``p7rot`` 34 and ``p7ctl`` 28, about 108 days), ``p7move`` (P7-2, P7-4, P7-8; 1,434 days), ``p7drift``
+(P7-1, P7-5, P7-8, P7-10), ``p7beds`` (P7-3), ``p7radar`` (P7-6), ``p7guests`` (P7-7), ``p7tune`` (P7-9) and ``p7opt`` (reported). A p7
+invocation has its own report (``replay.evaluate_p7``); P7-R1 (``replay/dump_run.py`` and ``replay/compare_runs.py``), P7-R2
+(``replay/compat_check.py --p7``) and P7-R3 (``replay/resource_probe.py --p7``) are separate commands.
+
+Bounds: ``--workers`` is clamped to ``min(3, cpu_count - 1)``; ``--nights`` <= 60 (P7; the other profiles run at most 28); seeds within 1..5; more than
 1,500 simulated days in one invocation is refused; each run stops when its CPU exceeds
-``--cpu-budget-per-day`` (default 6 s) x simulated days + 30 s. Exit code: 0 when no gated criterion fails and
+``--cpu-budget-per-day`` (default 6 s, 15 s for a P6 profile) x simulated days + 30 s. Exit code: 0 when no gated criterion fails and
 every run finished, 1 when a gated criterion fails or a run is over budget or failed, 2 on a usage error or
 a budget refusal. With a profile that lacks runs of a criterion (smoke, quick) the gate reads INCOMPLETE.
 """
@@ -42,9 +54,13 @@ from radar_zone_learner.core.params import DEFAULT_PARAMS, Params, params_digest
 from replay import jobs as J  # noqa: E402
 from replay.driver import run_task  # noqa: E402
 from replay import evaluate_p5 as E5  # noqa: E402
+from replay import evaluate_p6 as E6  # noqa: E402
+from replay import evaluate_p7 as E7  # noqa: E402
 from replay.evaluate import evaluate, write_report  # noqa: E402
 
 MAX_WORKERS = 3
+P6_CPU_BUDGET = 15.0             # s of CPU per simulated day for a P6 job (1 s tick, scripted people, the zone evaluator)
+P7_CPU_BUDGET = 15.0             # the same for a P7 job (the zone evaluator, the nightly P7 steps; the guest jobs cost the most)
 MAX_SIM_DAYS = 1500
 EST_CPU_PER_DAY = 2.5          # s per simulated day on the i3 (P3 spec 11.9; timing.json has the measured value)
 
@@ -144,7 +160,9 @@ def main(argv=None) -> int:
     ap.add_argument("--seeds", default=None, help="e.g. 1-5 or 1,3")
     ap.add_argument("--nights", type=int, default=None)
     ap.add_argument("--workers", type=int, default=MAX_WORKERS)
-    ap.add_argument("--cpu-budget-per-day", type=float, default=6.0)
+    ap.add_argument("--cpu-budget-per-day", type=float, default=None,
+                    help="CPU seconds per simulated day before a run stops (default 6; 15 for a P6 profile: the 1 s tick and "
+                         "the scripted people cost 5-12 s a day on this PC, the busy guests jobs the most)")
     ap.add_argument("--params-json", default=None)
     try:
         args = ap.parse_args(argv)
@@ -154,6 +172,9 @@ def main(argv=None) -> int:
         args.seeds = parse_seeds(args.seeds) if args.seeds is not None else None
         jobs = build_jobs(args)
         params = load_params(args.params_json) if args.params_json else DEFAULT_PARAMS
+        if args.cpu_budget_per_day is None:
+            args.cpu_budget_per_day = (P7_CPU_BUDGET if any(j.is_p7 for j in jobs)
+                                       else P6_CPU_BUDGET if any(j.is_p6 for j in jobs) else 6.0)
         if args.cpu_budget_per_day <= 0:
             raise ValueError("--cpu-budget-per-day must be > 0")
     except (ValueError, KeyError, OSError) as exc:
@@ -206,12 +227,23 @@ def main(argv=None) -> int:
     results = []
     for summ in sorted(summaries, key=lambda s: (s["job"], s["seed"])):
         results.append(json.loads(Path(summ["path"]).read_text(encoding="utf-8")))
+    p7_invocation = any(E7.is_p7_run(r) for r in results)          # a P7 run is judged by replay.evaluate_p7 only
+    p6_invocation = any(E6.is_p6_run(r) for r in results)          # a P6 run is never judged by the P4 or P5 checks
     p5_invocation = any(E5.is_p5_run(r) for r in results)
-    unit = None if p5_invocation else run_g5b_unit_test()
-    report = E5.build_report(results, unit_g5b=unit) if p5_invocation else evaluate(results, unit_g5b=unit)
+    unit = None if (p5_invocation or p6_invocation or p7_invocation) else run_g5b_unit_test()
+    if p7_invocation:
+        report = E7.build_report(results, unit_g5b=unit)
+    elif p6_invocation:
+        report = E6.build_report(results, unit_g5b=unit)
+    else:
+        report = E5.build_report(results, unit_g5b=unit) if p5_invocation else evaluate(results, unit_g5b=unit)
     report["profile"] = args.profile
     report["wall_s"] = round(wall, 1)
-    if p5_invocation:
+    if p7_invocation:
+        E7.write_report(report, out)
+    elif p6_invocation:
+        E6.write_report(report, out)
+    elif p5_invocation:
         E5.write_report(report, out)
     else:
         write_report(report, out)
@@ -235,6 +267,12 @@ def main(argv=None) -> int:
         log("%-4s %-10s %s" % (c["id"], c["status"], c["title"]))
     if p5.get("p4_reruns"):
         log("%-4s %-10s %s" % ("P4*", p5["p4_reruns"]["status"], "the three P4 re-runs (P4-3, P4-4, P4-7 sub-checks)"))
+    p6 = report.get("p6") or {}
+    for c in p6.get("criteria", []):                              # the P6 checks (replay.evaluate_p6)
+        log("%-5s %-10s %s" % (c["id"], c["status"], c["title"]))
+    p7 = report.get("p7") or {}
+    for c in p7.get("criteria", []):                              # the P7 checks (replay.evaluate_p7)
+        log("%-5s %-10s %s" % (c["id"], c["status"], c["title"]))
     log("gate (%s): %s%s; CPU %.0f s for %.1f simulated days (%.2f s/day); wall %.0f s" % (
         report["scope"], report["gate"], (" (failed %s)" % ",".join(report["failed"])) if report["failed"] else "",
         cpu_total, sim_total, timing["cpu_s_per_day"] or 0, wall))

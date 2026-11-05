@@ -16,6 +16,8 @@ The only additions (no extra random-number calls, so the world stays the simulat
 * ``plan_day(..., late=list)`` records the bed sessions the simulator drops because the sleep onset falls after
   00:00 (``(agent, onset_s)``; 3 of 280 simulated nights, at 00:02-00:12). The P4 replay keeps these onsets
   (OA 7.5): ``WorldDay.late`` carries them.
+* P7 (spec 8.2): the config keys ``retire``, ``guest_week`` and ``move_back`` (all ``None`` by default; the draws of the
+  days before the event are unchanged), see ``WORLD_CFG``.
 """
 from __future__ import annotations
 
@@ -52,7 +54,12 @@ INSIDE_GHOST = (1.5, 3.0)        # multipath image of the desk sitter (metal cab
 WALL_L, WALL_R = ROOM[0], ROOM[1]
 
 # The world part of the simulator's CFG (SIM:84-85); the learner keys are not used here.
-WORLD_CFG = dict(Vm=15, Hm=90, gw=0.25, gs=0.0, gi=0.0, pet=0, bed=0, move=0.0, move_day=35, wfh=1, nw='', nl=0)
+WORLD_CFG = dict(Vm=15, Hm=90, gw=0.25, gs=0.0, gi=0.0, pet=0, bed=0, move=0.0, move_day=35, wfh=1, nw='', nl=0,
+                 retire=None, guest_week=None, move_back=None)
+# P7 (spec 8.2) additions, all off by default and all without a random draw before the event, so a job that does not use
+# them has the simulator's world byte for byte: ``retire`` = (place, day): from that day the sessions at the place are
+# removed after ``plan_day`` made them (W3); ``guest_week`` = (start_day, n_days): the evening guest on every one of those
+# days instead of day 20 only (W4); ``move_back`` = a day: the moved sofa is at its original place again from that day (W1).
 
 
 def make_cfg(**overrides):
@@ -71,7 +78,8 @@ def lu(rng, a, b):
 
 def spot_pos(name, d, cfg):
     p = SPOT[name]
-    if name in ('sofaA', 'sofaB', 'dogsofa') and cfg['move'] and d >= cfg['move_day']:
+    back = cfg.get('move_back')
+    if name in ('sofaA', 'sofaB', 'dogsofa') and cfg['move'] and d >= cfg['move_day'] and (back is None or d < back):
         if cfg['move'] < 2.0:
             return (p[0] + cfg['move'], p[1])           # shifted 1.1 m to the right
         return (p[0] + 2.2, p[1] - 1.9)                 # large move: other side of the room (~2.9 m)
@@ -153,7 +161,10 @@ def plan_day(rng, d, cfg, late=None):
     if cfg['bed']:
         s = at(23, 15) + jit(1200)
         S['P1'].append([s, (d + 1) * DAY, 'bed', 'sleep', 'cont_out'])
-    if d == 20:
+    gweek = cfg.get('guest_week')
+    if d == 20 and gweek is None:
+        S['G'].append([at(19), at(22), 'guest', 'sit'])
+    if gweek is not None and gweek[0] <= d < gweek[0] + gweek[1]:      # P7 W4: the same fixed evening on every day of the week
         S['G'].append([at(19), at(22), 'guest', 'sit'])
     if wd == 5:
         S['V'].append([at(15), at(17), 'visitor', 'sit'])
@@ -192,6 +203,10 @@ def plan_day(rng, d, cfg, late=None):
             s = at(20) + jit(1200)
             S['dog'].append([s, s + int(lu(rng, 2400, 7200)), 'dogbed', 'pet'])
         S['dog'].sort()
+    retire = cfg.get('retire')
+    if retire is not None and d >= retire[1]:                           # P7 W3: nobody uses the place any more
+        for ag in list(S):
+            S[ag] = [s for s in S[ag] if s[2] != retire[0]]
     return S, he
 
 
@@ -400,7 +415,7 @@ def label(x, y, d, cfg):
         pts['TP:' + k] = spot_pos(k, d, cfg)
     pa, pb = spot_pos('sofaA', d, cfg), spot_pos('sofaB', d, cfg)
     pts['TP:sofaAB'] = ((pa[0] + pb[0]) / 2, (pa[1] + pb[1]) / 2)
-    if cfg['move'] and d >= cfg['move_day']:
+    if cfg['move'] and d >= cfg['move_day'] and (cfg.get('move_back') is None or d < cfg['move_back']):
         pts['FP:old_sofa'] = ((SPOT['sofaA'][0] + SPOT['sofaB'][0]) / 2, (SPOT['sofaA'][1] + SPOT['sofaB'][1]) / 2)
     pts.update({'FP:guest': SPOT['guest'], 'FP:visitor': SPOT['visitor'], 'FP:reflector': REFLECTOR, 'FP:inghost': INSIDE_GHOST,
                 'FP:mirror_desk': (2 * WALL_R - SPOT['desk'][0], SPOT['desk'][1]),

@@ -1,10 +1,13 @@
 # Radar Zone Learner (Home Assistant app)
 
 A local Home Assistant app ("add-on" in older Home Assistant versions) that learns the places people use
-in a room from the LED matrix node's LD2454 radar frames. Version 0.5.0 (phase P5, on top of P3 and P4) of the
-zone-learning design: **shadow mode**. The P4 additions (night window, bed item, optional Night learning, RF and
+in a room from the LED matrix node's LD2454 radar frames. Version 0.7.0 (phase P7, on top of P3, P4, P5 and P6) of the
+zone-learning design. The P4 additions (night window, bed item, optional Night learning, RF and
 coverage sensors, the context blueprint) are described in section 9; the P5 additions (the review of the suggestions on
-a device in Home Assistant, notifications, the privacy controls) in section 10.
+a device in Home Assistant, notifications, the privacy controls) in section 10; the P6 additions (occupancy, count and
+events of the zones you confirmed, tuning, and the spot-light blueprint) in section 11; the P7 additions (a place that
+moved, a place nobody uses any more, a radar that was moved or turned, and the tuning data you can export) in section 12.
+The app itself still switches nothing in your home.
 
 ## 1. What it is
 
@@ -13,14 +16,17 @@ stay (desk, table, sofa, bed, ...), and every night at 03:30 it works out which 
 to suggest. The suggestions are written down in the app's state, in the attributes of the 'Learner status' sensor and
 on the debug map; since P5 you can also approve, rename or reject them on the review device (section 10).
 
-What it does not do (shadow mode, until P6):
+What it does not do:
 
-- no zone entities, no room occupancy, no automations of its own; the only notification is the optional review push
-  of section 10.4;
-- approved places become zone **records** in the app's state (a name, a kind and an outline); they are not published
-  as entities, counts or events;
+- no room occupancy entity, no presence entity and no automations of its own: a light or a scene is switched only by
+  the optional blueprint of section 11.6, and the only notification is the optional review push of section 10.4;
+- it has no Home Assistant API access (the manifest asks for none), so it cannot call a service itself;
 - the only things it writes to the node are the three schedule topics of the night window (section 9.4: an approved
   night window; section 9.5: Night learning); it never touches `radar/power`.
+
+Approved places become zone **records** in the app's state (a name, a kind and an outline); since P6 every zone record and
+every 'Mark spot here' label of the kinds dwell, short_task, bed and manual is also published as a device with an
+occupancy sensor, an event entity and tuning entities (section 11).
 
 Entities (MQTT discovery):
 
@@ -31,7 +37,8 @@ Entities (MQTT discovery):
 | `button.radar_zones_review_mark` ('Mark spot here') | Radar zone review | marks the spot where you are as a label (section 5) |
 | `text.radar_zones_review_name` ('Spot name') | Radar zone review | the name the next mark gets; "Bed" or "Bett" makes it a bed label |
 
-P4 adds the entities of section 9.1, P5 those of sections 10.2 and 10.6.
+P4 adds the entities of section 9.1, P5 those of sections 10.2 and 10.6, P6 those of section 11.1 (one device for each zone),
+P7 two on the learner device (section 12.6: a button and a diagnostic sensor for the tuning data; no per-zone entity).
 
 ## 2. Requirements
 
@@ -57,7 +64,7 @@ P4 adds the entities of section 9.1, P5 those of sections 10.2 and 10.6.
 4. Open it and press Install. The host builds the image, which takes a few minutes and downloads the
    Home Assistant Python base image and paho-mqtt. Then press Start and turn on **Watchdog** on the Info
    tab.
-5. The log shows `connected to core-mosquitto:1883`, `subscribed (30 topics)` (18 before P5, 9 before P4) and, once
+5. The log shows `connected to core-mosquitto:1883`, `subscribed (34 topics)` (30 before P6, 18 before P5, 9 before P4) and, once
    frames arrive, `status learning`. Every later change of the learner status is logged the same way.
 
 ### Updating
@@ -179,8 +186,23 @@ What is stored where:
   restart forgets them.
 - Nothing is logged with positions at the `info` level.
 - The status attributes contain place centres, kinds and counts, never stay times (P5 adds only counts: `zones_total`,
-  `pending_places`, `learning_paused` and the on/off state of the four settings). The debug map is a place map without
-  times.
+  `pending_places`, `learning_paused` and the on/off state of the four settings; P6 adds only counts too: `zone_entities`,
+  `zone_cmds_ignored` and the zone event counters, never a name, an id or a coordinate). The debug map is a place map
+  without times.
+- **Since P6 per-zone topics exist** (section 11.5): occupancy, count, events and six attributes of every confirmed zone.
+  Zone names appear only in the entity and device names of the discovery configs (not retained), never in a topic or an
+  event payload. The attributes include the hours a zone is usually used and its outline. Occupancy, events and hours are
+  a location and routine log once Home Assistant's recorder keeps them: see the excludes below.
+- **Since P7 `/data/state.json` also holds** (in every backup) a per-zone **usual-hours profile** (24 shares of the zone's
+  usual use by hour of day, the same class of data as the stay list and coarser), the dates a zone was last used and the
+  dates of a 'Keep' answer, the position of a place that moved or was removed (the *moved-from* mask, kept so the old spot is
+  not offered as a new place), the radar-moved state and counters of your answers (section 12). None of it is published; the
+  review map draws only the open item and the zones.
+- **The tuning data (P7, section 12.6)**: `/data/tuning/nights.jsonl` holds one line of counts and fixed-length histograms for
+  each of the last 28 nights. It has no date, no position, no name, no id and no hour of day, but as a day-by-day series it
+  would show a night with nobody home, so it is **local only**: `config.yaml` excludes `tuning/*` from backups, nothing
+  publishes it, and 'Forget all learned data' deletes the folder. Only when you press 'Export tuning data' does the app
+  publish **one pooled record** (sums over the kept nights, no per-night list) once, on a topic that is not retained.
 
 The radar sees everyone in the room. Tell the other people in the household what the radar and this app
 record.
@@ -207,22 +229,51 @@ live view is a new state, up to 150 per session), 'You are in' (a live position 
 texts (which can carry a place name and, with 'Detailed review text', hours of use) and the review events. The README
 sections 10.2 to 10.6 list every entity.
 
+P6 adds, for every zone, an occupancy sensor whose history is when someone was at that place, its event entity (the same
+history with the time in the second) and the other zone entities of section 11.1. Together with 'Radar state' of the
+node they form a sleep and occupancy history that every Home Assistant user can read. Exclude what you do not want
+recorded, for example the zone events and the node's radar state (the occupancy sensors are the data you asked for; keep or
+exclude them as you like):
+
+```yaml
+recorder:
+  exclude:
+    entity_globs:
+      - event.radar_spot_*
+      - sensor.led_matrix_node_radar_state
+```
+
+The zone count sensors (disabled by default; if you enable them each change is a row) and the tuning numbers
+(`number.radar_spot_*`) can be excluded the same way. The default `purge_keep_days` of 10 days applies to all of it;
+shorten it if that is longer than you want.
+
+P7 adds the diagnostic sensor 'Tuning data' (`sensor.radar_zones_learner_tuning`: `none` or `<n> nights`, nothing else) and
+review items whose texts say that the radar was moved. Excluding them is optional advice, not a need: add
+`sensor.radar_zones_learner_tuning` to the `entities` list above if you want no row of it in the database. A P7 text carries no
+zone name, hour or date unless 'Detailed review text' is on.
+
 **Deleting everything**: since P5 the learner device has 'Forget all learned data' (section 10.6): it deletes the state,
-its snapshots and the raw-frame capture and starts a fresh learner, and it overwrites the retained topics below with their
+its snapshots, the raw-frame capture and (since P7) the tuning folder and starts a fresh learner, and it overwrites the retained topics below with their
 empty versions. To remove the app itself, stop it and uninstall it; this removes `/data`. Backups made before keep their
 copy. Uninstalling does not remove what the app left outside `/data`:
 
 - the retained MQTT messages (QoS 1) `radar_zones/learner/{status,state,attr,coverage_7d,night_learning,guests_pause,pets,
-  detail_text,debug_capture,forget_confirm}`, `radar_zones/radar/valid`, `radar_zones/scan/{rf_on_24h,rf_saving_7d}` and
-  `radar_zones/review/{name,select,pending,pending/attr,item_text,advanced,live,nw_start,nw_end,approve_sched,push}` stay in
-  the Mosquitto broker's own storage (and in its backups). Not retained, so nothing to clear: the discovery configs,
-  `radar_zones/learner/debug_map`, `radar_zones/review/{map,push_map,event,you_are_in,you_are_in/attr}` and the commands
-  to the node. Clear a retained one with an empty retained message, for example
+  detail_text,debug_capture,forget_confirm}`, `radar_zones/radar/valid`, `radar_zones/scan/{rf_on_24h,rf_saving_7d}`,
+  `radar_zones/review/{name,select,pending,pending/attr,item_text,advanced,live,nw_start,nw_end,approve_sched,push}` and, since
+  P6, `radar_zones/zone/availability`, `radar_zones/zone/<id>/{clear_delay,margin}` and
+  `radar_zones/zone/<id>/<variant>/entity` and, since P7, `radar_zones/learner/tuning` (`none` or `<n> nights`) stay in the
+  Mosquitto broker's own storage (and in its backups). Not retained, so
+  nothing to clear: the discovery configs, `radar_zones/learner/debug_map`, `radar_zones/learner/tuning/export` (P7),
+  `radar_zones/review/{map,push_map,event,you_are_in,you_are_in/attr}`, the commands to the node and, since P6,
+  `radar_zones/zone/<id>/{occupancy,count,event,attributes}` and `radar_zones/zone/<id>/<variant>/occupancy`. A zone that is
+  removed (or Forget all) has its own retained topics cleared by the app. Clear a retained one with an empty retained
+  message, for example
   `mosquitto_pub -r -n -t radar_zones/learner/attr`, or stop the app first and publish from Developer tools → Actions →
   `mqtt.publish` with an empty payload and `retain: true`. 'Forget all learned data' already overwrites the ones that
   carry learned content (`attr`, `pending`, `pending/attr`, `item_text`, `name`, `select`, `push`);
-- the devices 'Radar zone learner' and 'Radar zone review' and their entities stay in Home Assistant's
-  entity registry until you delete them (Settings → Devices & services → MQTT → Devices);
+- the devices 'Radar zone learner' and 'Radar zone review', since P6 one device for each zone, and their entities stay in
+  Home Assistant's entity registry until you delete them (Settings → Devices & services → MQTT → Devices; 'Forget all
+  learned data' removes the zone entities from Home Assistant, but the registry keeps their names and history);
 - Home Assistant's database (the recorder) keeps up to 10 days of the status sensor's attributes; purge
   the two entities in Developer tools → Actions → `recorder.purge_entities`.
 
@@ -272,16 +323,16 @@ Expected: about 20-25 MB and well under 0.1%.
 
 ## 9. P4: night window, bed item, optional Night learning, RF sensors
 
-Still shadow mode: there are no zone entities, no room occupancy and no presence entity (those come with
-P6). The entities below are added by the P4 shell layer; the proposals and the Night learning rules come
-from the learner core. An entity whose source is missing shows `No item` (review; `None` before P5) or `OFF` (Night
+There is still no room occupancy and no presence entity; the zone entities came with P6 (section 11). The
+entities below are added by the P4 shell layer; the proposals and the Night learning rules come from the learner
+core. An entity whose source is missing shows `No item` (review; `None` before P5) or `OFF` (Night
 learning) and does nothing.
 
 ### 9.1 New entities
 
 | Entity | Device | What it shows or does |
 |---|---|---|
-| `binary_sensor.radar_zones_radar_valid` ('Radar data valid') | Radar zone learner | `on` only while the learner observes (state `learning`), the node is online and its 'Radar observing' is not OFF. Topic `radar_zones/radar/valid` (retained `online`/`offline`, the vocabulary of an availability topic: P6's zone entities will use it as a second one). |
+| `binary_sensor.radar_zones_radar_valid` ('Radar data valid') | Radar zone learner | `on` only while the learner observes (state `learning`), the node is online and its 'Radar observing' is not OFF. Topic `radar_zones/radar/valid` (retained `online`/`offline`, the vocabulary of an availability topic). The P6 zone entities do **not** use it: it does not know whether the learner's zones have resumed, so they have their own availability topic (section 11.3). |
 | `sensor.radar_zones_scan_rf_on_24h` ('RF on time 24 h') | Radar zone learner | Hours with the radars on in the last 24 h |
 | `sensor.radar_zones_scan_rf_saving_7d` ('RF saving 7 d') | Radar zone learner | Share of the last 7 days with the radars off, % |
 | `sensor.radar_zones_learner_coverage_7d` ('Coverage 7 d') | Radar zone learner | Share of the last 7 days (168 h) in which the learner observed, % |
@@ -299,9 +350,10 @@ The status attributes gain `node_schedule_seen`, `node_cmds_sent`, `node_cmds_un
 ### 9.2 'Radar data valid'
 
 The sensor is `off` while the radars are off (night window, manual off), warming up or faulty, when no frames
-came for 15 s, and when the node is offline (its last will). Zones, room occupancy and the node's presence
-are unavailable at the same times (design 6.5; the zone entities arrive with P6). Write state triggers on
-them as `to: 'off'` with `not_from: ['unavailable', 'unknown']`, otherwise the morning power-up fires them:
+came for 15 s, and when the node is offline (its last will). The zone entities of section 11 are unavailable at the
+same times, and also until the learner has resumed after a power-up or a restart (section 11.3; there is no room
+occupancy entity). Write state triggers on them as `to: 'off'` with `not_from: ['unavailable', 'unknown']`, otherwise
+the morning power-up fires them:
 
 ```yaml
 triggers:
@@ -355,7 +407,7 @@ The core proposes two items first (tier 1); the review device shows them, and si
 wired since P5: the 'Advanced item' select with 'Apply advanced', and the buttons 'Re-suggest night window' and
 'Forget rejections' (section 10.3). If you pressed [No bed in view] by mistake, pick 'Undo: No bed in view' there.
 Zones made by 'Mark spot here' are labels (kind bed or manual); the status attribute `review.zones` counts only
-the places you approved or renamed, so it stays 0 after a successful press (P6 reads both; `Learner.zones()` lists
+the places you approved or renamed, so it stays 0 after a successful press (P6 evaluates both, section 11; `Learner.zones()` lists
 both).
 
 An answer for a stale revision of an item (the item changed after you saw it) is dropped; since P5 it is also shown as
@@ -426,16 +478,16 @@ command topics is ignored and deleted, as for 'Mark spot here'. New outputs (ret
 `radar_zones/learner/coverage_7d`, `radar_zones/learner/night_learning` and
 `radar_zones/review/{select,pending,pending/attr,item_text}`; not retained: `radar_zones/review/event`.
 Commands to the node (not retained; Night learning and an approved night window only): the three topics of
-section 9.5. P5 adds 12 more input topics (30 in all) and the outputs of section 10.7.
+section 9.5. P5 adds 12 more input topics (30 in all) and the outputs of section 10.7; P6 adds 4 command patterns (34 in all, section 11.7).
 
 ## 10. P5: review device, push notifications, privacy controls
 
-Still shadow mode. P5 turns the learner's suggestions into something you can answer: the review device shows what is
+P5 turns the learner's suggestions into something you can answer: the review device shows what is
 waiting (a night window, the bed, the places) with a map, you approve, rename or reject, and the learner remembers
-what you said. An approved place becomes a **zone record** in the app's state (a name, a kind and an outline); nothing
-about a zone is published as an entity, a count or an event before P6, and the learner publishes no zone name anywhere
-except in the review texts that you asked for (the Advanced labels, the merge and modify texts, 'You are in' while the
-live view runs).
+what you said. An approved place becomes a **zone record** in the app's state (a name, a kind and an outline). Since P6
+every zone record is also published as entities (section 11); the learner publishes a zone name only in the entity and
+device names of those zone entities and in the review texts that you asked for (the Advanced labels, the merge and modify
+texts, 'You are in' while the live view runs).
 
 ### 10.1 The first setup, in taps
 
@@ -455,7 +507,7 @@ item costs one tap and it comes back after the next nightly run. A text entry (t
 
 | Entity | What it shows or does |
 |---|---|
-| `select.radar_zones_review_select` ('Review item') | `No item`, `Night window`, `Bed zone`, then `Place A`, `Place B`, ... (a place), `Extend A` (a place that touches a zone you have and is used at similar hours) and `Moved A` (a zone whose place seems to have moved). The letters are persistent tags: a tag never changes its place while the item exists, and a name never appears in the select. At most 15 options. |
+| `select.radar_zones_review_select` ('Review item') | `No item`, `Night window`, `Bed zone`, `Radar moved` (since P7, only while that item is open), then `Place A`, `Place B`, ... (a place), `Extend A` (a place that touches a zone you have and is used at similar hours), `Moved A` (a zone whose place seems to have moved) and, since P7, `Retire A` (a zone nobody has used for weeks). The letters are persistent tags: a tag never changes its place while the item exists, and a name never appears in the select. At most 15 options. |
 | `button.radar_zones_review_approve`, `..._rename`, `..._reject`, `..._later` | the answer for the selected item (the app fills in the item and its revision) |
 | `text.radar_zones_review_name` ('Spot name') and `button.radar_zones_review_mark` ('Mark spot here') | as before (section 5); the name is also what Approve and Rename use: **an applied answer consumes the text** (it is cleared), so the next place does not get the same name |
 | `sensor.radar_zones_review_pending` ('Review pending') | the number of open items (tier 1 and tier 2); the attributes list them with `id`, `rev`, `type`, `tier`, `label` and `text`, plus `selected` and `more` (open places that did not fit under the cap of 12) |
@@ -484,12 +536,13 @@ in the list) and the app republishes the state at every change.
 | Reject | Deny: not asked again for 30 days | [No bed in view] | rejected: a region that overlaps it by half, or has its centre inside, is not suggested again until its evidence has doubled and 30 nights have passed | the place is rejected as a place | the question is not asked again for this change |
 | Later | comes back after the next nightly run | the same | the same | the same | the same |
 
-Merge and modify items are built and tested, but the learner does not make them in production (P5 ships the answers; the
-detectors are P7, `P5Params.zone_change_items`).
+Merge and modify items are made by the learner since P7 (their detectors, the new `Retire` and `Radar moved` items and what
+every answer does for them are in section 12; the P5 scaffolding behind `P5Params.zone_change_items` stays in the code and
+is used only by a learner that has the P7 detectors switched off, which the app never is).
 
 A place whose zone exists, or that a 'Mark spot here' mark covers, is not asked about again. The review event
 `answer_ignored` says why an answer changed nothing: `no_such_item`, `stale`, `not_pending`, `not_applicable`,
-`name_needed`, `zone_limit`, `times_invalid`, `no_item`.
+`name_needed`, `zone_limit`, `times_invalid`, `no_item` and, since P7, `zone_busy` (section 12.1).
 
 **Advanced** is a separate list that is never counted, never pushed and never auto-selected. It holds what you answered
 and the reflections: 'Undo: No bed in view', 'Undo: Night window denied until <date>', 'Undo: Place A rejected', 'Real
@@ -531,7 +584,12 @@ opens, and 'Show the item text' (off).
 - **Restarts**: the request is a retained sensor state with eight fields (`seq|acked|kind|count|rev|item|acks|text`); the
   blueprint acknowledges with `<seq>:<phone>` after the notify call returned. A restart of Home Assistant or of the app neither loses a
   request nor repeats one that was acknowledged; the notification has a fixed tag, so a repeat replaces the first copy.
-- Reserved for later: the `retire_zone` item and its 'Keep' answer (P7).
+- Since P7 a request can also be **'Radar needs attention'** (the kind `attention`): the learner believes the radar was moved or
+  turned (section 12.4). It is generic like the others (no name, no time, no distance), has no actions (open the review device
+  and answer the `Radar moved` item there), and follows the same rules (one a day at most, 08:00 to 21:00, issued again the
+  next day if no phone acknowledged). A `Retire` item is never the item a push offers and is never answered from a push: a
+  removal needs a look at the map first. **Copy `radar_zone_review_push.yaml` again** after you update to 0.7.0: an older copy
+  does not know the kind `attention` and ignores that request.
 
 The blueprint has never been loaded by Home Assistant: check the first trace (the request, a tap, the clear), see 10.9.
 
@@ -572,7 +630,7 @@ The 12 new inputs (QoS 1, all commands: a retained message on one is ignored and
 Outputs: retained `radar_zones/review/{select,advanced,live,nw_start,nw_end,approve_sched,push,pending,pending/attr,
 item_text}` and `radar_zones/learner/{guests_pause,pets,detail_text,debug_capture,forget_confirm}`; not retained
 `radar_zones/review/{map,push_map,you_are_in,you_are_in/attr,event}`. The review `select` and `item_text` say `No item`
-(not `None`) when nothing is selected. 35 discovery messages are published at every connect and 0-10 s after Home
+(not `None`) when nothing is selected. 35 discovery messages (and, since P6, 6 for each zone) are published at every connect and 0-10 s after Home
 Assistant's birth message; the maps and the not retained states are sent again 10 s after each burst, because Home
 Assistant creates its entities only after it has read the configs.
 
@@ -613,6 +671,325 @@ A15: the `capture/*` entry of `backup_exclude` is the thing under test); after t
 08:00 and 21:00, a new request and the notification (A16); two phones, one automation each, with a restart of Home Assistant
 between the first phone's acknowledgement and the second phone's send: each phone ends with one notification (A17).
 
+## 11. P6: zone occupancy and the spot-light blueprint
+
+P6 turns the zones you confirmed in section 10 into things Home Assistant can use: is somebody at the desk, how many
+people, when did they come and go. The learner measures; **it still switches nothing**. A light or a scene is switched by
+the optional blueprint of section 11.6, which you install yourself (the app has no Home Assistant API access).
+
+### 11.1 The entities of a zone
+
+Every zone record and every 'Mark spot here' label of the kinds dwell, short_task, bed and manual is one device,
+`radar_zone_<id>` (`<id>` is `z0001` for a record or `l0001` for a label; an unnamed label is called `Spot l0001`), a child
+of the node's device. At most 24 zones get entities; the others are evaluated and can be tuned only after a slot frees.
+Zones of the other kinds (entry, transit, ignore, reflection, pet) are silent model data and have none.
+
+| Entity | What it shows or does |
+|---|---|
+| `binary_sensor.radar_spot_<id>` ('<zone> occupancy') | `on` while a person is in the zone or the zone waits for its clear delay, `off` otherwise; unavailable while the radars are off (section 11.3). Attributes (all six, always): `kind`, `state_source` (`live`, `failsafe`, `radar_off`, `warmup` or `fault`; the last three are published while the sensor is unavailable and Home Assistant may not show attributes of an unavailable entity, assumption HA[U4], acceptance A8), `variant_now` (the time variant in force, `""` when none), `typical_hours` (`wd 09-12,13-17; we 10-22` or `""`), `confidence` (the suggestion's, rounded to two decimals; `null` for a label or a manual zone) and `poly_cm` (the outline, at most 12 points) |
+| `sensor.radar_spot_<id>_count` ('<zone> target count', diagnostic, **disabled by default**) | the number of people in the zone, 0 to 3; at most one change a second (the latest value follows); 0 while the zone is only held |
+| `event.radar_spot_<id>_event` ('<zone> enter/leave') | `enter` (with `track`) and `leave` (with `track`, `dwell_s` and `via`: `edge`, `hold_expired`, `door_death` or `early`); `variant` when one is in force. Only real transitions: a radar power-up or a restart of the app fires none for a person who is already tracked within about 3 seconds (section 11.3); the zones turn available about 3.5 seconds after the radars resume, with the real state published first |
+| `number.radar_spot_<id>_clear_delay` ('<zone> clear delay', config) | the delay in force, 3 to 900 s; typing a value overrides the learned one |
+| `number.radar_spot_<id>_margin` ('<zone> margin', config) | the margin in force, -50 to 100 cm (default 25); a negative value shrinks the zone |
+| `button.radar_spot_<id>_forget` ('<zone> forget learned data', config) | discards the learned delay, the radar agreement evidence and your overrides of **this** zone, and also its stored time variants, typical hours, confidence and variant requests until the next nightly run (03:30) refills them; the zone and its entities stay |
+| `switch.radar_spot_<id>_vreq_<variant>` ('<zone> - <variant> sensor', config, OFF) and `binary_sensor.radar_spot_<id>_v_<variant>` | only for a zone that has time variants (section 11.4) |
+
+Entity ids follow the unique ids; after a 'Forget all learned data' they carry the installation epoch
+(`radar_spot_e1_z0001`) so that a new zone that reuses an old id does not inherit the old entity's name, area or history.
+The zone name is part of every entity name and of the device name; if Home Assistant shows the name twice, rename the
+entity in Home Assistant, the entity id is fixed.
+
+### 11.2 How a zone is evaluated (and what the numbers mean)
+
+- **Entering**: a confirmed track enters a zone when at least 3 of its last 10 detections lie inside the zone area, the
+  stored cells grown by the margin. In a dwell, bed or manual zone a detection of a track that moves at 0.8 m/s or more is
+  not counted (somebody walking past a desk does not occupy it; sitting down does). In a short_task zone every inside
+  detection counts.
+- **Leaving**: one detection outside the zone area is a leave at once. If the last person *vanishes inside* (the radar
+  loses a person who sits very still), the zone is **held** until `last detection + clear delay`, then it clears (`via`
+  `hold_expired`). A leaving person never clears a hold that someone else caused. A hold is judged on the radar's own
+  batches, never on a clock guess (a lost batch must not clear a zone), so in an idle room the zone clears with the first
+  batch after the deadline, at most about 5 s late (the node's heartbeat); the event's own time is the computed deadline.
+- **Clear delay**: your override (3-900 s), else the learned one, else the default by kind: bed 600 s, dwell and manual
+  300 s, short_task 60 s. The learned delay is the 95th percentile of the zone's own hidden spells (a person who vanished
+  and came back), from 10 spells, 5 to 600 s, refreshed at the nightly run (03:30), so a zone behaves the same all day.
+  A spell longer than twice the delay is not counted, so the learned value can grow by at most about 2 times a night.
+- **Door fast-clear**: a person who walks out through a door the learner has seen (a silent `entry_zone` suggestion) and
+  vanishes inside the zone area next to it clears the zone after 3 s instead of the delay (`via` `door_death`). Without a
+  door suggestion there is no fast clear.
+- **Early clear**: only for a zone where the second radar (LD2412) agreed at least 80 % of the time over at least an hour
+  of known time. A held zone then clears after 60 s of LD2412 absence with no person seen anywhere (`via` `early`). It only
+  ever shortens a hold; the second radar saying 'present' never extends one.
+- **Latency.** Entering needs the third inside detection, about 0.3 s after you cross the zone edge on the radar's own
+  clock; the node then sends detections in batches of up to 0.5 s and adds one 40 ms pass, so Home Assistant hears it up to
+  about 0.84 s after the crossing (the UART read and the network come on top, not measured). A leave is one detection
+  outside, about 0.1 s after the crossing on the radar's clock, and up to about 0.64 s on arrival, because the 500 ms batch
+  alone uses the 0.5 s: a faster leave needs a firmware change. Step across a zone edge 50 times to see your real figures
+  (section 11.8).
+- **Not evaluated**: a pet or a reflection in a zone is counted like a person (the radar cannot tell); only the early clear
+  uses the second radar. The pause 'Guests present - pause learning' stops learning, not the zones.
+
+### 11.3 Unavailable while the radars are off (and the order at a power-up)
+
+You decided that the zones show `unavailable` while the radars are off, not a held state. Every zone state entity (occupancy,
+count, event, variant sensors) has three availability topics that must all say `online`: the learner
+(`radar_zones/learner/status`), the node (`<node_prefix>/sensors/status`) and a topic of the app,
+**`radar_zones/zone/availability`**, which is `online` only while the radars are on and observed **and** the learner's zones
+have resumed. 'Radar data valid' (section 9.2) is not used: right after an add-on restart it is true while the zones have not
+resumed yet. The tuning entities, the Forget button and the request switches only need the learner, so they work while the
+radars are off, and a tuning command is applied then.
+
+At the morning power-up (and after an add-on restart) the app first publishes the real state of every zone, then `online`.
+The history of an occupied zone is therefore `on` (evening), `unavailable` (00:00), `on` (06:00, somebody is there, **no**
+`enter` event) or `off`, never `unavailable -> off -> on` and never the evening's old `on`. This relies on Home Assistant
+keeping a payload that arrives while an entity is unavailable and showing it when the entity becomes available (acceptance
+step A2). A person who sits perfectly still and is first seen more than 3 s after the radars come back would fire an `enter`
+at 06:00.
+
+Write state triggers on a zone as `to: 'off'` with `not_from: ['unavailable', 'unknown']` (the example in section 9.2),
+otherwise the morning power-up fires them.
+
+### 11.4 Tuning, Forget and time variants
+
+- Type a **clear delay** or a **margin** into its number entity; the number then shows the value in force and the value is
+  saved with the state (`zone6.tune`). 'Forget learned data' removes your override and the learned numbers of that zone only
+  (the button 'Remove zone' of the Advanced list is something else: it removes the zone).
+- A zone that has **time variants** (a mode that held at least 10 stays on at least 4 days, found by the nightly run) shows
+  the one in force as `variant_now` (named by its hours, `wd0917` = weekdays 09 to 17) and keeps `typical_hours`. A variant
+  gets an occupancy sensor only when you turn its request switch ON; OFF removes the sensor. A variant sensor is `on` while
+  the zone is occupied and that variant is in force. Changing the delay per variant is not built.
+
+### 11.5 Privacy and the recorder
+
+What P6 publishes: not retained, per zone, `occupancy`, `count`, `event` and `attributes`; retained, per zone, the two tuning
+states (`clear_delay`, `margin`) and, for a zone with variants, the request state of each variant; retained,
+`radar_zones/zone/availability`. **Zone names appear only in the entity and device names of the discovery configs** (not
+retained, so a restart of Home Assistant leaves no ghost entity), never in a topic or an event payload; an event carries a
+track number, the dwell time in seconds and the variant name. The six attributes include the hours a zone is usually used and
+its outline: they are shown to every Home Assistant user. With the recorder these form a sleep and occupancy history (section
+6 has the excludes and the 10-day purge). The recorder budget of the design (under 500 rows per zone per day) holds up to
+about 120 episodes a day for the default set (occupancy, event, attributes, availability) and about 70 with everything
+recorded (count and six variant sensors too); a zone with more episodes is a ghost or flapping (the learner's status
+attribute `zones_over_budget` counts them), so look at it. An optional valve exists in the code but is off and has no option in 0.6.0 (35 episodes a day is the example of the
+design); it would hold back the event, count and attribute publishes of a zone and never delays occupancy or availability.
+
+### 11.6 The spot-light blueprint
+
+`blueprints/radar_zone_spot_light.yaml` is an automation blueprint ('Radar spot occupied -> light/scene'), not an entity and
+not part of the app. Copy it to `/config/blueprints/automation/radar_zone_learner/radar_zone_spot_light.yaml`, then Settings >
+Automations & scenes > Blueprints > Radar zone learner - spot occupied -> light/scene > Create automation, **one automation per
+spot**. Inputs: the spot (an occupancy sensor of a zone or of a variant), a light, a scene for occupied, a scene for clear
+(any of them), the delay before switching off (60 s, 0 = at once), an optional brightness, and 'Also switch off when the zone
+returns unavailable -> off' (off).
+
+- **On** when the zone becomes `on`, also straight from `unavailable` (somebody at the spot at 06:00 switches the light on).
+- **Off** when it has been `off` for the delay, **not** from `unavailable` or `unknown`: the morning power-up does not switch
+  anything. While the zone is unavailable (radars off, app down) the light is left as it is.
+- **The stuck light**: if the blueprint switched the light on and the person left while the radars were off, the zone returns
+  as `unavailable -> off` at 06:00, which is ignored on purpose, so the light stays on until someone switches it. The extra
+  input switches it off on that transition too, but it also fires at every morning power-up with nobody there; it is off by
+  default.
+
+The blueprint needs Home Assistant 2024.10 or newer and has never been loaded by Home Assistant: check the trace of the first
+run of each trigger (acceptance step A1).
+
+### 11.7 New topics
+
+The 4 new inputs (QoS 1, all commands: a retained message on one is ignored and deleted): `radar_zones/zone/+/clear_delay/set`
+(3 to 900), `radar_zones/zone/+/margin/set` (-50 to 100), `radar_zones/zone/+/forget` (`PRESS`) and
+`radar_zones/zone/+/+/entity/set` (`ON`/`OFF`): 34 subscriptions in all. A value outside its range, a payload that is not a
+number, a zone that has no entity or a variant the zone does not have is dropped and counted (`zone_cmds_ignored`); the zone id
+must be `z0001` or `l0001` in shape. The outputs are listed in section 11.5; 6 discovery messages for each zone come on top of
+the 35 of section 10.7 at every connect and 0-10 s after Home Assistant's birth message, and the not retained states are
+sent again 10 s after each burst (and 10 s after a new zone's config), because Home Assistant creates an entity only after its
+config and drops earlier states.
+
+### 11.8 What to check once on the real installation
+
+Nothing in P6 could be run against Home Assistant. Check, in this order: install the spot-light blueprint and trace each
+trigger (A1); over one night (00:00 and 06:00) with somebody in a zone at 06:00 and again with nobody, read the entity
+history of the zone: `unavailable` then the state with no `off` row in between, and no entry in the event history; restart
+the app while somebody sits in a zone and see the same (A2); step across a zone edge about 50 times and compare the app's
+`t_dev_ms`-based events with Home Assistant's `last_changed` (A3); the margin at the real edges and the pass-by rule, a
+0.8 m/s walk past a dwell zone gives no `enter` while sitting down does (A4); a week of hidden-spell data for the delay
+defaults (A5); the second radar's OUT against the track in a zone and the OUT-to-presence delay (A6); a walk out through a
+real door (A7); one week of recorder rows per zone (A8); add, rename and remove a zone and 'Forget all learned data' while
+Home Assistant runs: entities appear within about 10 s, a rename keeps the entity id, a removed zone has no entity after a
+restart (A9); tuning entities and a restart (A10); 'Guests present' while a zone is occupied (A11); a 24 h resource check with
+24 zones (A12).
+
+## 12. P7: drift, moves, retire, radar moved and tuning
+
+P7 lets the learner notice that the room changed: a piece of furniture was moved, a place has not been used for weeks, the
+radar itself was moved or turned. **The learner only recommends.** Every change is a review item that needs your answer (the
+same select and buttons as section 10); the only things it does silently are internal numbers (the drift ratios, the old
+position of a moved place, the freeze) and they show up as counts in the status attributes (section 12.6). The app switches
+these detectors on itself; there is no option for them, and the firmware and the node are not touched (P7 sends no node
+command). The P7 data lives in one optional key `zone7` inside the `p5` section of the state (schema 4 stays): a 0.6.0 or
+0.5.0 app keeps it and writes it back unchanged, and an installation with no zone writes exactly what 0.6.0 wrote.
+
+### 12.1 The review items and what every answer does
+
+| Item (select label) | Question | Approve | Rename | Reject | Later |
+|---|---|---|---|---|---|
+| `Moved A` | 'Place A moved?' | **Yes, update it**: the zone takes the new place and keeps its id, its name, its kind, its entities and every automation bound to them; the old spot is remembered as moved-from (section 12.3) | **No, it is a new place**: a new zone is made at the new spot, the old zone stays as it is | ignore the new spot: it is rejected as a place (asked again only after its evidence has doubled and 30 days have passed) and the old zone is untouched | asked again after the next nightly run |
+| `Extend A` | 'Extend place A?' | the zone grows by the place (as in P5) | keep it as a new place | ignore it | as above |
+| `Retire A` | 'Remove place A?' | **removes the zone and its entities**; automations that use them stop working; the old spot is remembered as retired | not applicable | **Keep**: the question is not asked again for 90 days | as above |
+| `Radar moved` | 'The radar seems to have been moved or turned (about 80 cm, 10.0 degrees)' | **Reset the learned maps** (section 12.4); your places are kept and checked again | not applicable | **Ignore**: the detector is quiet for 14 days | as above |
+
+- **Order.** `Radar moved` is shown after `Night window` and `Bed zone`; then come the moved places (a move is the most
+  time-sensitive item and is never cut by a long list of new places), the new places by confidence, the extensions and the
+  retire items last. At most 12 of those are shown, the rest is counted in `more`.
+- **Texts.** With 'Detailed review text' off a P7 text names the place by its tag (`A`) only and carries no zone name, hour or
+  date, only a distance or a count; with the switch on it names the zone. Every text puts the three action sentences first and
+  is at most 255 characters.
+- **`zone_busy`.** Approving a `Moved` or a `Retire` item is refused (review event `answer_ignored`, reason `zone_busy`) while
+  somebody is in the zone, so a zone is not reshaped or removed under a person; the item stays open and you answer when the
+  place is empty. Reject and Later are never refused. A bed or a frozen zone is not moved or removed by an answer
+  (`not_applicable`), and a mark made with 'Mark spot here' never gets an item at all: a mark is your own truth (remove it
+  and mark again).
+- **A tap on an older question does nothing.** The revision of a `Moved`, `Retire` or `Radar moved` item never repeats, so the
+  second move of the same place is a new question, and a tap on the notification of the first one is refused as `stale`.
+
+### 12.2 Drift, 'frozen' and why a bed is never flagged
+
+Every night, for every zone and every mark, the app compares how much a zone was used in the last 3 covered days with the last
+14, **per observed second** (a covered day has at least an hour of observation), and only over the hours that were observed
+at least half the time in both windows. The two windows are weighted by age (half-lives of 3 and 14 covered days), which is
+an interpretation of the design's 3-day and 14-day windows. A ratio under 0.6 is *falling*, under 0.25 for 3 nights is
+*flagged* (it only counts, `zones_unused`) and under 0.1 for 21 covered days leads to a retire item.
+
+A zone whose usual hours were **mostly not observed** is *frozen*: it is not flagged, not moved, not retired. That is what
+keeps the bed, and any place used while the radars are off (the 00:00 to 06:00 schedule), out of every item, and the same for
+a place whose hours you switch the radars off for by hand. While the night schedule is ON a bed is also frozen by the P5 rule,
+and so is a place that was used mostly inside the night window when it was confirmed: a bed marked by 'Mark spot here' under
+the schedule from the first day has no night hours in any profile, and only this rule protects it. A young zone (under 7
+nights) is not judged.
+The numbers are computed for marks and beds too (the status counts them), but no item is ever made for them.
+
+### 12.3 Moved places, the merge detector and the old spot
+
+- **A moved place.** A new place 0.5 to 4 m from a zone that is *falling* or has been silent since it was last used, used at
+  correlated hours (r at least 0.6) and, farther than 1.5 m, with at most a quarter of its use before the zone's last use,
+  becomes one `Moved` item instead of a `Place` item. Approving it keeps the zone's id, so the entity ids, the device and the
+  automations stay and only the attribute `poly_cm` changes. (Assumption HA[U10]: Home Assistant leaves the registry
+  and the history alone when only that attribute changes; settled by acceptance step A1.) A shift of 0.3 to 0.8 m is
+  usually folded into the old place by the learner itself and is offered as a `Moved` item for the same reason; for that
+  kind of item (the zone's own suggestion moved) Rename and Reject answer as in P5: Rename makes a new zone from it, Reject
+  marks that revision as seen.
+- **The merge detector** (`Extend`): a new place that touches a zone within 0.4 m, or overlaps it by 20 %, is used at similar
+  hours and whose zone is still in regular use. A moved place wins over an extension for the same candidate.
+- **The old spot.** After you approve a move, or remove a zone, the old position is remembered (*moved-from*, up to 50). A
+  suggestion there is not offered as a new place until the spot qualifies again **on the stays after your answer alone**.
+  'Forget rejections' clears these masks (section 12.5).
+- **Retire.** A zone that is not frozen, not a bed and not a mark gets a `Retire` item after **21 covered days with a ratio under 0.1**
+  (a day with a ratio of 0.1 or more starts the count again), when the hours it is usually used in were observed at least half
+  the time over those days, no move or extension is pending for it and no 'Keep' was answered in the last 90 days.
+- **A one-week guest.** After night 14 a new ordinary place is offered only when its evidence spans at least 10 covered
+  days, because the learner's own thresholds would offer a seat that a guest used for 7 days on the night after the guest
+  leaves. The cost: a genuinely new seat is offered about 11 days later than before (places that were first suggested before
+  night 14 are exempt, so the first setup is as before). The withheld ones are counted in `places_probation`.
+  'Guests present - pause learning' (section 10.6) stays the real protection: paused time feeds nothing, so those days
+  count for nothing in any of these numbers.
+
+### 12.4 'Radar moved': the detector, the push and Reset
+
+- **What it looks at.** The door events (where people appear and vanish) and the *static clutter events* (a reflector that
+  gives byte-identical frames while nobody is there, and, with the context blueprint, clutter seen while the home was empty). A
+  moved sofa moves neither. Each night the points of the newest 1 to 3 covered days are compared with the other days: the
+  app searches shifts up to 1 m and turns up to 10 degrees about the radar. A night counts as *moved* when the best
+  transform is at least 0.4 m or 5 degrees, at least 70 % of the recent points then lie on or next to the older points, and
+  that beats the unmoved position by at least 20 percentage points. **Two such nights in a row** open the item and send one generic push, 'Radar
+  needs attention' (section 10.4). It needs at least 10 recent and 30 older points: with no door in the view and no static
+  reflector it stays silent (`radar_moved` in the status says `none`, `watching`, `open` or `ignored`).
+- **The effective limits are higher than the design's 0.3 m and 5 degrees.** Measured on the replay's door events the detector
+  finds about **0.6 to 0.8 m and 7 to 10 degrees**; a 6-degree turn or a 0.5 m move may be missed. If you move the radar by
+  a small amount, use the buttons yourself (section 12.5) or report the miss (acceptance step A2).
+- **The item stays until you answer it.** A real move must not disappear because the moved days enter the comparison. While
+  the two nights are being counted and while the item is open (for at most 14 days) the learner **holds** the other
+  proposals and the drift counters, so no zone is called falling because the frame changed.
+- **Reset.** Approve clears everything learned in the old radar frame: the maps, the door, clutter and stay lists, the
+  candidates and suggestions (marked stale), the rejection masks, the Later marks of places and the moved-from masks. It
+  keeps the coverage record, the night model and the settings, your answers to the night-window and bed items, the zone
+  records and marks with their P6 tuning, and the usual-hours profiles. Every zone and mark becomes **needs re-check** for 28
+  days: it is held, not retired, and a `Moved` item re-anchors it under relaxed rules (a distance from 0 m, no ratio test),
+  and a new place that overlaps it is hidden (`places_recheck_held`). A zone that the turn displaced by at least 0.3 m gets
+  its `Moved` item within about two weeks.
+- **A limitation you should know.** Until a zone is re-anchored the live evaluation of section 11 still uses its old cells, so
+  its occupancy is wrong after a real rotation. The zone entities do **not** go unavailable meanwhile, because a false alarm
+  would then drop every automation. Reset sends no command to the node.
+- **Reject = Ignore.** Nothing changes; the detector is quiet for 14 days (the comparison is mostly the new position by then).
+
+### 12.5 Forget
+
+'Forget rejections' (section 10.3) now also clears the moved-from and retired masks, every 'Keep' date, the radar-moved Ignore
+mark and the snoozes of `Retire` and `Radar moved`, as it clears every rejection and every Later. The per-zone button 'Forget
+learned data' (section 11.4) restarts only that zone's *unused* counters (the flag and the retire runs): it must not erase your
+90-day Keep or the zone's usual-hours profile. 'Forget all learned data' drops all of it, and the tuning folder.
+
+### 12.6 Tuning data, 'Export tuning data' and the status counts
+
+Every nightly run the app adds **one line of counts and fixed-length histograms** to `/data/tuning/nights.jsonl` (the newest 28
+nights): the observed hours, stays and histograms of their duration, LD2412 share, fragments and spread, the hidden spells and
+the learned clear delays per zone kind, how many candidates failed each gate and the histograms of the candidates' own
+numbers, the drift ratios and the zone-nights per state, the door events, how the 'Mark spot here' marks matched suggestions (a
+count, no position) and your cumulative answer counters. It has **no date, no night number, no hour of day, no position, no
+name and no id**; a test enforces the list of keys. The file is local, excluded from backups (`tuning/*`) and deleted by
+'Forget all learned data'.
+
+| Entity (learner device) | What it does |
+|---|---|
+| `button.radar_zones_learner_export_tuning` ('Export tuning data', config) | Publishes **one pooled record** once: the sums of the kept nights and the newest value of the cumulative counters, no per-night list, no date. The record is checked first (the same privacy scan, at most 16 KiB); with nothing kept nothing is published and the press is counted. The topic is `radar_zones/learner/tuning/export`, **not retained**, and **no file is written** (the app has no `map:` folder you could reach). |
+| `sensor.radar_zones_learner_tuning` ('Tuning data', diagnostic) | `none` or `<n> nights`: how many lines are kept. Nothing else. |
+
+To use it, wait 2 to 4 weeks. Start a listener first, because the message is not retained and a late listener gets nothing:
+`mosquitto_sub -t radar_zones/learner/tuning/export -C 1 > tuning.json` (add `-h`, `-u` and `-P` for your broker), or the
+'Listen to a topic' tool of the MQTT
+integration (assumption HA[U8]: a message of up to 64 KiB is delivered to it and can be copied out; settled by acceptance step
+A7). **Read the file before you share it.** Then, on a PC with Python 3.12 or newer, `python -I -B replay/tune.py --aggregate
+tuning.json` prints proposals for the constants (the bridge gap, the default clear delays, the confidence and gate
+thresholds), or the reason it has none; there is none below 14 covered days. A proposal is applied only by a release: **nothing
+is tuned at runtime** except the clear delay of each zone that P6 learns by itself. The ratio thresholds of this section are
+never proposed; you read their distributions and decide (acceptance step A8).
+
+The export is your action on purpose. The record is counts only, but it says how many places the household confirmed and
+how you answered, and an MQTT message can be read by Home Assistant and every add-on that uses MQTT. Each export logs
+`tuning export: <n> nights` and nothing else, and the status attribute `tuning_exports` counts them.
+
+The status attributes (counts only: never a name, an id or a coordinate) gain `zones_frozen`, `zones_blind`, `zones_falling`,
+`zones_unused`, `zones_recheck`, `moved_from`, `radar_moved`, `places_probation`, `places_recheck_held`, the counters
+`zone7_pruned`, `zone7_reset` and `p7_errors`, and from the shell `tuning_exports`, `tuning_export_refused`,
+`tuning_write_errors` and `p7_shell_errors`. A step of the P7 nightly work that fails is counted (`p7_errors`, and one error
+line that starts `p7:` with the step's name) and never stops the review, the suggestions or the zones.
+
+### 12.7 HOLD mode is not built
+
+The design deferred a 'HOLD' scan mode (zones held instead of unavailable). Under the owner's decision for this installation
+(one switch for both radars, a fixed night schedule, zones `unavailable` while the radars are off, no wake source) it has no
+use and is not built, designed or reserved.
+
+### 12.8 New topics and entities
+
+One new input (QoS 1, a command: a retained message on it is ignored and deleted): `radar_zones/learner/export_tuning`
+(`PRESS`), which makes 35 subscriptions in all. Outputs: retained `radar_zones/learner/tuning`; not retained
+`radar_zones/learner/tuning/export`. Two discovery messages (the button and the sensor) come on top of the 35 of section 10.7
+and the 6 for each zone. The push request sensor can now have the kind `attention` (section 10.4). P7 adds no per-zone entity.
+
+### 12.9 What to check once on the real installation
+
+Nothing in P7 could be run against Home Assistant or a real room. Check: move a real piece of furniture by 1 to 1.5 m and use it
+as before: within about a week a `Moved` item, Approve, the zone keeps its entity id and an automation bound to it fires at
+the new place (A1); turn the radar by about 10 degrees (or move it 0.8 m): within 2 to 3 nights 'Radar needs attention' and
+the `Radar moved` item, which stays until answered, and a false-alarm count of 0 over 4 weeks without a move (A2); the real
+bed under the 00:00 to 06:00 schedule for 4 weeks is never flagged (`zones_unused` stays 0), and how many nights
+`zones_frozen` counts it (A3); a place nobody uses for more than 3 weeks gets a `Retire` item after about 3 weeks, not
+earlier, Keep silences it for 90 days, Remove leaves no ghost entity after a restart of Home Assistant (A4); a week with a
+guest, with and without the pause switch, and how many days the first genuinely new seat then takes to be offered (A5); copy
+the changed push blueprint and trigger the three cases (A6, assumption HA[U9]: the kind `attention` fires the blueprint like the
+others); 2 to 4 weeks and the export button (A7); the counts of `Moved`, `Retire` and `Radar moved` items against what really
+happened (A8); the share of a day zone's usual hours that is observed, and what a manual 'Radars' switch-off automation does to
+a zone (A9); 24 hours on the CM4 with many zones (A10: the nightly work, `rss_mb` under 40, `cpu_pct_1h` under 1).
+
 ## Development
 
 Everything except the MQTT client runs with the Python standard library (3.12 or newer). From this
@@ -623,7 +1000,14 @@ python -I -B -m unittest discover -s tests -t .
 python -I -B -m unittest discover -s tests -t . -p "test_service.py"
 ```
 
-The tests need no broker and no paho-mqtt: `tests/fakes.py` provides a fake client. Set `RZL_TEST_TMP` to
+The tests need no broker and no paho-mqtt: `tests/fakes.py` provides a fake client. The P6 shell tests are
+`tests/test_p6_*.py` (run them with `-p "test_p6_*.py"`); `tests/fake_ha_zone.py` is a generic fake Home Assistant for zone
+entities (an entity registry, availability lists, an event entity log, a recorder model) whose behaviours are the
+assumptions of the P6 specification (`HA[U1]`-`HA[U7]`), `tests/p6_harness.py` drives the real layer, and the real `Learner`
+behind the real service is used where the core's output matters. The P7 shell tests are `tests/test_p7s_*.py` (run them with
+`-p "test_p7s_*.py"`); `tests/p7s_harness.py` is `p6_harness` with the P7 topics and layer and a fake Home Assistant that also
+models the 'Listen to a topic' tool (assumption `HA[U8]`), and the `P7Params(enabled=True)` learner behind the real layer is
+used for the modify, retire and nightly-line cases. Set `RZL_TEST_TMP` to
 choose the folder for temporary files. The replay harness in `replay/` runs the learner on simulated days
 (see `replay/run_replay.py --help`). The P3 gate (G1-G6) runs with `--profile p3` (about 1,333 simulated days, about
 22 minutes on 3 workers). The P4 checks (P4-1 to P4-7) run with `--profile p4smoke` (one 9-night run) or

@@ -15,10 +15,10 @@ from radar_zone_learner.core.types import AdvancedEntry
 from tests.p5_harness import bed_item, place_item, window_item
 
 DL = ('{"identifiers":["radar_zones_learner"],"name":"Radar zone learner","model":"radar_zone_learner app",'
-      '"sw_version":"0.5.0"}')
+      '"sw_version":"0.7.0"}')
 DR = ('{"identifiers":["radar_zones_review"],"name":"Radar zone review","model":"radar_zone_learner app",'
-      '"sw_version":"0.5.0","via_device":"radar_zones_learner"}')
-OR = '{"name":"radar_zone_learner","sw_version":"0.5.0"}'
+      '"sw_version":"0.7.0","via_device":"radar_zones_learner"}')
+OR = '{"name":"radar_zone_learner","sw_version":"0.7.0"}'
 AV = '"availability_topic":"radar_zones/learner/status"'
 
 # three configs byte for byte, as in spec 8.2 (macros expanded)
@@ -84,8 +84,8 @@ class P5DiscoveryTest(unittest.TestCase):
             self.assertEqual(cfg["unique_id"], object_id)
             self.assertEqual(cfg["default_entity_id"], component + "." + object_id)
             self.assertEqual(cfg["availability_topic"], "radar_zones/learner/status")
-            self.assertEqual(cfg["origin"], {"name": "radar_zone_learner", "sw_version": "0.5.0"})
-            self.assertEqual(cfg["device"]["sw_version"], "0.5.0")
+            self.assertEqual(cfg["origin"], {"name": "radar_zone_learner", "sw_version": "0.7.0"})
+            self.assertEqual(cfg["device"]["sw_version"], "0.7.0")
 
     def test_key_order_follows_the_spec(self):
         def keys(uid):

@@ -7,7 +7,8 @@ by the owner (spec 11.9). The port keeps the order of the blueprint's steps:
 
 1. trigger: every change of the push sensor's state, including the first one after the entity was created (a state
    trigger with no ``from``/``to``), starts a run (``mode: queued``, at most 10);
-2. run-start check on the trigger's snapshot: eight fields, ``seq > 0``, kind ``setup`` or ``daily``, ``count > 0`` and
+2. run-start check on the trigger's snapshot: eight fields, ``seq > 0``, kind ``setup``, ``daily`` or ``attention`` (P7; the
+   claim that Home Assistant fires the trigger for the new kind like for the others is the assumption HA[U9]), ``count > 0`` and
    this phone (``me``) not among the ``acks``; ``count`` 0 with ``seq > 0`` clears the notification instead;
 3. a delay of 15 s; the re-check on the entity's current state (same ``seq``, still valid, ``me`` still not acked);
 4. the notification (a second one with the same tag replaces the first), then the acknowledgement ``<seq>:<me>``.
@@ -40,6 +41,8 @@ MAX_RUNS = 10
 ACTION_RE = re.compile(r"^RZ_(APPROVE|RENAME|REJECT)_[0-9]+_.+$")
 GENERIC_SETUP = "Radar setup review is ready (%d items)"
 GENERIC_DAILY = "Radar zone review: %d item(s) to look at"
+GENERIC_ATTENTION = "Radar needs attention"
+KINDS = ("setup", "daily", "attention")
 
 
 def _int(text, default):
@@ -229,16 +232,17 @@ class FakeHa:
             self.visible.pop(TAG, None)
             self.clears.append(seq)
             return False
-        return seq > 0 and snap[2] in ("setup", "daily") and count > 0 and self.me not in snap[6].split(",")
+        return seq > 0 and snap[2] in KINDS and count > 0 and self.me not in snap[6].split(",")
 
     def _finish(self, run: _Run) -> None:
         snap = self._fields(run.snap)
         cur = self._fields(self.push_state)
-        if not (len(cur) == 8 and cur[0] == snap[0] and cur[2] in ("setup", "daily") and _int(cur[3], 0) > 0
+        if not (len(cur) == 8 and cur[0] == snap[0] and cur[2] in KINDS and _int(cur[3], 0) > 0
                 and self.me not in cur[6].split(",")):
             return
         seq, kind, count, rev, item = _int(cur[0], 0), cur[2], _int(cur[3], 0), cur[4], cur[5]
-        generic = GENERIC_SETUP % count if kind == "setup" else GENERIC_DAILY % count
+        generic = (GENERIC_SETUP % count if kind == "setup" else
+                   GENERIC_ATTENTION if kind == "attention" else GENERIC_DAILY % count)
         message = cur[7] if self.detailed_text and len(cur[7]) > 0 else generic
         if self.notify_fails:
             self.failures += 1                   # the device action raises: the run stops before the acknowledgement

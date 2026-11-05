@@ -196,7 +196,7 @@ class DriverCoreTest(unittest.TestCase):
 class CliTest(unittest.TestCase):
     def test_usage_errors_and_budget_refusal(self):
         with tmpdir() as d, contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
-            self.assertEqual(run_replay.main(["--out", d, "--nights", "40"]), 2)
+            self.assertEqual(run_replay.main(["--out", d, "--nights", "61"]), 2)
             self.assertEqual(run_replay.main(["--out", d, "--seeds", "0-9"]), 2)
             self.assertEqual(run_replay.main(["--out", d, "--jobs", "bed_w0100_0600"]), 2)
             self.assertEqual(run_replay.main(["--profile", "smoke"]), 2)            # --out is required

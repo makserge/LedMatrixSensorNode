@@ -19,12 +19,14 @@ from .params import Params
 
 class Track:
     __slots__ = ("id", "x", "y", "vx", "vy", "hits", "last_dev", "born_dev", "confirmed",
-                 "next_sample_dev", "bx", "by", "powerup", "bh")
+                 "next_sample_dev", "bx", "by", "powerup", "bh", "rx", "ry")
 
     def __init__(self, tid: int, x: float, y: float, tf: int, powerup: bool) -> None:
         self.id = tid
         self.x = x
         self.y = y
+        self.rx = x                 # P6: the last raw associated detection (the filter output lags it); read only
+        self.ry = y
         self.vx = 0.0
         self.vy = 0.0
         self.hits = 1
@@ -108,6 +110,8 @@ class Tracker:
                 births.append((zx, zy))
                 continue
             tr = live[ti]
+            tr.rx = zx
+            tr.ry = zy
             px, py, _, dt = preds[ti]
             rx = zx - px
             ry = zy - py
