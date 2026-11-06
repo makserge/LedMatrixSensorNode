@@ -34,6 +34,8 @@ from . import world as W
 DAY = W.DAY
 SPOTS = J.P6_SPOTS
 WALK_HALF_M = 2.5                    # the walkers' half length (so that they cross any zone area of the replay's size)
+WALK_CLEAR_M = 1.6                   # a walker's first and last waypoint are at least this far from every spot (see ``walk_through``)
+WALK_EXTRA_MAX = 12                  # at most this many extra one-second steps at an end
 PASS_GAP_S = 10                      # seconds between two scripted people in the same room (spec 11.1)
 HOLD_VISIBLE_S = 30                  # P6-3: visible between two hidden spells
 HOLD_REPS = 4                        # P6-3: repetitions of each hidden length
@@ -86,13 +88,28 @@ def leg(p0, p1, speed: float, t0: int) -> list:
     return [t0, p0[0], p0[1], t0 + n, p1[0], p1[1]]
 
 
-def walk_through(spot_xy, angle_deg: float, direction: int, speed: float, t0: int) -> list:
+def walk_through(spot_xy, angle_deg: float, direction: int, speed: float, t0: int, clear_of=None) -> list:
     """A pass straight through ``spot_xy`` at the angle, in the direction (+1 or -1) and at exactly ``speed`` m/s: a whole
-    number of one-second steps of the length ``speed``, at least ``2 x WALK_HALF_M`` long and centred on the spot."""
+    number of one-second steps of the length ``speed``, at least ``2 x WALK_HALF_M`` long and centred on the spot.
+
+    ``clear_of`` (a list of points, the world's spots): each end is then extended by whole steps until it is at least
+    ``WALK_CLEAR_M`` from every one of them. A track is born with a speed of 0 (the tracker's filter has not seen it move) and
+    its last waypoint is held for 10 frames (zero speed): both look like a person who stops. At the end of a pass that lies
+    inside or beside a zone that is a person who enters it, an artefact of the scripted world, not a property of the zone
+    rule (P6-15: the pass of 1.0 m/s that ends beside a dwell zone gave an enter and a leave)."""
     n = int(math.ceil(2 * WALK_HALF_M / speed - 1e-9))
     half = n * speed / 2.0
     ux, uy = math.cos(math.radians(angle_deg)) * direction, math.sin(math.radians(angle_deg)) * direction
-    return [t0, spot_xy[0] - ux * half, spot_xy[1] - uy * half, t0 + n, spot_xy[0] + ux * half, spot_xy[1] + uy * half]
+    a = b = 0
+    if clear_of:
+        def clear(x, y):
+            return all(math.hypot(x - px, y - py) >= WALK_CLEAR_M for px, py in clear_of)
+        while not clear(spot_xy[0] - ux * (half + a * speed), spot_xy[1] - uy * (half + a * speed)) and a < WALK_EXTRA_MAX:
+            a += 1
+        while not clear(spot_xy[0] + ux * (half + b * speed), spot_xy[1] + uy * (half + b * speed)) and b < WALK_EXTRA_MAX:
+            b += 1
+    h0, h1 = half + a * speed, half + b * speed
+    return [t0, spot_xy[0] - ux * h0, spot_xy[1] - uy * h0, t0 + n + a + b, spot_xy[0] + ux * h1, spot_xy[1] + uy * h1]
 
 
 def seg_end(seg) -> int:
@@ -158,7 +175,7 @@ class ScriptedPeople:
         t = at(d, 8) + rng.randint(0, 30)
         out = []
         for spot, xy, ang, direction, v in items:
-            seg = walk_through(xy, ang, direction, v, t)
+            seg = walk_through(xy, ang, direction, v, t, clear_of=tuple(SPOTS.values()))
             out.append(person("walker", [[seg]], spot=spot, speed=v, angle=ang, dir=direction, ld=False))
             t = seg_end(seg) + 1 + PASS_GAP_S
         self._walkers_end = t

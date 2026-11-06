@@ -4,6 +4,7 @@ the actors, the compare/compat/probe additions. Everything is small; the one rea
 import contextlib
 import io
 import json
+import math
 import pickle
 import random
 import unittest
@@ -111,7 +112,9 @@ class JobsP6Test(unittest.TestCase):
         self.assertEqual({j.variant for j in p6}, set(J.P6_VARIANTS))
         self.assertLess(J.estimate_days(p6), 1500)
         self.assertGreater(J.estimate_days(p6), 700)
-        self.assertEqual(len(J.runs_of(p6)), 3 * 5 + 5 * 5 + 5 + 3 + 2 * 5)
+        self.assertEqual(len(J.runs_of(p6)), 3 * 5 + 5 * 5 + 5 + 5 + 2 * 5)      # p6setup: 5 seeds of 21 nights (P6-10 needs variants)
+        setup = [j for j in p6 if j.variant == "p6setup"]
+        self.assertEqual([(j.nights, j.seeds) for j in setup], [(21, (1, 2, 3, 4, 5))])
 
     def test_run_replay_knows_the_profiles_and_the_report_modules(self):
         from replay import run_replay
@@ -158,6 +161,24 @@ class PeopleTest(unittest.TestCase):
         rev = PP.walk_through((2.0, 3.0), 45, -1, 1.0, 100)
         fwd = PP.walk_through((2.0, 3.0), 45, 1, 1.0, 100)
         self.assertAlmostEqual(rev[1], fwd[4], places=9)
+
+    def test_a_walker_that_is_asked_to_clear_the_spots_starts_and_ends_away_from_all_of_them(self):
+        spots = tuple(PP.SPOTS.values())
+        for name, xy in PP.SPOTS.items():
+            for ang in (0, 45, 90, 135):
+                for direction in (1, -1):
+                    for v in (0.5, 0.7, 1.0, 1.2):
+                        seg = PP.walk_through(xy, ang, direction, v, 100, clear_of=spots)
+                        plain = PP.walk_through(xy, ang, direction, v, 100)
+                        n = seg[3] - seg[0]
+                        length = ((seg[4] - seg[1]) ** 2 + (seg[5] - seg[2]) ** 2) ** 0.5
+                        self.assertAlmostEqual(length / n, v, places=9)            # still exactly v metres a second
+                        self.assertGreaterEqual(n, plain[3] - plain[0])
+                        self.assertLessEqual(n - (plain[3] - plain[0]), 2 * PP.WALK_EXTRA_MAX)
+                        for x, y in ((seg[1], seg[2]), (seg[4], seg[5])):
+                            self.assertGreaterEqual(min(math.hypot(x - a, y - b) for a, b in spots), PP.WALK_CLEAR_M - 1e-9, (name, ang, direction, v))
+                        # it contains the plain pass: same line, same direction, same speed
+                        self.assertAlmostEqual((seg[4] - seg[1]) * (plain[5] - plain[2]), (seg[5] - seg[2]) * (plain[4] - plain[1]), places=6)
 
     def test_the_edge_day_has_160_passes_and_the_52_sweep_stayers(self):
         sp, tracks, occ = self.day("p6edge")

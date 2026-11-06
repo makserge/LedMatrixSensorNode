@@ -59,7 +59,8 @@ Plumbing: 35 subscriptions (the one new topic is a command, so a retained messag
 messages, `P7Layer(P6Layer)` is the one layer object that `main` passes as the service's `p4=` (no new service hook: Forget
 all deletes the tuning folder through the existing `purge_capture` step), `main` builds `build_topics_p7`, new status
 attributes (counts only) in core (`zones_frozen`, `zones_blind`, `zones_falling`, `zones_unused`, `zones_recheck`,
-`moved_from`, `radar_moved`, `places_probation`, `places_recheck_held`, `zone7_pruned`, `zone7_reset`, `p7_errors`) and shell
+`moved_from`, `radar_moved`, `places_probation`, `places_recheck_held`; `zone7_pruned`, `zone7_reset` and `p7_errors` are
+`Learner.counters()` only, read by the replay, and not status attributes) and shell
 (`tuning_exports`, `tuning_export_refused`, `tuning_write_errors`, `p7_shell_errors`).
 
 Tests (shell, seven modules): `test_p7s_texts`, `test_p7s_discovery`, `test_p7s_topics`, `test_p7s_tuningexport`,
@@ -142,6 +143,55 @@ spec's default applies to each. The interpretations (a `PROPOSAL` is the spec's 
   file is read, so a damaged or hand-edited file can never reach the pooled record. (7) The retire text names the 90 days from
   `P7Params.keep_days`.
 
+### Changes after the first replay and review
+
+These change rules of the specification. Each new constant is a PROPOSAL in `P7Params` and is listed here and in
+`scratchpad/p7/fix_notes.md` of the development session. With `enabled=False` nothing changes (the P6 output is identical).
+
+- **The own-suggestion modify (4.3.3a) needs a real move and two nights.** The replay showed a false `mod-z0001` item
+  (source `own`, shift 9 to 17 cm) at nights 30 to 36 and 44 in the control, bed and move jobs, before anything had moved: the
+  zone fell for another reason and its own suggestion only changed shape (IoU under 0.6). Now the suggestion's centre must be
+  at least `own_min_m` = 0.3 m from the zone's, and the same (suggestion, revision) must have been seen on an earlier nightly
+  run (RAM, `Learner.p7_own_seen`; a restart waits one more night). Until then the zone may still take a nearby candidate. The
+  candidate source is untouched (the true moves of 1.1 m and 2.9 m are found by it).
+- **The guest probation also counts dates (4.3.5).** A one-week guest plus a weekly visitor's stray stay a week before or after
+  spans 10 or more covered dates (13 in the replay) although it lies on 8, so it was offered at nights 23 to 26 and 34
+  (p7guest seeds 1, 2, 4, 5). Now the evidence must lie on at least `probation_min_dates` = 9 of the retained covered dates as
+  well as span `probation_min_span` = 10 (0 switches either off). Cost: a seat used on fewer than 9 of 14 dates is not
+  offered by this rule.
+- **Succession needs a last use that is still in the retained dates (4.3.3 (4)).** The replay showed a false `mod-z0002`
+  (p7ret seed 5, nights 28 to 30): a table nobody used any more was offered as moved to an armchair 3.25 m away that was used
+  all along (r 0.86). The stays older than the 14 covered dates are gone, so with the zone's last use older than the oldest
+  retained date the share of the candidate's dwell before it was 0 for any candidate. A candidate beyond `succ_far_m` (1.5 m)
+  is now not taken in that case (not for an `rc` zone; candidates under 1.5 m do not use succession). Real moves are found
+  4 to 8 nights after the move, with the last use inside the dates, so they are unchanged. Cost: a far move noticed more than
+  14 covered dates after the last use shows as a plain place item and, later, a retire item.
+- **`move_zone`:** the stored verdict of the moved zone is reset (`vs` `young`, `fz` false) so that no second modify is
+  offered before the next nightly run; the old `ref` no longer joins `also` (after the mask lifts, the old spot is an ordinary
+  place again); a zone that needs re-check records no moved-from mask (its cells are in the previous radar frame).
+- **Radar moved:** a night counts only when its newest date brings points of its own (a sparse night used to count the same
+  date twice); the matched points must cover at least `rm_min_clusters` = 2 old clusters (or all, when there are fewer); the
+  same search on the newest reference date must not already find a large transform (noise); a counting streak is bounded by
+  `rm_hold_days` like an open item (the hold ends and `st`, `d0` clear); `hold()` for a streak is bounded the same way. A reset
+  keeps an existing `room_outline` suggestion alive (no second one two nights later) and clears the walk-point total.
+  'Forget rejections' clears the quiet time too.
+- **State:** a huge integer in `zone7` is a value problem (`StateError`, the key resets), not an `OverflowError`; a loaded
+  mask list longer than `mf_max` is cut to the newest entries at load (P7 enabled).
+- **Masks:** a moved-from entry is identified by zone, reason, day and cells (two answers on one day no longer release each
+  other); gate 7 evaluates both the rejection and the moved-from term, so a re-qualifying entry is recorded and released even
+  when a rejection also blocks.
+- **Drift:** the eligible-hours test has a relative tolerance of 1e-9 (an hour observed exactly half the time is no longer in or
+  out by rounding); the slow window keeps only covered dates inside `retention_max_days` (28), the days that still have stays.
+- **Bookkeeping:** the retire open flag is lowered for every zone record that leaves the plan; `ZoneForget` touches the review
+  (the withdrawn retire item leaves the cached list).
+- **Documentation:** 35 topics (34 before P7); the select holds at most 16 options; `zone7_pruned`, `zone7_reset` and `p7_errors`
+  are `Learner.counters()` only, not status attributes; no button resets the learned maps; a moved-from mask is made only by a
+  `Moved` or `Retire` approval; the key `zone7` is absent only until the first nightly run; only the `Moved` text puts its action
+  sentences first; the tuning keys `hs`, `hn` and `dl` come from the P6 spells and include time of 'Guests present - pause
+  learning' (the pause stops learning, not the zone evaluator).
+- **Tests:** `test_p7_fixes` (43), `test_p7_review_gaps` (32, from the review's verified candidates); five existing tests were
+  adjusted with a comment (`key_of` carries the cells, the old `ref` is not in `also`, the own source needs a primed night).
+
 ### Deviations from the design (DV1-DV15 of the specification)
 
 DV1 the series are derived and decayed, not stored bins; DV2 the radar-moved features are door and clutter events, no outline
@@ -151,7 +201,7 @@ DV4 empty-off is a replay stress case, not product behaviour; DV5 masks live in 
 name by default; DV8 the tuning loop is offline; DV9 the modify detector runs at the review layer; DV10 the state key is a
 sibling `zone7`, not inside `zone6`; DV11 consecutive retire counting; DV12 the detector finds 0.6 to 0.8 m and 7 to 10 degrees
 (measured); DV13 'Forget rejections' clears the masks, Keep dates and snoozes too; DV14 the nightly budget is stated against
-the measured P6 time; DV15 the radar item is latched.
+the measured P6 time; DV15 the radar item is latched; after the first replay and review: DV16 the own modify needs 0.3 m and two nights, DV17 the probation also counts 9 dates, DV18 the radar-moved verdict has a cluster guard, a noise check and a bounded streak.
 
 ### Not built
 
@@ -315,6 +365,25 @@ spec's default applies to each.
   entities; the tuning entities, the button and the request switches use the single learner availability topic.
 - Not verifiable here (nothing ran against Home Assistant): HA[U1]-HA[U7] (spec 14.2) and the blueprint, acceptance steps A1,
   A2, A8, A9; the real recorder rows, the real latency over MQTT, the CM4 cost and the LD2412 numbers (A3, A5, A6, A12).
+
+### Changes after the P6 replay (second fix round)
+
+- **Replay (scripted walkers, P6-15):** a scripted walker used to be born and to end inside the room, mostly beside a zone: a
+  new track has speed 0 for its first detections and the last waypoint of a track is held for 10 frames (speed 0), so the pass
+  looked like a person who stops, and a pass of 1.0 m/s that began or ended beside a dwell zone gave an enter and a leave
+  (P6-15 failed in every seed at every noise level). `replay/p6_people.walk_through` now extends each end of a pass, in whole
+  one-second steps of the same speed, until it is 1.6 m (`WALK_CLEAR_M`) from every spot (at most 7 extra seconds in the matrix).
+  The zone rule (`core/zoneeval.py`) is not touched. P6-1, P6-2 and P6-15 pass in all 15 edge runs (176 passes a run, none failed).
+- **Replay (P6-10):** the `p6setup` runs were 3 seeds of 10 nights, and only seed 1 produced a zone with variants (the others
+  were INCOMPLETE). They are now 5 seeds of 21 nights (two weekends, 14 weekdays: variants in 4 of 5 seeds, all of them pass);
+  the P6 profile is about 870 simulated days.
+- **Core (cost, P6-R3):** `core/zoneeval.py` does the same work with fewer steps: a detection of a track that is a member of
+  every zone it is in no longer builds a set and sorts the member ids; the per-frame sweep skips the loop (and the sorting of
+  the active zones) when every active zone has members that are all recent and no hold; the typical hours, confidence and variant ids
+  of a zone are formatted once per `zone6.info` entry (the entries are replaced as a whole, never changed in place) and not for
+  every state row; the filtered speed is read only for a zone the track is not in yet. Outputs are identical (the probe's
+  walking and sitting runs give the same outputs byte for byte, four replay runs give identical results). Evaluator cost on
+  the 200-zone probe: 15 to 17 microseconds per detection before, about 10 to 12 after (sitting 9 before, 7 to 7.5 after).
 
 ### Not built
 

@@ -95,6 +95,7 @@ class Learner:
         self.review = ReviewModel(p, time_model, p5params, self.p5)   # P4/P5: review items, suppressions, zones
         self.zone7 = Zone7()                               # P7: the zone7 key, filled in place after the load (spec 5.1)
         self.p7_errors = 0                                 # failed P7 nightly steps since start (RAM, spec 4.1)
+        self.p7_own_seen: dict = {}                        # RAM: zid -> ((sid, rev), first run ordinal) of an own modify
         self.p7_requalified: set = set()                   # RAM: moved-from entry keys re-qualified in tonight's gate 7
         self.zone7_pruned = 0
         self.p7_radar_dbg: dict = {}                       # RAM: the last radar-moved verdict (hit rates, for the replay)
@@ -138,6 +139,9 @@ class Learner:
         # evaluator. Both are built after the state load so a corrupt zone6 raises StateError.
         self.zone6 = Zone6.load(self.p5.extra.get("zone6"))
         self.zone7.load(self.p5.extra.get("zone7"), self.geom.nc)      # P7: a wrong container raises StateError (D43)
+        cap7 = max(1, p7params.mf_max)                  # spec 5.2: a longer mask list is cut to the newest mf_max at load
+        if p7params.enabled and len(self.zone7.mf) > cap7:
+            del self.zone7.mf[:len(self.zone7.mf) - cap7]
         self.zone_eval = ZoneEval(p6params, self.geom, time_model, self.zone6, p.silence_censor_ms,
                                   p.powerup_birth_ms)
         self._zkey: Optional[tuple] = None           # what the evaluator's zone set was last synced from
@@ -562,6 +566,7 @@ class Learner:
         if isinstance(ev, ZoneForget):
             z6.forget_zone(zid)
             self.zone7.forget_zone(zid)               # P7 (H3, D44): the flag and retire runs of that zone only
+            self.review.touch()                       # the withdrawn retire proposal leaves the cached tier-2 list
             ze.forget(zid)
             return True
         info = z6.info.get(zid)

@@ -20,6 +20,7 @@ from . import zones as zones_mod
 from .types import ZoneDrift
 
 _EPS = 1e-9
+_TOL = 1e-9                                                # relative tolerance of the eligible-hours threshold
 COUNT_MAX = 99999                                          # the p7state bound of the run counters
 
 
@@ -52,6 +53,11 @@ def windows(L, run_ord: int) -> tuple:
     each date, ``2 ** (-k / half_life)`` with ``k`` the number of covered dates after it (0 for the newest)."""
     p = L.p7params
     d14 = L.obs.covered_dates(run_ord)[-p.slow_dates:]
+    # review fix F1: the extraction keeps stays for ``retention_max_days`` calendar days only, so a covered date older than
+    # that (after a long radar-off gap) has coverage but no stays: it would bias the ratio high. Coverage and stays then
+    # hold the same dates.
+    keep_from = run_ord - L.p.retention_max_days
+    d14 = [d for d in d14 if d >= keep_from]
     d3 = d14[-p.fast_dates:]
     ws = {d: 2.0 ** (-k / p.slow_hl) for k, d in enumerate(reversed(d14))}
     wf = {d: 2.0 ** (-k / p.fast_hl) for k, d in enumerate(reversed(d3))}
@@ -86,8 +92,10 @@ def context(L, run_ord=None) -> Ctx:
             if wfd is not None:
                 covf[h] += wfd * v
     c.covf, c.covs = covf, covs
-    thr_f = p.cov_min_frac * sum(wf.values()) * 3600.0
-    thr_s = p.cov_min_frac * sum(ws.values()) * 3600.0
+    # a relative tolerance: the two sides are summed in different orders, so an hour observed exactly at ``cov_min_frac``
+    # on every date must not be in or out by last-bit noise (review fix F2)
+    thr_f = p.cov_min_frac * sum(wf.values()) * 3600.0 * (1.0 - _TOL)
+    thr_s = p.cov_min_frac * sum(ws.values()) * 3600.0 * (1.0 - _TOL)
     c.elig = [h for h in range(24) if covf[h] > _EPS and covs[h] > _EPS and covf[h] >= thr_f and covs[h] >= thr_s] \
         if d14 else []
     # the stay index: cell -> [(date ordinal, ((hour, seconds), ...), dur)], stays of the retained covered dates only

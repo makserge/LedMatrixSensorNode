@@ -5,7 +5,8 @@ import unittest
 from radar_zone_learner.core import drift, moves, review as RV
 from radar_zone_learner.core.types import (AnswerIgnored, DebugMapChanged, ReviewItem, ReviewSelect, SaveRequested)
 
-from .p7_harness import (BASE_MS, D0, add_label, add_suggestion, add_zone, answer, cover, make, p7on, set_run, use_days)
+from .p7_harness import (BASE_MS, D0, add_label, add_suggestion, add_zone, answer, cover, make, p7on, prime_own, set_run,
+                         use_days)
 from .test_moves import N, Z, night, run_nights, sofa_scene
 from .test_retire import retire_scene
 
@@ -208,7 +209,9 @@ class ModifyAnswerTest(unittest.TestCase):
         self.assertEqual((z["cx"], z["cy"]), (s["cx"], s["cy"]))
         self.assertEqual(z["srev"], s["rev"])
         self.assertEqual(z["ref"], "s0020-1")                                  # the swap: the new suggestion is covered
-        self.assertEqual(z["also"], [old_ref])                                 # the old suggestion joins also
+        # review fix (movedfrom F1): the old suggestion does NOT join also: after the moved-from mask lifts the old spot is
+        # an ordinary pending suggestion again (the mask hides it until then)
+        self.assertEqual(z["also"], [])
         self.assertEqual(z["upd"], L.night)
         self.assertEqual(len(kinds(outs, DebugMapChanged)), 1)
         self.assertEqual(kinds(outs, SaveRequested)[0].reason, "review")
@@ -231,7 +234,7 @@ class ModifyAnswerTest(unittest.TestCase):
         L.review.touch()
         self.assertEqual(tier2(L), [])
         old = next(x for x in L.ns.suggestions if x["id"] == old_ref)
-        self.assertEqual(old["state"], "shadow")                                # it is still shadow, but covered (also)
+        self.assertEqual(old["state"], "shadow")                                # it is still shadow (hidden by the mask)
 
     def test_the_old_spot_is_not_offered_again_as_a_new_place(self):
         L, rec, s, old_cells, old_ref, rev0, outs = self.approve_cand()
@@ -251,6 +254,7 @@ class ModifyAnswerTest(unittest.TestCase):
         own["cells"] = frozenset(L.geom.cells_within(Z[0] + 0.5, Z[1], 0.3))
         own["cx"], own["cy"] = Z[0] + 0.5, Z[1]
         own["rev"] = rec["srev"] + 1
+        prime_own(L)                                      # review fix: the own source needs two nightly runs
         L.review.touch()
         it = tier2(L)[0]
         self.assertEqual((it.id, it.data["src"], it.data["sid"]), ("mod-z0001", "own", rec["ref"]))
@@ -285,6 +289,7 @@ class ModifyAnswerTest(unittest.TestCase):
         own["cells"] = frozenset(L.geom.cells_within(Z[0] + 0.5, Z[1], 0.3))
         own["cx"], own["cy"] = Z[0] + 0.5, Z[1]
         own["rev"] = rec["srev"] + 1
+        prime_own(L)                                      # review fix: the own source needs two nightly runs
         L.review.touch()
         it = tier2(L)[0]
         old_ref = rec["ref"]
@@ -316,6 +321,7 @@ class ModifyAnswerTest(unittest.TestCase):
         own["cells"] = frozenset(L.geom.cells_within(Z[0] + 0.5, Z[1], 0.3))
         own["cx"], own["cy"] = Z[0] + 0.5, Z[1]
         own["rev"] = rec["srev"] + 1
+        prime_own(L)                                      # review fix: the own source needs two nightly runs
         L.review.touch()
         it = tier2(L)[0]
         answer(L, "mod-z0001", "reject", rev=it.rev)
@@ -361,7 +367,7 @@ class ModifyAnswerTest(unittest.TestCase):
         outs = answer(L, "mod-z0001", "approve", rev=2)
         self.assertEqual(ignored(outs), [])
         self.assertEqual(L.review.zones[0]["ref"], "s0040-1")
-        self.assertEqual(L.review.zones[0]["also"], ["s0001-1", "s0020-1"])
+        self.assertEqual(L.review.zones[0]["also"], [])                  # review fix (movedfrom F1): no old ref in also
         self.assertEqual(len(L.zone7.mf), 2)
 
     def test_the_busy_guard_refuses_approve_but_never_reject_or_later(self):

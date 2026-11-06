@@ -26,6 +26,7 @@ from .p6state import Zone6, variant_id
 from .params import P6Params
 from .types import (ZONE_KINDS_DWELL, ZONE_KINDS_EVALUATED, ZoneEvent, ZoneState, ZoneStates)
 
+_floor = math.floor              # (a module level name: one lookup less per detection)
 FRAME_MS = 100                   # the frame period of the node (10 Hz); only used for the diagnostics
 SETTLE_EXTRA_MS = 500            # zones turn valid this long after the power-up snapshot window (spec 5.7, D20)
 SPEED_WINDOW_MS = 3000           # the door rule's speed is read over the last 3 s
@@ -147,6 +148,7 @@ class ZoneEval:
         self._zd: set = set()                      # zids whose row is stale
         self._zall = True                          # every cached state is stale
         self._out_sig = None
+        self._iview: dict = {}                     # zid -> ``_info_view`` of the zone6.info entry it was made from
         self._debug: deque = deque(maxlen=DEBUG_MAX)
         self._ev_wall: deque = deque()             # wall ms of the events of the last 24 h
         self.counters = {"zones_skipped_kind": 0}
@@ -189,6 +191,8 @@ class ZoneEval:
         self.zones = dict(sorted(new.items()))
         self._act = {z for z in self._act if z.zid in self.zones and self.zones[z.zid] is z}
         self.counters["zones_skipped_kind"] = skipped
+        for zid in [k for k in self._iview if k not in self.zones]:
+            del self._iview[zid]
         dc: set = set()
         for cells in door_cells:
             dc.update(cells)
@@ -280,8 +284,8 @@ class ZoneEval:
     # ------------------------------------------------------------ geometry
     def _zones_at(self, x: float, y: float) -> tuple:
         cs = self._gcs
-        i = int(math.floor((x - self._gx0) / cs))
-        j = int(math.floor((y - self._gy0) / cs))
+        i = _floor((x - self._gx0) / cs)
+        j = _floor((y - self._gy0) / cs)
         nx = self._gnx
         if i < 0 or j < 0 or i >= nx or j >= self._gny:
             return ()
@@ -483,17 +487,20 @@ class ZoneEval:
         if self._door_cells:
             T.hist.append((t, x, y))
         inside = self._zones_at(x, y)
-        if not inside and not T.member and not T.rings:
+        member = T.member
+        if not inside and not member and not T.rings:
             return
-        speed = math.hypot(tr.vx, tr.vy)
-        ins_ids = set()
+        speed = -1.0                                  # the filtered speed, read only for a zone that the track is not in yet
+        n_mem = 0                                     # the zones of ``inside`` that the track is a member of
         for z in inside:
             zid = z.zid
-            ins_ids.add(zid)
-            if zid in T.member:
+            if zid in member:
                 z.S[tr.id] = t
                 z.last_in = t
+                n_mem += 1
                 continue
+            if speed < 0.0:
+                speed = math.hypot(tr.vx, tr.vy)
             counted = (speed < p.pass_speed_ms) if z.dwell else True
             ring = T.rings.get(zid)
             if ring is None:
@@ -501,18 +508,21 @@ class ZoneEval:
             ring.e.append((t, True, counted))
             if counted and sum(1 for e in ring.e if e[2]) >= p.enter_k:
                 self._join(z, T, t, ring)
-        if T.member:
-            for zid in sorted(zid for zid in T.member if zid not in ins_ids):
-                T.member.discard(zid)
-                z = self.zones.get(zid)
-                if z is not None and tr.id in z.S:
-                    self._leave_edge(z, T, t)
-        if T.rings:
-            for zid in [zid for zid in T.rings if zid not in ins_ids]:
-                ring = T.rings[zid]
-                ring.e.append((t, False, False))
-                if not any(e[1] for e in ring.e):
-                    del T.rings[zid]
+                n_mem += 1                            # _join made the track a member of z
+        if n_mem != len(member) or T.rings:
+            ins_ids = {z.zid for z in inside}
+            if n_mem != len(member):                  # a member zone that the detection is not in: the track left it
+                for zid in sorted(zid for zid in member if zid not in ins_ids):
+                    member.discard(zid)
+                    z = self.zones.get(zid)
+                    if z is not None and tr.id in z.S:
+                        self._leave_edge(z, T, t)
+            if T.rings:
+                for zid in [zid for zid in T.rings if zid not in ins_ids]:
+                    ring = T.rings[zid]
+                    ring.e.append((t, False, False))
+                    if not any(e[1] for e in ring.e):
+                        del T.rings[zid]
 
     def _join(self, z: _Z, T: _Trk, t: int, ring: _Ring) -> None:
         p = self.p6
@@ -602,6 +612,21 @@ class ZoneEval:
         if not self._act:
             return
         vanish_ms = self.p6.vanish_ms
+        if self._gap_dev is None:
+            # the usual frame: every active zone has members, none of them silent, no hold and no late-return window, so the loop
+            # below would do nothing; skip it (and the sorting of the zones) then
+            lim = t - vanish_ms
+            for z in self._act:
+                if z.V or z.late is not None or not z.S:
+                    break
+                for ld in z.S.values():
+                    if ld < lim:
+                        break
+                else:
+                    continue
+                break
+            else:
+                return
         for z in self._acts():
             if z.S and self._gap_dev is None:
                 for tid, ld in list(z.S.items()):
@@ -722,6 +747,24 @@ class ZoneEval:
                 z.ld_known_ms -= kn_s * 1000
 
     # ------------------------------------------------------------ events and bookkeeping
+    def _info_view(self, zid: str, info: dict) -> tuple:
+        """``(info, typical hours, confidence, variant ids, [(days, start, end, id)])`` of a ``zone6.info`` entry. The entries
+        of ``zone6.info`` are replaced as a whole (nightly copy, load), never changed in place, so the view is kept for as long as
+        the entry is the same object (a state row is rebuilt every time a zone changes: formatting the hours and the variant ids
+        each time was the larger part of that)."""
+        c = self._iview.get(zid)
+        if c is not None and c[0] is info:
+            return c
+        parts = []
+        for cls in ("wd", "we"):
+            rngs = info["th"].get(cls)
+            if rngs:
+                parts.append("%s %s" % (cls, ",".join(rngs)))
+        conf = round(float(info["conf"]), 2) if info.get("conf") is not None else None
+        vl = [(v["d"], v["s"], v["e"], variant_id(v)) for v in info["var"]]
+        c = self._iview[zid] = (info, "; ".join(parts), conf, tuple(v[3] for v in vl), vl)
+        return c
+
     def _variant_now(self, zid: str) -> str:
         info = self.z6.info.get(zid)
         lt = self._lt
@@ -729,12 +772,11 @@ class ZoneEval:
             return ""
         cls = "wd" if lt.weekday < 5 else "we"
         h = lt.sec_of_day // 3600
-        for v in info["var"]:
-            if v["d"] != cls:
+        for d, s, e, vid in self._info_view(zid, info)[4]:
+            if d != cls:
                 continue
-            s, e = v["s"], v["e"]
             if (s <= h < e) if s <= e else (h >= s or h < e):
-                return variant_id(v)
+                return vid
         return ""
 
     def _emit(self, z: _Z, kind: str, via: str, t: int, tid: int, dwell_s: int = 0) -> None:
@@ -780,14 +822,7 @@ class ZoneEval:
         conf = None
         variants: tuple = ()
         if info:
-            parts = []
-            for cls in ("wd", "we"):
-                rngs = info["th"].get(cls)
-                if rngs:
-                    parts.append("%s %s" % (cls, ",".join(rngs)))
-            th = "; ".join(parts)
-            conf = round(float(info["conf"]), 2) if info.get("conf") is not None else None
-            variants = tuple(variant_id(v) for v in info["var"])
+            _, th, conf, variants, _ = self._info_view(zid, info)
         return ZoneState(zid, bool(z.occ), min(len(z.S), self.p6.count_max), bool(z.occ and not z.S),
                          self._variant_now(zid), z6.is_ldr(zid), d_s, src, z.margin_cm, variants,
                          tuple(z6.ve.get(zid, ())), th, conf)

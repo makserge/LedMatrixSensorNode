@@ -226,8 +226,9 @@ def run_nightly(L, run_ord: int, night: int) -> tuple:
         g["g4_covis"] = c.covis < p.covis_thr
         g["g5_stable"] = c.streak >= p.stable_nights
         g["g6_move"] = move_check(c) is None
-        g["g7_suppression"] = not (rejections.blocks_candidate(L, c, night)   # P5: a rejected region (OA 7.3, 7.9)
-                                   or movedfrom.blocks(L, c, night))          # P7: the old spot of a modify or retire
+        rej = rejections.blocks_candidate(L, c, night)     # P5: a rejected region (OA 7.3, 7.9)
+        mvf = movedfrom.blocks(L, c, night)                # P7: the old spot of a modify or retire (always evaluated:
+        g["g7_suppression"] = not (rej or mvf)             # a re-qualifying entry is recorded even if a mask blocks too)
         base = (1.0 - math.exp(-c.n / p.conf_n_scale)) * min(1.0, c.core_days / p.conf_days) \
             * min(1.0, c.streak / p.stable_nights) * (1.0 - c.gsh)
         c.conf_base = base

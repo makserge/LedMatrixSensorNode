@@ -142,7 +142,7 @@ class JobsP7Test(unittest.TestCase):
         days = {p: J.estimate_days(J.PROFILES[p]) for p in J.P7_PROFILES}
         for p, d in days.items():
             self.assertLess(d, 1500, p)
-        self.assertAlmostEqual(days["p7move"], 1433.8, 1)
+        self.assertAlmostEqual(days["p7move"], 1472.8, 1)
         self.assertAlmostEqual(sum(d for p, d in days.items() if p != "p7smoke"), 5400, delta=100)
         self.assertEqual(len(J.runs_of(J.PROFILES["p7move"])), 26)
         self.assertEqual(len(J.runs_of(J.PROFILES["p7drift"])), 20)
@@ -161,8 +161,8 @@ class JobsP7Test(unittest.TestCase):
         for p in ("smoke", "quick", "p3", "p4", "p5", "p6", "p6smoke", "p4smoke", "p5smoke"):
             self.assertFalse(any(j.is_p7 for j in J.PROFILES[p]), p)
 
-    def test_the_jobs_of_the_move_profile_run_55_nights(self):
-        self.assertTrue(all(j.nights == 55 for j in J.PROFILES["p7move"]))
+    def test_the_jobs_of_the_move_profile_run_55_or_58_nights(self):
+        self.assertTrue(all(j.nights == (58 if "p7mv29" in j.name else 55) for j in J.PROFILES["p7move"]))
         self.assertEqual(sorted({(j.window or "none") for j in J.PROFILES["p7move"]}), ["00:00-06:00", "none"])
         self.assertEqual(sum(1 for j in J.PROFILES["p7move"] if j.empty_off), 2)
 

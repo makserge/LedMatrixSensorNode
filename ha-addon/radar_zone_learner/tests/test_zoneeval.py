@@ -726,6 +726,44 @@ class SignatureTest(unittest.TestCase):
         self.assertEqual((ev[0].kind, ev[0].variant), ("enter", "wd0917"))
 
 
+class TwoZonesTest(unittest.TestCase):
+    """A track that is a member of two overlapping zones (the cheap check of 'did it leave a zone' in ``_detect``)."""
+    def two(self, z6=None):
+        ze = ZoneEval(DEFAULT_P6, GEOM, FixedOffsetTime(0), z6 or Zone6())
+        ze.sync([("z0001", "dwell", ZONE), ("z0002", "dwell", block(0.5, 2.9))], [])    # areas overlap between x 0.25 and 0.65
+        return ze
+
+    def test_a_member_of_both_zones_leaves_them_one_after_the_other(self):
+        ze = self.two()
+        resume(ze, 0)
+        tr = Tr(1, 0.45, 3.1)                                    # inside both areas
+        t = run(ze, tr, 10_000, 3, (0.45, 3.1))
+        self.assertEqual([(e.id, e.kind) for e in events(ze)], [("z0001", "enter"), ("z0002", "enter")])
+        t = run(ze, tr, t, 3, (0.45, 3.1))
+        self.assertEqual(events(ze), [])
+        t = run(ze, tr, t, 1, (0.9, 3.1))                        # beyond the area of z0001 (x < 0.65), still inside z0002
+        self.assertEqual([(e.id, e.kind, e.via) for e in events(ze)], [("z0001", "leave", "edge")])
+        self.assertEqual([z.occ for z in ze.states().zones], [False, True])
+        t = run(ze, tr, t, 1, (3.0, 5.0))
+        self.assertEqual([(e.id, e.kind, e.via) for e in events(ze)], [("z0002", "leave", "edge")])
+
+    def test_a_replaced_zone6_info_is_seen_by_the_next_refresh(self):
+        z6 = Zone6()
+        z6.info["z0001"] = {"th": {"wd": ["09-17"]}, "var": [{"d": "wd", "s": 9, "e": 17, "n": 12}], "conf": 0.8}
+        ze = self.two(z6)
+        ze.on_tick(1767571200000 + 10 * 3600_000)
+        st = ze.states().zones[0]
+        self.assertEqual((st.variant, st.variants, st.typical_hours, st.confidence), ("wd0917", ("wd0917",), "wd 09-17", 0.8))
+        z6.info["z0001"] = {"th": {"we": ["10-12"]}, "var": [{"d": "wd", "s": 8, "e": 12, "n": 9}], "conf": 0.5}
+        ze.refresh()
+        st = ze.states().zones[0]
+        self.assertEqual((st.variant, st.variants, st.typical_hours, st.confidence), ("wd0812", ("wd0812",), "we 10-12", 0.5))
+        del z6.info["z0001"]
+        ze.refresh()
+        st = ze.states().zones[0]
+        self.assertEqual((st.variant, st.variants, st.typical_hours, st.confidence), ("", (), "", None))
+
+
 class DebugTest(unittest.TestCase):
     def test_enter_debug_records_frames_not_counted(self):
         ze = make("dwell")

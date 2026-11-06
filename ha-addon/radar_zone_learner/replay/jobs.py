@@ -355,12 +355,12 @@ def _p6(variant: str) -> str:
     return "bed_w0000_0600_" + variant
 
 
-# P6 (spec 11.6a): about 800 simulated days. ``p6smoke`` is seed 1 of the three jobs that decide the evaluator's basics.
+# P6 (spec 11.6a): about 870 simulated days. ``p6smoke`` is seed 1 of the three jobs that decide the evaluator's basics.
 PROFILES["p6smoke"] = _jobs([_p6(v) for v in ("p6edge", "p6hold", "p6door")], 10, (1,))
 PROFILES["p6"] = (_jobs([_p6(v) for v in ("p6edge", "p6edge05", "p6edge08")], 10, ALL_SEEDS)
                   + _jobs([_p6(v) for v in ("p6hold", "p6pow", "p6door", "p6ld", "p6ldghost")], 14, ALL_SEEDS)
                   + _jobs([_p6("p6count")], 10, ALL_SEEDS)
-                  + _jobs([_p6("p6setup")], 10, (1, 2, 3))
+                  + _jobs([_p6("p6setup")], 21, ALL_SEEDS)         # P6-10: two weekends and 14 weekdays give a dwell zone variants in 4 of 5 seeds (10 nights: 1 of 3)
                   + _jobs([_p6("p6guests"), _p6("p6guestsc")], 21, ALL_SEEDS))
 
 
@@ -370,9 +370,10 @@ def _p7(variant: str, window: str = "w0000_0600") -> str:
 
 
 PROFILES["p7smoke"] = (_jobs([_p7("p7mv11")], 46, (1,)) + _jobs([_p7("p7rot")], 34, (1,)) + _jobs([_p7("p7ctl")], 28, (1,)))
-PROFILES["p7move"] = (_jobs([_p7(v, "none") for v in ("p7mv11", "p7mv29")], 55, ALL_SEEDS)
-                      + _jobs([_p7(v) for v in ("p7mv11", "p7mv29")], 55, ALL_SEEDS)
-                      + _jobs([_p7(v, "none") for v in ("p7mv11e", "p7mv29e")], 55, (1, 2, 3)))
+# the 2.9 m jobs run 58 nights: their Approve is at night 41-43 and P7-4 needs the 14 nights after it (the 1.1 m jobs approve by 41)
+PROFILES["p7move"] = (_jobs([_p7("p7mv11", "none")], 55, ALL_SEEDS) + _jobs([_p7("p7mv29", "none")], 58, ALL_SEEDS)
+                      + _jobs([_p7("p7mv11")], 55, ALL_SEEDS) + _jobs([_p7("p7mv29")], 58, ALL_SEEDS)
+                      + _jobs([_p7("p7mv11e", "none")], 55, (1, 2, 3)) + _jobs([_p7("p7mv29e", "none")], 58, (1, 2, 3)))
 PROFILES["p7drift"] = (_jobs([_p7("p7ctl")], 56, ALL_SEEDS)
                        + _jobs([_p7("p7ctl", "none"), _p7("p7ctle", "none")], 42, ALL_SEEDS)
                        + _jobs([_p7("p7ret")], 42, ALL_SEEDS))

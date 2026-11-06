@@ -73,28 +73,41 @@ def _usual_hours_observed(L, entry, run_ord: int, p) -> bool:
 
 
 # ---------------------------------------------------------------- probation (4.3.5) and rc hiding (4.3.7)
-def span_of(L, s: dict, ctx=None) -> int:
-    """``idx(last stay date) - idx(first stay date)`` over the retained stays whose cell lies in the suggestion's cells,
-    ``idx`` the position in the covered dates (so radar-off dates do not shorten it); 0 when there is none."""
+def evidence_dates(L, s: dict, ctx=None) -> list:
+    """The retained covered dates (ascending) that hold a stay whose cell lies in the suggestion's cells."""
     ctx = ctx if ctx is not None else drift.context(L)
     dates = set()
     by = ctx.by_cell
     for cell in s["cells"]:
         for d, _hs, _dur in by.get(cell, ()):
             dates.add(d)
+    return sorted(dates)
+
+
+def span_of(L, s: dict, ctx=None) -> int:
+    """``idx(last stay date) - idx(first stay date)`` over the retained stays whose cell lies in the suggestion's cells,
+    ``idx`` the position in the covered dates (so radar-off dates do not shorten it); 0 when there is none."""
+    ctx = ctx if ctx is not None else drift.context(L)
+    dates = evidence_dates(L, s, ctx)
     if not dates:
         return 0
     pos = {d: i for i, d in enumerate(ctx.d14)}
-    return pos[max(dates)] - pos[min(dates)]
+    return pos[dates[-1]] - pos[dates[0]]
 
 
 def probation_ok(L, s: dict, ctx=None) -> bool:
-    """A plain place item is open only if its suggestion was first made before ``probation_from_night`` or the span of
-    its evidence is at least ``probation_min_span`` covered dates (0 switches the rule off)."""
+    """A plain place item is open only if its suggestion was first made before ``probation_from_night`` or its evidence
+    spans at least ``probation_min_span`` covered dates (0 switches the rule off) AND lies on at least
+    ``probation_min_dates`` of them. The second term is a review fix after the first replay (P7-7): a one-week guest plus
+    one stray stay a week before or after (the weekly visitor, a resident's brief stop) spans 10 or more covered dates
+    although it holds only 7 or 8 dates of evidence; a seat that is in use is on most of the 14 dates."""
     p = L.p7params
     if p.probation_min_span <= 0 or s["first_night"] < p.probation_from_night:
         return True
-    return span_of(L, s, ctx) >= p.probation_min_span
+    ctx = ctx if ctx is not None else drift.context(L)
+    if span_of(L, s, ctx) < p.probation_min_span:
+        return False
+    return len(evidence_dates(L, s, ctx)) >= p.probation_min_dates
 
 
 def rc_hidden(L, s: dict) -> bool:
@@ -154,16 +167,33 @@ def plan(L, pending: list, ctx=None) -> tuple:
             ok = False
         if ok:
             targets.append((z, e, rc))
+    seen = L.p7_own_seen
+    own_now = set()
     for z, e, rc in targets:
         s_own = sug.get(z.get("ref"))
         if s_own is not None and s_own["state"] == "shadow" and s_own["rev"] > z.get("srev", 0) \
                 and geometry.iou(s_own["cells"], z["cells"]) < p5.modify_max_iou:
             dx, dy, d = _shift(s_own, z)
-            zp = _zone_prof(L, z, stays14, e)
-            r = pearson(_suggestion_profile(s_own), zp) if zp is not None else 0.0
-            modifies[z["zid"]] = {"sid": s_own["id"], "zid": z["zid"], "zname": z["name"],
-                                  "shift_cm": int(round(100 * d)), "dir": direction(dx, dy), "rev": 0,
-                                  "r": round(r, 3), "src": "own", "_s": s_own}
+            # review fix (replay P7-2/P7-8): the own suggestion proposes a modify only when its centre is at least
+            # ``own_min_m`` from the zone's (a reshaped region is not a move) and the same (suggestion, revision) was
+            # seen on an earlier nightly run too; until then the zone may still take a nearby candidate below
+            if d >= p.own_min_m - 1e-9:
+                key = (s_own["id"], s_own["rev"])
+                own_now.add(z["zid"])
+                first = seen.get(z["zid"])
+                if first is None or first[0] != key:
+                    seen[z["zid"]] = (key, run_ord)
+                elif first[1] < run_ord:
+                    zp = _zone_prof(L, z, stays14, e)
+                    r = pearson(_suggestion_profile(s_own), zp) if zp is not None else 0.0
+                    modifies[z["zid"]] = {"sid": s_own["id"], "zid": z["zid"], "zname": z["name"],
+                                          "shift_cm": int(round(100 * d)), "dir": direction(dx, dy), "rev": 0,
+                                          "r": round(r, 3), "src": "own", "_s": s_own}
+                    continue
+    for zid in [k for k in seen if k not in own_now]:
+        del seen[zid]
+    for z, e, rc in targets:
+        if z["zid"] in modifies:
             continue
         zp = _zone_prof(L, z, stays14, e)
         if zp is None:
@@ -181,6 +211,11 @@ def plan(L, pending: list, ctx=None) -> tuple:
             if d > p.succ_far_m and not rc:
                 lu = e["lu"]
                 if lu <= 0:
+                    continue
+                # review fix (replay P7-8): the share below can only be measured on the retained covered dates; a last
+                # use older than the oldest of them leaves nothing to test, so any candidate would pass with a share of 0
+                # (a vanished table next to a seat that was used all along, 15 nights after the table's last use)
+                if ctx.d14 and lu < ctx.d14[0]:
                     continue
                 per = _cand_dwell_by_date(ctx, s["cells"])
                 total = sum(per.values())
@@ -264,8 +299,11 @@ def plan(L, pending: list, ctx=None) -> tuple:
             continue
         retires.append({"zid": zid, "zname": z["name"], "weeks": max(3, e["rt"] // 7), "rev": 0})
         ret_zids.add(zid)
-    for z, e in zs:                                        # the revision: bumped when the item opens after being closed
-        zid = z["zid"]
+    for rec in L.review.zones:                             # the revision: bumped when the item opens after being closed
+        zid = rec["zid"]                                   # (every record with an entry: a zone dropped from ``zs``
+        e = zone7.entry(zid)                               # while its item was open closes it too, review fix)
+        if e is None:
+            continue
         if zid in ret_zids and not e["ro"]:
             e["rr"] = min(e["rr"] + 1, 99999)
             e["ro"] = True

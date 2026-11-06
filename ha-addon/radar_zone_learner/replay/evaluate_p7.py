@@ -47,7 +47,7 @@ SOFA_RADIUS_M = 1.0                              # a zone record within this of 
 SOFA_IOU_MIN = 0.4                               # P7-2 (c): the moved zone against the truth region of the moved sofa
 MOD_WINDOW = (2, 10)                             # P7-2 (a): the modify item opens this many nights after the move
 MF_NIGHTS = 14                                   # P7-4: the observation window after the Approve
-MF_LAST_APPROVE = 41                             # P7-4: a later Approve leaves less than 14 nights of a 55-night run
+MF_LAST_APPROVE = 44                             # P7-4: a later Approve leaves less than 14 nights of a 58-night run (the 2.9 m jobs)
 NEW_ZONE_NIGHTS = 5                              # P7-2 (d)
 OVERLAP_MIN = 0.5                                # the overlap coefficient of the learner's suppression rule
 POOLED_MIN = 0.9                                 # P7-2: 'in >=90% of runs'

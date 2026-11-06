@@ -297,6 +297,8 @@ class P7Params:
     rc_overlap: float = 0.5             # PROPOSAL (D36)
     probation_from_night: int = 14      # PROPOSAL (DV6)
     probation_min_span: int = 10        # PROPOSAL (DV6); 0 switches the rule off
+    probation_min_dates: int = 9        # PROPOSAL (review fix, replay P7-7): covered dates that hold evidence (of 14); 0 = off
+    own_min_m: float = 0.3              # PROPOSAL (review fix): the own suggestion's centre must be this far from the zone's
     rm_nights: int = 2                  # CD
     rm_shift_min_m: float = 0.4         # CD reading (grid)
     rm_rot_min_deg: float = 5.0         # CD reading (grid)
@@ -311,7 +313,8 @@ class P7Params:
     rm_min_ref: int = 30                # PROPOSAL
     rm_tol_rings: int = 1               # PROPOSAL
     rm_max_points: int = 200            # PROPOSAL
-    rm_hold_days: int = 14              # PROPOSAL (D35)
+    rm_min_clusters: int = 2            # PROPOSAL (review fix RM-1): reference clusters a moved verdict must cover
+    rm_hold_days: int = 14              # PROPOSAL (D35); also bounds a counting streak (review fix RM-2)
     rm_quiet_days: int = 14             # PROPOSAL (D35)
     busy_guard: bool = True             # PROPOSAL (Q10)
     agg_keep_nights: int = 28           # CD (2-4 weeks)

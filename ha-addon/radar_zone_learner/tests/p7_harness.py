@@ -126,6 +126,18 @@ def answer(L, item, op, rev=None, name=None, t=None):
     return L.handle(ReviewAnswer(item, op, rev, False, (L.now or BASE_MS) + 1 if t is None else t, name))
 
 
+def prime_own(L, pending=()) -> None:
+    """The own-suggestion modify needs the same (suggestion, revision) on two nightly runs (review fix): this runs the plan
+    once as of the previous run, so that the next ``plan`` call (or review read) of the test sees the second night."""
+    from radar_zone_learner.core import moves
+    run = L.last_run_ord
+    L.last_run_ord = run - 1
+    try:
+        moves.plan(L, list(pending))
+    finally:
+        L.last_run_ord = run
+
+
 def ready(L, k: int = 40) -> None:
     """The setup review exists (night >= review_min_nights) and the run counters sit on day ``k``."""
     set_run(L, k)

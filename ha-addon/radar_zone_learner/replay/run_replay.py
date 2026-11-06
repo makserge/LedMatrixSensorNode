@@ -20,7 +20,7 @@ separate commands of P5-R1 (``replay/dump_run.py`` and ``replay/compare_runs.py`
 P5-R3 (``replay/resource_probe.py --p5``); it says that G1-G6 and P4-1 to P4-7 were not run.
 
 ``p6`` is the P6 gate (P6-1 to P6-11, P6-14 and P6-15: the jobs ``p6edge``, ``p6edge05``, ``p6edge08``, ``p6hold``, ``p6pow``, ``p6door``,
-``p6ld``, ``p6ldghost``, ``p6count``, ``p6setup``, ``p6guests`` and ``p6guestsc``, about 800 simulated days, about 20 minutes on 3
+``p6ld``, ``p6ldghost``, ``p6count``, ``p6setup``, ``p6guests`` and ``p6guestsc``, about 870 simulated days, about 20 minutes on 3
 workers) and ``p6smoke`` its smoke run (seed 1 of ``p6edge``, ``p6hold`` and ``p6door``, 10 nights each). A p6 invocation has its own
 report (``replay.evaluate_p6``) and says that G1-G6, P4-1 to P4-7 and P5-1 to P5-8 were not run; P6-R1 (``replay/dump_run.py`` and
 ``replay/compare_runs.py``), P6-R2 (``replay/compat_check.py --p6``) and P6-R3 (``replay/resource_probe.py --p6``) are separate commands.

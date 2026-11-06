@@ -64,7 +64,7 @@ P7 two on the learner device (section 12.6: a button and a diagnostic sensor for
 4. Open it and press Install. The host builds the image, which takes a few minutes and downloads the
    Home Assistant Python base image and paho-mqtt. Then press Start and turn on **Watchdog** on the Info
    tab.
-5. The log shows `connected to core-mosquitto:1883`, `subscribed (34 topics)` (30 before P6, 18 before P5, 9 before P4) and, once
+5. The log shows `connected to core-mosquitto:1883`, `subscribed (35 topics)` (34 before P7, 30 before P6, 18 before P5, 9 before P4) and, once
    frames arrive, `status learning`. Every later change of the learner status is logged the same way.
 
 ### Updating
@@ -507,7 +507,7 @@ item costs one tap and it comes back after the next nightly run. A text entry (t
 
 | Entity | What it shows or does |
 |---|---|
-| `select.radar_zones_review_select` ('Review item') | `No item`, `Night window`, `Bed zone`, `Radar moved` (since P7, only while that item is open), then `Place A`, `Place B`, ... (a place), `Extend A` (a place that touches a zone you have and is used at similar hours), `Moved A` (a zone whose place seems to have moved) and, since P7, `Retire A` (a zone nobody has used for weeks). The letters are persistent tags: a tag never changes its place while the item exists, and a name never appears in the select. At most 15 options. |
+| `select.radar_zones_review_select` ('Review item') | `No item`, `Night window`, `Bed zone`, `Radar moved` (since P7, only while that item is open), then `Place A`, `Place B`, ... (a place), `Extend A` (a place that touches a zone you have and is used at similar hours), `Moved A` (a zone whose place seems to have moved) and, since P7, `Retire A` (a zone nobody has used for weeks). The letters are persistent tags: a tag never changes its place while the item exists, and a name never appears in the select. At most 16 options. |
 | `button.radar_zones_review_approve`, `..._rename`, `..._reject`, `..._later` | the answer for the selected item (the app fills in the item and its revision) |
 | `text.radar_zones_review_name` ('Spot name') and `button.radar_zones_review_mark` ('Mark spot here') | as before (section 5); the name is also what Approve and Rename use: **an applied answer consumes the text** (it is cleared), so the next place does not get the same name |
 | `sensor.radar_zones_review_pending` ('Review pending') | the number of open items (tier 1 and tier 2); the attributes list them with `id`, `rev`, `type`, `tier`, `label` and `text`, plus `selected` and `more` (open places that did not fit under the cap of 12) |
@@ -826,7 +826,8 @@ same select and buttons as section 10); the only things it does silently are int
 position of a moved place, the freeze) and they show up as counts in the status attributes (section 12.6). The app switches
 these detectors on itself; there is no option for them, and the firmware and the node are not touched (P7 sends no node
 command). The P7 data lives in one optional key `zone7` inside the `p5` section of the state (schema 4 stays): a 0.6.0 or
-0.5.0 app keeps it and writes it back unchanged, and an installation with no zone writes exactly what 0.6.0 wrote.
+0.5.0 app keeps it and writes it back unchanged, and the key is absent from the state until the first nightly run of this app that has a covered date, so a file written before
+that holds exactly what 0.6.0 wrote.
 
 ### 12.1 The review items and what every answer does
 
@@ -841,8 +842,8 @@ command). The P7 data lives in one optional key `zone7` inside the `p5` section 
   time-sensitive item and is never cut by a long list of new places), the new places by confidence, the extensions and the
   retire items last. At most 12 of those are shown, the rest is counted in `more`.
 - **Texts.** With 'Detailed review text' off a P7 text names the place by its tag (`A`) only and carries no zone name, hour or
-  date, only a distance or a count; with the switch on it names the zone. Every text puts the three action sentences first and
-  is at most 255 characters.
+  date, only a distance or a count; with the switch on it names the zone. Every text is at most 255 characters; the `Moved` text puts
+  its action sentences before the distance sentence, the other texts put their description first.
 - **`zone_busy`.** Approving a `Moved` or a `Retire` item is refused (review event `answer_ignored`, reason `zone_busy`) while
   somebody is in the zone, so a zone is not reshaped or removed under a person; the item stays open and you answer when the
   place is empty. Reject and Later are never refused. A bed or a frozen zone is not moved or removed by an answer
@@ -874,19 +875,22 @@ The numbers are computed for marks and beds too (the status counts them), but no
   becomes one `Moved` item instead of a `Place` item. Approving it keeps the zone's id, so the entity ids, the device and the
   automations stay and only the attribute `poly_cm` changes. (Assumption HA[U10]: Home Assistant leaves the registry
   and the history alone when only that attribute changes; settled by acceptance step A1.) A shift of 0.3 to 0.8 m is
-  usually folded into the old place by the learner itself and is offered as a `Moved` item for the same reason; for that
+  usually folded into the old place by the learner itself and is offered as a `Moved` item for the same reason, but only
+  when the suggestion's centre is at least 0.3 m from the zone's and the same change has been seen on two nights in a
+  row (a region that only changes its shape is not a move); for that
   kind of item (the zone's own suggestion moved) Rename and Reject answer as in P5: Rename makes a new zone from it, Reject
   marks that revision as seen.
 - **The merge detector** (`Extend`): a new place that touches a zone within 0.4 m, or overlaps it by 20 %, is used at similar
   hours and whose zone is still in regular use. A moved place wins over an extension for the same candidate.
-- **The old spot.** After you approve a move, or remove a zone, the old position is remembered (*moved-from*, up to 50). A
+- **The old spot.** After you approve a move, or approve a `Retire` item, the old position is remembered (*moved-from*, up to 50). A
   suggestion there is not offered as a new place until the spot qualifies again **on the stays after your answer alone**.
-  'Forget rejections' clears these masks (section 12.5).
+  Removing a zone through the Advanced list leaves no mask. 'Forget rejections' clears these masks (section 12.5).
 - **Retire.** A zone that is not frozen, not a bed and not a mark gets a `Retire` item after **21 covered days with a ratio under 0.1**
   (a day with a ratio of 0.1 or more starts the count again), when the hours it is usually used in were observed at least half
   the time over those days, no move or extension is pending for it and no 'Keep' was answered in the last 90 days.
 - **A one-week guest.** After night 14 a new ordinary place is offered only when its evidence spans at least 10 covered
-  days, because the learner's own thresholds would offer a seat that a guest used for 7 days on the night after the guest
+  days **and lies on at least 9 of the last 14 covered days** (a guest week plus one stray stay a week before or after spans
+  10 days but lies on 8 at most; a seat that is used on fewer than 9 of 14 days is not offered by this rule), because the learner's own thresholds would offer a seat that a guest used for 7 days on the night after the guest
   leaves. The cost: a genuinely new seat is offered about 11 days later than before (places that were first suggested before
   night 14 are exempt, so the first setup is as before). The withheld ones are counted in `places_probation`.
   'Guests present - pause learning' (section 10.6) stays the real protection: paused time feeds nothing, so those days
@@ -899,14 +903,19 @@ The numbers are computed for marks and beds too (the status counts them), but no
   moved sofa moves neither. Each night the points of the newest 1 to 3 covered days are compared with the other days: the
   app searches shifts up to 1 m and turns up to 10 degrees about the radar. A night counts as *moved* when the best
   transform is at least 0.4 m or 5 degrees, at least 70 % of the recent points then lie on or next to the older points, and
-  that beats the unmoved position by at least 20 percentage points. **Two such nights in a row** open the item and send one generic push, 'Radar
+  that beats the unmoved position by at least 20 percentage points. The matched points must also cover at least two of
+  the old clusters of points (one new tight cluster laid over one old one is a changed habit, not a moved radar), the same
+  search on the newest older day must not find such a transform by itself (that is noise), and each night must bring points
+  of its own newest day. **Two such nights in a row** open the item and send one generic push, 'Radar
   needs attention' (section 10.4). It needs at least 10 recent and 30 older points: with no door in the view and no static
   reflector it stays silent (`radar_moved` in the status says `none`, `watching`, `open` or `ignored`).
 - **The effective limits are higher than the design's 0.3 m and 5 degrees.** Measured on the replay's door events the detector
   finds about **0.6 to 0.8 m and 7 to 10 degrees**; a 6-degree turn or a 0.5 m move may be missed. If you move the radar by
-  a small amount, use the buttons yourself (section 12.5) or report the miss (acceptance step A2).
+  a small amount, nothing resets the learned maps by hand (section 12.5 holds only the Forget buttons): 'Forget all learned data'
+  starts over (and removes the zones too), or report the miss (acceptance step A2).
 - **The item stays until you answer it.** A real move must not disappear because the moved days enter the comparison. While
-  the two nights are being counted and while the item is open (for at most 14 days) the learner **holds** the other
+  the two nights are being counted and while the item is open (each for at most 14 days from the first moved day; a count that
+  does not complete in that time is dropped) the learner **holds** the other
   proposals and the drift counters, so no zone is called falling because the frame changed.
 - **Reset.** Approve clears everything learned in the old radar frame: the maps, the door, clutter and stay lists, the
   candidates and suggestions (marked stale), the rejection masks, the Later marks of places and the moved-from masks. It
@@ -934,7 +943,9 @@ nights): the observed hours, stays and histograms of their duration, LD2412 shar
 the learned clear delays per zone kind, how many candidates failed each gate and the histograms of the candidates' own
 numbers, the drift ratios and the zone-nights per state, the door events, how the 'Mark spot here' marks matched suggestions (a
 count, no position) and your cumulative answer counters. It has **no date, no night number, no hour of day, no position, no
-name and no id**; a test enforces the list of keys. The file is local, excluded from backups (`tuning/*`) and deleted by
+name and no id**; a test enforces the list of keys. The hidden spells and the learned clear delays (`hs`, `hn`, `dl`) come from
+the P6 zone evaluator, which keeps running while 'Guests present - pause learning' is on (the pause stops learning, not the
+zones), so they include spells of paused time. The file is local, excluded from backups (`tuning/*`) and deleted by
 'Forget all learned data'.
 
 | Entity (learner device) | What it does |
@@ -957,10 +968,10 @@ how you answered, and an MQTT message can be read by Home Assistant and every ad
 `tuning export: <n> nights` and nothing else, and the status attribute `tuning_exports` counts them.
 
 The status attributes (counts only: never a name, an id or a coordinate) gain `zones_frozen`, `zones_blind`, `zones_falling`,
-`zones_unused`, `zones_recheck`, `moved_from`, `radar_moved`, `places_probation`, `places_recheck_held`, the counters
-`zone7_pruned`, `zone7_reset` and `p7_errors`, and from the shell `tuning_exports`, `tuning_export_refused`,
-`tuning_write_errors` and `p7_shell_errors`. A step of the P7 nightly work that fails is counted (`p7_errors`, and one error
-line that starts `p7:` with the step's name) and never stops the review, the suggestions or the zones.
+`zones_unused`, `zones_recheck`, `moved_from`, `radar_moved`, `places_probation`, `places_recheck_held`, and from the shell `tuning_exports`, `tuning_export_refused`,
+`tuning_write_errors` and `p7_shell_errors`. A step of the P7 nightly work that fails writes one error
+line that starts `p7:` with the step's name (the counts `zone7_pruned`, `zone7_reset` and `p7_errors` are `Learner.counters()`,
+read by the replay, not status attributes) and never stops the review, the suggestions or the zones.
 
 ### 12.7 HOLD mode is not built
 

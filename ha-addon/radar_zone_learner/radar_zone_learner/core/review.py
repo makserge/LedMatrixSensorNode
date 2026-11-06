@@ -533,11 +533,12 @@ class ReviewModel:
         self.p5.later.clear()
         self.p5.masks.clear()
         z7 = L.zone7
-        if L.p7on and (z7.mf or z7.snz or z7.rm["ign"] or any(e["kp"] for e in z7.z.values())):
+        if L.p7on and (z7.mf or z7.snz or z7.rm["ign"] or z7.rm["qt"] or any(e["kp"] for e in z7.z.values())):
             changed = True
             movedfrom.clear(L)
             z7.snz.clear()
             z7.rm["ign"] = 0
+            z7.rm["qt"] = 0                                    # review fix RM-5: the quiet time after an Ignore goes too
             for e in z7.z.values():
                 e["kp"] = 0
         if changed:

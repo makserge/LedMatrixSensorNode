@@ -47,7 +47,8 @@ class AddTest(unittest.TestCase):
                          ("z0001", "moved_from", L.review._today(L), 24, rec["cx"], rec["cy"]))
         self.assertEqual(m["cells"], frozenset(rec["cells"]))
         self.assertIsInstance(m["cells"], frozenset)
-        self.assertEqual(movedfrom.key_of(m), ("z0001", "moved_from", L.review._today(L)))
+        # review fix (F2): the key of an entry carries its cells too, so two entries of one zone, reason and day differ
+        self.assertEqual(movedfrom.key_of(m), ("z0001", "moved_from", L.review._today(L), frozenset(rec["cells"])))
 
     def test_the_cap_drops_the_oldest(self):
         L = make(p7on(mf_max=3))
@@ -82,7 +83,8 @@ class GateTest(unittest.TestCase):
         c = cand(L, dates=list(range(D0, D0 + 11)) + list(range(D0 + 11, D0 + 15)))       # 4 post-event core days
         self.assertEqual(sum(1 for m in c.mine if m[2] > D0 + 10), 12)
         self.assertFalse(movedfrom.blocks(L, c, 15))
-        self.assertEqual(L.p7_requalified, {("z0001", "moved_from", D0 + 10)})
+        # review fix (F2): the recorded key is the entry's own key (zone, reason, day and cells)
+        self.assertEqual(L.p7_requalified, {movedfrom.key_of(L.zone7.mf[0])})
         self.assertEqual(movedfrom.release(L), 1)                              # a lifted entry is gone for good
         self.assertEqual((L.zone7.mf, L.p7_requalified), ([], set()))
         self.assertFalse(movedfrom.blocks(L, c, 16))
@@ -124,7 +126,8 @@ class GateTest(unittest.TestCase):
         self.assertTrue(movedfrom.blocks(L, c, 12))
         c = cand(L, dates=range(D0 + 11, D0 + 15))
         self.assertFalse(movedfrom.blocks(L, c, 15))
-        self.assertEqual(L.p7_requalified, {("z0001", "retired", D0 + 10)})
+        # review fix (F2): the recorded key is the entry's own key (zone, reason, day and cells)
+        self.assertEqual(L.p7_requalified, {movedfrom.key_of(L.zone7.mf[0])})
 
     def test_blocks_returns_at_once_with_an_empty_list(self):
         L = make()

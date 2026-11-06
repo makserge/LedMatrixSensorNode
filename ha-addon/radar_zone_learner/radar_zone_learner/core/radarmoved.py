@@ -38,13 +38,15 @@ def state_name(rm: dict) -> str:
 
 
 def hold(L) -> bool:
-    """The radar hold (4.6): a streak is counting and the item is not open, or the item is open and at most
-    ``rm_hold_days`` days have passed since the first moved date."""
+    """The radar hold (4.6): a streak is counting and the item is not open, or the item is open, in both cases for at most
+    ``rm_hold_days`` days since the first moved date (a streak that never completes must not hold the learner for ever)."""
     rm = L.zone7.rm
+    run = L.last_run_ord
     if rm["open"]:
-        run = L.last_run_ord
         return bool(run is not None and rm["d0"] > 0 and run - rm["d0"] <= L.p7params.rm_hold_days)
-    return rm["st"] >= 1
+    if rm["st"] < 1:
+        return False
+    return not (run is not None and rm["d0"] > 0 and run - rm["d0"] > L.p7params.rm_hold_days)
 
 
 def view(L) -> RadarMovedView:
@@ -151,6 +153,31 @@ def search(recent: list, ref_cells, p7, geom) -> tuple:
     return (best[3], best[4], best[5]), -best[0] / n, ident / n
 
 
+def _is_big(dx: float, dy: float, deg: float, p7) -> bool:
+    return math.hypot(dx, dy) >= p7.rm_shift_min_m - _EPS or abs(deg) >= p7.rm_rot_min_deg - _EPS
+
+
+def matched_clusters(recent: list, tx: tuple, ref_cells, p7, geom) -> tuple:
+    """(clusters hit, clusters in the reference): the connected components of the reference mask that at least two of the
+    transformed recent points fall into (review fix RM-1: a changed door habit is one new tight cluster that any shift
+    can lay over one old cluster; a real move of the radar carries every cluster along)."""
+    comps = geom.components4(ref_cells)
+    owner = {}
+    for i, comp in enumerate(comps):
+        for c in comp:
+            owner[c] = i
+    dx, dy, deg = tx
+    a = math.radians(deg)
+    ca, sa = math.cos(a), math.sin(a)
+    hits: dict = {}
+    for x, y in _subsample(recent, p7.rm_max_points):
+        c = geom.cell_of(x * ca - y * sa + dx, x * sa + y * ca + dy)
+        i = owner.get(c) if c >= 0 else None
+        if i is not None:
+            hits[i] = hits.get(i, 0) + 1
+    return sum(1 for v in hits.values() if v >= 2), len(comps)
+
+
 # ---------------------------------------------------------------- the nightly step (4.6)
 def nightly(L, night: int) -> None:
     """P7 step 3: writes ``zone7.rm``. A covered date is evaluated once (a restart repeats the run of the same date)."""
@@ -166,6 +193,9 @@ def nightly(L, night: int) -> None:
     if d_last <= rm["n"]:
         return
     rm["n"] = d_last
+    if rm["st"] >= 1 and not rm["open"] and (rm["d0"] <= 0 or run - rm["d0"] > p.rm_hold_days):
+        rm["st"] = 0                                       # review fix RM-2: a streak is bounded like an open item
+        rm["d0"] = 0
     if rm["open"] or rm["qt"] > run:                       # latched, or quiet after an Ignore: only the date is marked
         return
     pts = points(L, d14)
@@ -174,6 +204,9 @@ def nightly(L, night: int) -> None:
     if k is None:
         L.p7_radar_dbg = {"night": night, "verdict": "insufficient", "why": "recent"}
         return                                             # insufficient: the streak is held
+    if not pts[d_last]:                                    # review fix RM-1: the newest date must bring its own points,
+        L.p7_radar_dbg = {"night": night, "verdict": "insufficient", "why": "newest"}   # else a sparse night counts a
+        return                                             # date twice (the recent window grows backwards)
     recent_dates = d14[-k:]
     ref_dates = d14[:-k]
     if rm["st"] >= 1 and rm["d0"] > 0:                     # moved dates must not enter the reference while a streak counts
@@ -185,12 +218,26 @@ def nightly(L, night: int) -> None:
                           "ref": len(ref)}
         return
     geom = L.geom
-    (dx, dy, deg), hit_star, hit_id = search(recent, mask_of(geom, ref, p.rm_tol_rings), p, geom)
-    big = math.hypot(dx, dy) >= p.rm_shift_min_m - _EPS or abs(deg) >= p.rm_rot_min_deg - _EPS
-    moved = bool(big and hit_star >= p.rm_corr_min - _EPS and hit_star - hit_id >= p.rm_gain_min - _EPS)
+    ref_mask = mask_of(geom, ref, p.rm_tol_rings)
+    (dx, dy, deg), hit_star, hit_id = search(recent, ref_mask, p, geom)
+    moved = bool(_is_big(dx, dy, deg, p) and hit_star >= p.rm_corr_min - _EPS and hit_star - hit_id >= p.rm_gain_min - _EPS)
+    why = ""
+    if moved:                                              # review fix RM-1: two guards against a changed habit and noise
+        got, have = matched_clusters(recent, (dx, dy, deg), ref_mask, p, geom)
+        if got < min(p.rm_min_clusters, have):
+            moved, why = False, "clusters"                 # one new tight cluster laid over one old one
+    if moved and len(ref_dates) >= 2:                      # the same search on the newest reference date, which is
+        hd = ref_dates[-1]                                 # unmoved by construction: a gain there is noise
+        ref2 = [q for d in ref_dates[:-1] for q in pts[d]]
+        if len(pts[hd]) >= p.rm_min_recent and len(ref2) >= p.rm_min_ref:
+            (hx, hy, hdeg), h_star, h_id = search(pts[hd], mask_of(geom, ref2, p.rm_tol_rings), p, geom)
+            if _is_big(hx, hy, hdeg, p) and h_star >= p.rm_corr_min - _EPS and h_star - h_id >= p.rm_gain_min - _EPS:
+                moved, why = False, "noise"
     L.p7_radar_dbg = {"night": night, "verdict": "moved" if moved else "ok", "k": k, "recent": len(recent),
                       "ref": len(ref), "hit": round(hit_star, 3), "hit_id": round(hit_id, 3),
                       "tx": [round(dx * 100), round(dy * 100), round(deg * 10)]}
+    if why:
+        L.p7_radar_dbg["why"] = why
     if moved:
         rm["st"] += 1
         rm["tx"] = [int(round(dx * 100)), int(round(dy * 100)), int(round(deg * 10))]
@@ -233,7 +280,11 @@ def reset_maps(L) -> None:
     ns = L.ns
     ns.candidates = []
     ns.doors_prev = []
-    ns.outline = {"cells": frozenset(), "streak": 0, "done": False}
+    has_outline = any(s["type"] == "room_outline" for s in ns.suggestions)
+    # review fix RM-4: an existing room_outline suggestion is revived by the extraction's update branch (done stays True),
+    # else the extraction would make a second one two nights after the reset; the old walk-point total is in the old frame
+    ns.outline = {"cells": frozenset(), "streak": 0, "done": has_outline}
+    L.bh.walk_points_total = 0
     ns.envelope = frozenset()
     for s in ns.suggestions:
         s["state"] = "stale"

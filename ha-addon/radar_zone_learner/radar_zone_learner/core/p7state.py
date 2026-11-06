@@ -40,6 +40,16 @@ def _isint(v) -> bool:
     return isinstance(v, int) and not isinstance(v, bool)
 
 
+def _isnum(v) -> bool:
+    """A real number: an int (any size: the range checks reject it, ``isfinite`` would overflow on a huge one) or a finite
+    float (the P6 ``p6state._isnum`` pattern)."""
+    if isinstance(v, bool):
+        return False
+    if isinstance(v, int):
+        return True
+    return isinstance(v, float) and math.isfinite(v)
+
+
 def _val(msg: str):
     raise _Value(msg)
 
@@ -88,8 +98,7 @@ def _parse_entry(e, what: str) -> dict:
         if not isinstance(u, list):
             _val("bad u")
         if u:
-            if len(u) != 24 or not all(isinstance(x, (int, float)) and not isinstance(x, bool) and math.isfinite(x)
-                                       and 0.0 <= x <= 1.0 for x in u):
+            if len(u) != 24 or not all(_isnum(x) and 0.0 <= x <= 1.0 for x in u):
                 _val("bad u")
             if abs(sum(u) - 1.0) > 0.05:
                 _val("bad u sum")
@@ -135,7 +144,7 @@ def _parse_mask(m, nc: int) -> dict:
             _val("bad mf cells")
     for k in ("cx", "cy"):
         v = m.get(k)
-        if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) or not -33.0 <= v <= 33.0:
+        if not _isnum(v) or not -33.0 <= v <= 33.0:
             _val("bad mf " + k)
     if m.get("why") not in MF_WHY:
         _val("bad mf why")

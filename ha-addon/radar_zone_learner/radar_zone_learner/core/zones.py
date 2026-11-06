@@ -184,29 +184,29 @@ def update_zone(L, zid: str, s: dict) -> Optional[dict]:
 def move_zone(L, zid: str, s: dict, src: str = "cand") -> Optional[dict]:
     """P7 spec 6.2 (modify): (1) the old cells go into a ``moved_from`` mask before they are replaced, (2) cells, centre
     and polygon are taken from the suggestion, ``srev`` = its rev, rev + 1, ``upd`` = the night (``update_zone``), (3)
-    ``ref`` becomes the suggestion's id and the old ``ref`` joins ``also`` (at most zones_also_max, the oldest dropped):
-    without the swap the new suggestion would stay uncovered and come back as a plain place the night after the answer,
-    (4) the zone's drift entry restarts its runs, ``lu`` is today, ``rc`` falls and ``ms`` is cleared (``mr`` is never
-    reset, D40). The zone id, the name and the kind do not change. ``zone6`` and the P6 evaluator state are untouched."""
+    ``ref`` becomes the suggestion's id (without the swap the new suggestion would stay uncovered and come back as a plain
+    place the night after the answer; the old ``ref`` is not kept in ``also``: after the mask lifts the old spot is a
+    normal suggestion again), (4) the zone's drift entry restarts its runs, ``lu`` is today, ``rc`` falls, ``ms`` is
+    cleared and the stored verdict ``vs`` is ``young`` until the next nightly run (``mr`` is never reset, D40). A zone that
+    needs re-check records no mask (its old cells are in the previous radar frame). The zone id, the name and the kind do not change. ``zone6`` and the P6 evaluator state are untouched."""
     z = find_record(L, zid)
     if z is None:
         return None
-    movedfrom.add(L, "moved_from", z)
-    update_zone(L, zid, s)
-    old = z.get("ref")
-    z["ref"] = s["id"]
-    also = [x for x in z.get("also", []) if x != s["id"]]
-    if old is not None and old != s["id"]:
-        also = [x for x in also if x != old]
-        also.append(old)
-    cap = L.p5params.zones_also_max
-    z["also"] = also[-cap:] if cap > 0 else []
     e = L.zone7.entry(zid, create=True)
+    if not e["rc"]:                                      # a 'needs re-check' zone has cells of the previous radar frame
+        movedfrom.add(L, "moved_from", z)
+    update_zone(L, zid, s)
+    z["ref"] = s["id"]
+    # the old ``ref`` does NOT join ``also`` (review fix): the moved_from mask hides the old spot until it re-qualifies,
+    # and once the mask lifts the old spot is an ordinary pending suggestion again (a place or a modify target)
+    z["also"] = [x for x in z.get("also", []) if x != s["id"]]
     e["lo"] = 0
     e["rt"] = 0
     e["lu"] = L.review._today(L)
     e["rc"] = False
     e["ms"] = ""
+    e["vs"] = "young"                                    # the stored verdict described the old cells: no second modify
+    e["fz"] = False                                      # until the next nightly run judges the new cells
     return z
 
 

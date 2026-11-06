@@ -8,7 +8,8 @@ from radar_zone_learner.core import drift, moves
 from radar_zone_learner.core import zonework
 from radar_zone_learner.core.params import P5Params
 
-from .p7_harness import (D0, add_stay, add_suggestion, add_zone, cover, evidence, make, p7on, set_run, use_days)
+from .p7_harness import (D0, add_stay, add_suggestion, add_zone, cover, evidence, make, p7on, prime_own, set_run,
+                         use_days)
 
 Z = (2.0, 4.0)
 N = (3.1, 4.0)                      # 1.1 m to the right of Z
@@ -52,7 +53,8 @@ class ModifyTest(unittest.TestCase):
         self.assertEqual(m["rev"], 1)
 
     def test_a_far_move_with_no_use_after_the_last_use_passes_succession(self):
-        L, rec, s = sofa_scene(new=(5.0, 4.0))                      # 3.0 m: beyond succ_far_m
+        # post=10: the last use (day 13) is still among the 14 retained covered dates (replay P7-8 fix, see test_p7_fixes)
+        L, rec, s = sofa_scene(new=(5.0, 4.0), post=10)             # 3.0 m: beyond succ_far_m
         _, mods, _, consumed = moves.plan(L, [s])
         self.assertEqual([(m["sid"], m["shift_cm"]) for m in mods], [("s0020-1", 300)])
 
@@ -90,10 +92,8 @@ class ModifyTest(unittest.TestCase):
             add_zone(L2, Z)
             use_days(L2, range(14), Z)
             pos = (Z[0] + dist, Z[1])
-            use_days(L2, range(14, 40), pos)
-            run_nights(L2, 14, 40)
-            if dist > 1.5:
-                pass
+            use_days(L2, range(14, 26), pos)                        # the last use (day 13) stays among the retained dates
+            run_nights(L2, 14, 26)
             s2 = add_suggestion(L2, pos, sid="s0020-1", first=20)
             self.assertEqual(len(moves.plan(L2, [s2])[1]), expect, dist)
 
@@ -235,6 +235,7 @@ class RcZoneTest(unittest.TestCase):
         own["cells"] = frozenset(L.geom.cells_within(Z[0] + 0.3, Z[1], 0.3))
         own["cx"], own["cy"] = Z[0] + 0.3, Z[1]
         own["rev"] = z["srev"] + 1
+        prime_own(L)                                      # review fix: the own source needs two nightly runs
         _, mods, _, _ = moves.plan(L, [])
         self.assertEqual([(m["sid"], m["src"], m["shift_cm"]) for m in mods], [("s0001-1", "own", 30)])
 
@@ -254,6 +255,7 @@ class OwnSuggestionTest(unittest.TestCase):
         own["cells"] = frozenset(L.geom.cells_within(Z[0] + 0.5, Z[1], 0.3))
         own["cx"], own["cy"] = Z[0] + 0.5, Z[1]
         own["rev"] = rec["srev"] + 1
+        prime_own(L)                                      # review fix: the own source needs two nightly runs
         return L, rec, own
 
     def test_a_shifted_own_suggestion_gives_a_modify_with_sid_ref_and_src_own(self):

@@ -16,7 +16,9 @@ from . import rejections
 
 
 def key_of(m: dict) -> tuple:
-    return (m["zid"], m["why"], m["day"])
+    """The identity of one entry: ``add`` allows several entries with the same zone, reason and day but different cells
+    (two answers on one day), so the cells are part of the key (review fix: one re-qualifying entry must not lift others)."""
+    return (m["zid"], m["why"], m["day"], frozenset(m["cells"]))
 
 
 def begin(L) -> None:
