@@ -3197,6 +3197,24 @@
 		(uuid "0648de29-018c-4a2a-ad31-0c17cb5578b3")
 	)
 	(junction
+		(at 134.62 121.92)
+		(diameter 0)
+		(color 0 0 0 0)
+		(uuid "0815f70a-959a-4976-b8c3-04d63464739b")
+	)
+	(junction
+		(at 199.39 49.53)
+		(diameter 0)
+		(color 0 0 0 0)
+		(uuid "10340aa2-cc05-4d2a-8759-727e67183097")
+	)
+	(junction
+		(at 181.61 132.08)
+		(diameter 0)
+		(color 0 0 0 0)
+		(uuid "130e3cbc-34eb-4e27-921c-e1bc2c048dc8")
+	)
+	(junction
 		(at 237.49 62.23)
 		(diameter 0)
 		(color 0 0 0 0)
@@ -3209,16 +3227,34 @@
 		(uuid "2f720bd7-bf81-44c3-8f4b-d5da0b1874bb")
 	)
 	(junction
-		(at 213.36 105.41)
+		(at 165.1 116.84)
 		(diameter 0)
 		(color 0 0 0 0)
-		(uuid "57bbe821-d530-4e96-a2e0-0227632e7c08")
+		(uuid "3a861242-6cd3-440c-86d2-de1e76680f1c")
+	)
+	(junction
+		(at 203.2 96.52)
+		(diameter 0)
+		(color 0 0 0 0)
+		(uuid "485d364a-b78b-49e9-93b4-ebe777bc5a01")
+	)
+	(junction
+		(at 199.39 132.08)
+		(diameter 0)
+		(color 0 0 0 0)
+		(uuid "4b7a1f41-835a-4102-a656-adb3b1b9babc")
 	)
 	(junction
 		(at 209.55 62.23)
 		(diameter 0)
 		(color 0 0 0 0)
 		(uuid "5d930e54-a74c-4dda-848d-bf8bd2461d42")
+	)
+	(junction
+		(at 144.78 106.68)
+		(diameter 0)
+		(color 0 0 0 0)
+		(uuid "67850012-4a80-4944-a42d-64d2163cb1e3")
 	)
 	(junction
 		(at 218.44 91.44)
@@ -3233,6 +3269,12 @@
 		(uuid "6ee460f7-1343-467c-a78b-7841d1eb551a")
 	)
 	(junction
+		(at 196.85 99.06)
+		(diameter 0)
+		(color 0 0 0 0)
+		(uuid "7154cec3-1832-42dc-b380-aa6a9bc2cd2c")
+	)
+	(junction
 		(at 238.76 124.46)
 		(diameter 0)
 		(color 0 0 0 0)
@@ -3245,10 +3287,22 @@
 		(uuid "8380b76b-3090-401c-ade5-064a6c1e1966")
 	)
 	(junction
+		(at 165.1 99.06)
+		(diameter 0)
+		(color 0 0 0 0)
+		(uuid "8bda8fe8-e5c4-4c48-b67e-c76f9a4b632e")
+	)
+	(junction
 		(at 251.46 116.84)
 		(diameter 0)
 		(color 0 0 0 0)
 		(uuid "a141caf7-40a7-4b58-a435-8a1161e30465")
+	)
+	(junction
+		(at 213.36 121.92)
+		(diameter 0)
+		(color 0 0 0 0)
+		(uuid "b24c5633-80a1-47b6-8261-bec8841938f5")
 	)
 	(junction
 		(at 231.14 49.53)
@@ -3269,10 +3323,22 @@
 		(uuid "cee6142e-b0ac-4e9e-a053-a82ce51bb47d")
 	)
 	(junction
-		(at 213.36 121.92)
+		(at 149.86 106.68)
+		(diameter 0)
+		(color 0 0 0 0)
+		(uuid "cfab6fd8-2dc0-4eda-83d7-8e8d3878c884")
+	)
+	(junction
+		(at 203.2 121.92)
 		(diameter 0)
 		(color 0 0 0 0)
 		(uuid "da651343-d612-4126-9942-5c0c2afc7453")
+	)
+	(junction
+		(at 241.3 86.36)
+		(diameter 0)
+		(color 0 0 0 0)
+		(uuid "dfd54b18-816e-4400-a374-b0af4a6bbc8f")
 	)
 	(junction
 		(at 212.09 52.07)
@@ -3287,46 +3353,10 @@
 		(uuid "fcb2cfaa-151a-44bf-9f6e-6f0191a56467")
 	)
 	(junction
-		(at 199.39 49.53)
+		(at 181.61 99.06)
 		(diameter 0)
 		(color 0 0 0 0)
-		(uuid "10340aa2-cc05-4d2a-8759-727e67183097")
-	)
-	(junction
-		(at 144.78 106.68)
-		(diameter 0)
-		(color 0 0 0 0)
-		(uuid "67850012-4a80-4944-a42d-64d2163cb1e3")
-	)
-	(junction
-		(at 149.86 106.68)
-		(diameter 0)
-		(color 0 0 0 0)
-		(uuid "cfab6fd8-2dc0-4eda-83d7-8e8d3878c884")
-	)
-	(junction
-		(at 165.1 99.06)
-		(diameter 0)
-		(color 0 0 0 0)
-		(uuid "8bda8fe8-e5c4-4c48-b67e-c76f9a4b632e")
-	)
-	(junction
-		(at 165.1 116.84)
-		(diameter 0)
-		(color 0 0 0 0)
-		(uuid "3a861242-6cd3-440c-86d2-de1e76680f1c")
-	)
-	(junction
-		(at 134.62 121.92)
-		(diameter 0)
-		(color 0 0 0 0)
-		(uuid "0815f70a-959a-4976-b8c3-04d63464739b")
-	)
-	(junction
-		(at 194.31 121.92)
-		(diameter 0)
-		(color 0 0 0 0)
-		(uuid "b08a40d8-fc30-4cf1-8065-3250c10aa068")
+		(uuid "fe609ad9-1414-482b-be83-db64f61d4e34")
 	)
 	(wire
 		(pts
@@ -3340,16 +3370,6 @@
 	)
 	(wire
 		(pts
-			(xy 251.46 116.84) (xy 247.65 116.84)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "035e6fdc-559c-4053-b222-1a803258282f")
-	)
-	(wire
-		(pts
 			(xy 199.39 49.53) (xy 199.39 91.44)
 		)
 		(stroke
@@ -3357,6 +3377,16 @@
 			(type default)
 		)
 		(uuid "04ae6f89-3c10-4c28-b5b6-a0cad3d99eb0")
+	)
+	(wire
+		(pts
+			(xy 219.71 119.38) (xy 251.46 119.38)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "057a8df4-951b-4374-ab8b-2a8cc9aeee65")
 	)
 	(wire
 		(pts
@@ -3390,17 +3420,7 @@
 	)
 	(wire
 		(pts
-			(xy 213.36 105.41) (xy 223.52 105.41)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "08315a58-835e-4cfb-a42f-0af77f6dfc18")
-	)
-	(wire
-		(pts
-			(xy 203.2 36.83) (xy 203.2 105.41)
+			(xy 203.2 36.83) (xy 203.2 96.52)
 		)
 		(stroke
 			(width 0)
@@ -3510,6 +3530,16 @@
 	)
 	(wire
 		(pts
+			(xy 149.86 106.68) (xy 157.48 106.68)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "200f1efb-db16-4c12-a660-bf1a074eeaf0")
+	)
+	(wire
+		(pts
 			(xy 113.03 36.83) (xy 85.09 36.83)
 		)
 		(stroke
@@ -3517,6 +3547,16 @@
 			(type default)
 		)
 		(uuid "214976fc-256f-4afa-a864-cbb30bc8d40e")
+	)
+	(wire
+		(pts
+			(xy 247.65 99.06) (xy 247.65 116.84)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "22d204b3-fa6e-4075-b08d-bff77f23cfd5")
 	)
 	(wire
 		(pts
@@ -3540,6 +3580,26 @@
 	)
 	(wire
 		(pts
+			(xy 144.78 106.68) (xy 149.86 106.68)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "2571eba2-40cb-4457-9dc1-27552eaa937c")
+	)
+	(wire
+		(pts
+			(xy 173.99 40.64) (xy 180.34 40.64)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "2636d53e-db42-4a96-aa09-8d7984202ed5")
+	)
+	(wire
+		(pts
 			(xy 173.99 29.21) (xy 196.85 29.21)
 		)
 		(stroke
@@ -3557,16 +3617,6 @@
 			(type default)
 		)
 		(uuid "28ccd117-d60c-42e7-b816-189b35cc51fa")
-	)
-	(wire
-		(pts
-			(xy 196.85 86.36) (xy 196.85 101.6)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "2b7b16df-f992-4a2a-8a98-03900e9e69b3")
 	)
 	(wire
 		(pts
@@ -3650,6 +3700,16 @@
 	)
 	(wire
 		(pts
+			(xy 144.78 127) (xy 144.78 132.08)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "39167dc9-a50a-4c14-84dd-8c55ba827b71")
+	)
+	(wire
+		(pts
 			(xy 214.63 54.61) (xy 209.55 54.61)
 		)
 		(stroke
@@ -3670,7 +3730,27 @@
 	)
 	(wire
 		(pts
-			(xy 194.31 121.92) (xy 213.36 121.92)
+			(xy 165.1 99.06) (xy 165.1 101.6)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "40ddfad9-f329-45e8-86f1-6ae97b55e909")
+	)
+	(wire
+		(pts
+			(xy 196.85 67.31) (xy 196.85 99.06)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "41281301-8c5c-4aea-88a5-40a9c1d52148")
+	)
+	(wire
+		(pts
+			(xy 194.31 121.92) (xy 251.46 121.92)
 		)
 		(stroke
 			(width 0)
@@ -3700,13 +3780,33 @@
 	)
 	(wire
 		(pts
-			(xy 247.65 101.6) (xy 246.38 101.6)
+			(xy 176.53 86.36) (xy 241.3 86.36)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "46505d48-ccdd-471e-833c-d226c19f2785")
+	)
+	(wire
+		(pts
+			(xy 247.65 99.06) (xy 246.38 99.06)
 		)
 		(stroke
 			(width 0)
 			(type default)
 		)
 		(uuid "468e43fd-41f7-42f5-a741-3f1ca66a3eef")
+	)
+	(wire
+		(pts
+			(xy 248.92 86.36) (xy 241.3 86.36)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "4e96d74e-bfa8-4b3a-afb3-37cb3cce1bec")
 	)
 	(wire
 		(pts
@@ -3720,7 +3820,7 @@
 	)
 	(wire
 		(pts
-			(xy 185.42 78.74) (xy 236.22 78.74)
+			(xy 185.42 78.74) (xy 248.92 78.74)
 		)
 		(stroke
 			(width 0)
@@ -3790,6 +3890,26 @@
 	)
 	(wire
 		(pts
+			(xy 219.71 129.54) (xy 213.36 129.54)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "6163d742-35ef-4ec1-ab5f-c6664c9675e7")
+	)
+	(wire
+		(pts
+			(xy 149.86 116.84) (xy 165.1 116.84)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "6368c950-7273-410f-9c18-4759c0458a93")
+	)
+	(wire
+		(pts
 			(xy 194.31 44.45) (xy 194.31 121.92)
 		)
 		(stroke
@@ -3820,6 +3940,16 @@
 	)
 	(wire
 		(pts
+			(xy 238.76 132.08) (xy 238.76 124.46)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "67ddd8c1-21a0-4ec0-be5e-114906bd0adc")
+	)
+	(wire
+		(pts
 			(xy 85.09 45.72) (xy 86.36 45.72)
 		)
 		(stroke
@@ -3827,6 +3957,16 @@
 			(type default)
 		)
 		(uuid "69128f12-9fb3-470d-96e9-73baf544a682")
+	)
+	(wire
+		(pts
+			(xy 144.78 115.57) (xy 144.78 116.84)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "6b72b4bf-b278-4d70-89ef-5362702e8b5f")
 	)
 	(wire
 		(pts
@@ -3870,7 +4010,7 @@
 	)
 	(wire
 		(pts
-			(xy 231.14 88.9) (xy 236.22 88.9)
+			(xy 231.14 88.9) (xy 248.92 88.9)
 		)
 		(stroke
 			(width 0)
@@ -3920,7 +4060,17 @@
 	)
 	(wire
 		(pts
-			(xy 199.39 91.44) (xy 236.22 91.44)
+			(xy 124.46 92.71) (xy 124.46 121.92)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "79069308-fd19-454e-920b-d9ca1772b841")
+	)
+	(wire
+		(pts
+			(xy 199.39 91.44) (xy 248.92 91.44)
 		)
 		(stroke
 			(width 0)
@@ -3970,6 +4120,16 @@
 	)
 	(wire
 		(pts
+			(xy 219.71 119.38) (xy 219.71 129.54)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "7c9cd606-51ad-4e9e-b526-1a7f87860817")
+	)
+	(wire
+		(pts
 			(xy 260.35 67.31) (xy 260.35 48.26)
 		)
 		(stroke
@@ -3980,7 +4140,7 @@
 	)
 	(wire
 		(pts
-			(xy 196.85 101.6) (xy 231.14 101.6)
+			(xy 196.85 99.06) (xy 231.14 99.06)
 		)
 		(stroke
 			(width 0)
@@ -3990,7 +4150,17 @@
 	)
 	(wire
 		(pts
-			(xy 213.36 105.41) (xy 213.36 107.95)
+			(xy 181.61 99.06) (xy 196.85 99.06)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "7f2d3645-e90c-4029-ac38-62e387fc9373")
+	)
+	(wire
+		(pts
+			(xy 203.2 96.52) (xy 203.2 109.22)
 		)
 		(stroke
 			(width 0)
@@ -4050,6 +4220,16 @@
 	)
 	(wire
 		(pts
+			(xy 144.78 132.08) (xy 199.39 132.08)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "83e29b9c-f0d5-4731-bd53-9137315c56c7")
+	)
+	(wire
+		(pts
 			(xy 113.03 67.31) (xy 50.8 67.31)
 		)
 		(stroke
@@ -4070,6 +4250,16 @@
 	)
 	(wire
 		(pts
+			(xy 241.3 73.66) (xy 241.3 86.36)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "8a50c670-408e-485a-a144-8144dd710c1f")
+	)
+	(wire
+		(pts
 			(xy 231.14 49.53) (xy 231.14 67.31)
 		)
 		(stroke
@@ -4077,6 +4267,16 @@
 			(type default)
 		)
 		(uuid "8c022007-d8d3-4b3c-bee5-a9dad2001c08")
+	)
+	(wire
+		(pts
+			(xy 176.53 86.36) (xy 176.53 116.84)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "8ea72c53-4823-40ed-87f0-e15199041fe5")
 	)
 	(wire
 		(pts
@@ -4090,7 +4290,7 @@
 	)
 	(wire
 		(pts
-			(xy 231.14 73.66) (xy 236.22 73.66)
+			(xy 241.3 73.66) (xy 248.92 73.66)
 		)
 		(stroke
 			(width 0)
@@ -4120,13 +4320,23 @@
 	)
 	(wire
 		(pts
-			(xy 173.99 40.64) (xy 207.01 40.64)
+			(xy 132.08 121.92) (xy 134.62 121.92)
 		)
 		(stroke
 			(width 0)
 			(type default)
 		)
-		(uuid "9bb21141-f2af-4a14-a665-d84ff47f3bcc")
+		(uuid "988b5092-1958-49e5-977d-90e9e925f982")
+	)
+	(wire
+		(pts
+			(xy 134.62 96.52) (xy 134.62 114.3)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "99793586-7d8b-4a71-9342-5240251ce57a")
 	)
 	(wire
 		(pts
@@ -4160,13 +4370,43 @@
 	)
 	(wire
 		(pts
-			(xy 223.52 105.41) (xy 223.52 106.68)
+			(xy 199.39 49.53) (xy 199.39 33.02)
 		)
 		(stroke
 			(width 0)
 			(type default)
 		)
-		(uuid "ab1d5cde-c685-4de1-91b8-cfda4d10e02f")
+		(uuid "a46fc5c4-ccb0-42c1-aa72-ade313da4141")
+	)
+	(wire
+		(pts
+			(xy 165.1 99.06) (xy 181.61 99.06)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "a5b57fd3-5207-485c-a020-6e2195b32a4c")
+	)
+	(wire
+		(pts
+			(xy 134.62 96.52) (xy 203.2 96.52)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "a91aef7e-0145-4781-8d11-577549dc0a7f")
+	)
+	(wire
+		(pts
+			(xy 247.65 116.84) (xy 251.46 116.84)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "b02f639d-ee06-45f5-ba86-cd4bc5ca0c47")
 	)
 	(wire
 		(pts
@@ -4190,7 +4430,7 @@
 	)
 	(wire
 		(pts
-			(xy 199.39 124.46) (xy 238.76 124.46)
+			(xy 199.39 132.08) (xy 238.76 132.08)
 		)
 		(stroke
 			(width 0)
@@ -4207,6 +4447,16 @@
 			(type default)
 		)
 		(uuid "b5751ab8-9873-43c5-a936-29a05a745a12")
+	)
+	(wire
+		(pts
+			(xy 181.61 106.68) (xy 181.61 132.08)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "b65548f8-b24c-44d0-bc9b-193576081997")
 	)
 	(wire
 		(pts
@@ -4240,6 +4490,16 @@
 	)
 	(wire
 		(pts
+			(xy 149.86 114.3) (xy 149.86 116.84)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "cbe0b080-e289-4ae1-b7c0-f9a2cdf7662a")
+	)
+	(wire
+		(pts
 			(xy 68.58 31.75) (xy 34.29 31.75)
 		)
 		(stroke
@@ -4247,6 +4507,16 @@
 			(type default)
 		)
 		(uuid "cc489518-f73b-4b59-b455-c47d8cde8109")
+	)
+	(wire
+		(pts
+			(xy 180.34 92.71) (xy 124.46 92.71)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "cc6e3634-a87b-4b13-b565-8cfa861306cf")
 	)
 	(wire
 		(pts
@@ -4280,17 +4550,17 @@
 	)
 	(wire
 		(pts
-			(xy 203.2 105.41) (xy 213.36 105.41)
+			(xy 165.1 111.76) (xy 165.1 116.84)
 		)
 		(stroke
 			(width 0)
 			(type default)
 		)
-		(uuid "d158db57-55a3-4e56-bf55-d028483603a6")
+		(uuid "d220d251-ab58-4942-bb60-4793399a4629")
 	)
 	(wire
 		(pts
-			(xy 238.76 109.22) (xy 238.76 124.46)
+			(xy 238.76 106.68) (xy 238.76 124.46)
 		)
 		(stroke
 			(width 0)
@@ -4310,7 +4580,7 @@
 	)
 	(wire
 		(pts
-			(xy 213.36 115.57) (xy 213.36 121.92)
+			(xy 203.2 116.84) (xy 203.2 121.92)
 		)
 		(stroke
 			(width 0)
@@ -4320,7 +4590,7 @@
 	)
 	(wire
 		(pts
-			(xy 218.44 81.28) (xy 236.22 81.28)
+			(xy 218.44 81.28) (xy 248.92 81.28)
 		)
 		(stroke
 			(width 0)
@@ -4340,13 +4610,23 @@
 	)
 	(wire
 		(pts
-			(xy 247.65 116.84) (xy 247.65 101.6)
+			(xy 165.1 116.84) (xy 176.53 116.84)
 		)
 		(stroke
 			(width 0)
 			(type default)
 		)
-		(uuid "dc4bc464-02a5-45fb-b144-6c3c9264b806")
+		(uuid "db6ab9d9-16e2-45da-b80e-1f8b2e7ff8b9")
+	)
+	(wire
+		(pts
+			(xy 144.78 106.68) (xy 144.78 107.95)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "e28bf932-fa1c-4841-8cd1-1e0047a35834")
 	)
 	(wire
 		(pts
@@ -4360,6 +4640,16 @@
 	)
 	(wire
 		(pts
+			(xy 144.78 99.06) (xy 165.1 99.06)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "e31feb21-7715-4563-82b3-c4456b1ad597")
+	)
+	(wire
+		(pts
 			(xy 231.14 67.31) (xy 226.06 67.31)
 		)
 		(stroke
@@ -4367,16 +4657,6 @@
 			(type default)
 		)
 		(uuid "e3b3fbb0-f88e-45de-8346-8488cdc0a9a9")
-	)
-	(wire
-		(pts
-			(xy 223.52 114.3) (xy 223.52 119.38)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "e6f41a25-df79-430e-a65d-daf8b21a4b63")
 	)
 	(wire
 		(pts
@@ -4390,33 +4670,13 @@
 	)
 	(wire
 		(pts
-			(xy 199.39 91.44) (xy 199.39 124.46)
+			(xy 199.39 91.44) (xy 199.39 132.08)
 		)
 		(stroke
 			(width 0)
 			(type default)
 		)
 		(uuid "ebd078b3-542c-4bc0-b3b8-feb1198da3fb")
-	)
-	(wire
-		(pts
-			(xy 196.85 67.31) (xy 196.85 86.36)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "ebe61c48-25fe-49f8-8690-dfa95e2554db")
-	)
-	(wire
-		(pts
-			(xy 223.52 119.38) (xy 251.46 119.38)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "ec69fcfa-bb21-457f-9dce-57e9b3570920")
 	)
 	(wire
 		(pts
@@ -4460,16 +4720,6 @@
 	)
 	(wire
 		(pts
-			(xy 213.36 121.92) (xy 251.46 121.92)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "f61210fe-0a7b-41cd-ad33-44b7b4a43033")
-	)
-	(wire
-		(pts
 			(xy 254 33.02) (xy 254 50.8)
 		)
 		(stroke
@@ -4500,7 +4750,17 @@
 	)
 	(wire
 		(pts
-			(xy 236.22 76.2) (xy 189.23 76.2)
+			(xy 180.34 40.64) (xy 180.34 92.71)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "fa5e39d7-30d0-4a93-8f7a-ebf0d85b3e7c")
+	)
+	(wire
+		(pts
+			(xy 189.23 76.2) (xy 248.92 76.2)
 		)
 		(stroke
 			(width 0)
@@ -4520,106 +4780,6 @@
 	)
 	(wire
 		(pts
-			(xy 196.85 29.21) (xy 196.85 67.31)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "fe05a75c-d4a3-43c5-a41d-017f09a8ddec")
-	)
-	(wire
-		(pts
-			(xy 199.39 49.53) (xy 199.39 33.02)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "a46fc5c4-ccb0-42c1-aa72-ade313da4141")
-	)
-	(wire
-		(pts
-			(xy 144.78 99.06) (xy 165.1 99.06)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "e31feb21-7715-4563-82b3-c4456b1ad597")
-	)
-	(wire
-		(pts
-			(xy 165.1 99.06) (xy 177.8 99.06)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "a5b57fd3-5207-485c-a020-6e2195b32a4c")
-	)
-	(wire
-		(pts
-			(xy 165.1 99.06) (xy 165.1 101.6)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "40ddfad9-f329-45e8-86f1-6ae97b55e909")
-	)
-	(wire
-		(pts
-			(xy 144.78 106.68) (xy 149.86 106.68)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "2571eba2-40cb-4457-9dc1-27552eaa937c")
-	)
-	(wire
-		(pts
-			(xy 149.86 106.68) (xy 157.48 106.68)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "200f1efb-db16-4c12-a660-bf1a074eeaf0")
-	)
-	(wire
-		(pts
-			(xy 144.78 106.68) (xy 144.78 107.95)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "e28bf932-fa1c-4841-8cd1-1e0047a35834")
-	)
-	(wire
-		(pts
-			(xy 144.78 115.57) (xy 144.78 116.84)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "6b72b4bf-b278-4d70-89ef-5362702e8b5f")
-	)
-	(wire
-		(pts
-			(xy 144.78 127) (xy 144.78 129.54)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "39167dc9-a50a-4c14-84dd-8c55ba827b71")
-	)
-	(wire
-		(pts
 			(xy 134.62 121.92) (xy 137.16 121.92)
 		)
 		(stroke
@@ -4630,175 +4790,16 @@
 	)
 	(wire
 		(pts
-			(xy 132.08 121.92) (xy 134.62 121.92)
+			(xy 196.85 29.21) (xy 196.85 67.31)
 		)
 		(stroke
 			(width 0)
 			(type default)
 		)
-		(uuid "988b5092-1958-49e5-977d-90e9e925f982")
-	)
-	(wire
-		(pts
-			(xy 119.38 121.92) (xy 124.46 121.92)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "7c2ea3e1-04fd-49ab-af4c-3ba81a47e8c4")
-	)
-	(wire
-		(pts
-			(xy 165.1 111.76) (xy 165.1 116.84)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "d220d251-ab58-4942-bb60-4793399a4629")
-	)
-	(wire
-		(pts
-			(xy 165.1 116.84) (xy 175.26 116.84)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "db6ab9d9-16e2-45da-b80e-1f8b2e7ff8b9")
-	)
-	(wire
-		(pts
-			(xy 149.86 114.3) (xy 149.86 116.84)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "cbe0b080-e289-4ae1-b7c0-f9a2cdf7662a")
-	)
-	(wire
-		(pts
-			(xy 149.86 116.84) (xy 165.1 116.84)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "6368c950-7273-410f-9c18-4759c0458a93")
-	)
-	(wire
-		(pts
-			(xy 177.8 106.68) (xy 177.8 109.22)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "556ef82a-fcc8-4882-a428-163fa756e261")
-	)
-	(wire
-		(pts
-			(xy 191.77 129.54) (xy 194.31 129.54)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "6163d742-35ef-4ec1-ab5f-c6664c9675e7")
-	)
-	(label "RADAR_5V"
-		(at 231.14 73.66 180)
-		(fields_autoplaced yes)
-		(effects
-			(font
-				(size 1.27 1.27)
-			)
-			(justify right bottom)
-		)
-		(uuid "68a96d55-b501-46a2-8fdc-f47e791eb4ee")
-	)
-	(label "RADAR_5V"
-		(at 236.22 86.36 180)
-		(fields_autoplaced yes)
-		(effects
-			(font
-				(size 1.27 1.27)
-			)
-			(justify right bottom)
-		)
-		(uuid "4abdf017-e60c-4933-9966-a43f07b60c57")
-	)
-	(label "RADAR_R"
-		(at 236.22 76.2 180)
-		(fields_autoplaced yes)
-		(effects
-			(font
-				(size 1.27 1.27)
-			)
-			(justify right bottom)
-		)
-		(uuid "d0d60dfe-1908-4712-b048-3fb299f649b0")
-	)
-	(label "RADAR_T"
-		(at 236.22 78.74 180)
-		(fields_autoplaced yes)
-		(effects
-			(font
-				(size 1.27 1.27)
-			)
-			(justify right bottom)
-		)
-		(uuid "9bbbeb6a-3415-473b-b5ac-169fd1e456f7")
-	)
-	(label "VBUS"
-		(at 231.14 101.6 180)
-		(fields_autoplaced yes)
-		(effects
-			(font
-				(size 1.27 1.27)
-			)
-			(justify right bottom)
-		)
-		(uuid "292d936a-9732-4088-a356-b1d397a9f878")
-	)
-	(label "GND"
-		(at 199.39 124.46 0)
-		(fields_autoplaced yes)
-		(effects
-			(font
-				(size 1.27 1.27)
-			)
-			(justify left bottom)
-		)
-		(uuid "e20ce9ba-ad18-45e3-a709-e1981806a9ac")
-	)
-	(label "3V3"
-		(at 203.2 105.41 0)
-		(fields_autoplaced yes)
-		(effects
-			(font
-				(size 1.27 1.27)
-			)
-			(justify left bottom)
-		)
-		(uuid "fc8a297b-ae04-4abd-a270-decd7be145e6")
-	)
-	(label "RADAR_PWR_EN"
-		(at 207.01 40.64 0)
-		(fields_autoplaced yes)
-		(effects
-			(font
-				(size 1.27 1.27)
-			)
-			(justify left bottom)
-		)
-		(uuid "330a8f12-d03a-42c3-b87a-ce8a0d639de3")
+		(uuid "fe05a75c-d4a3-43c5-a41d-017f09a8ddec")
 	)
 	(label "BTN_PWR"
-		(at 223.52 119.38 0)
-		(fields_autoplaced yes)
+		(at 240.03 119.38 0)
 		(effects
 			(font
 				(size 1.27 1.27)
@@ -4807,108 +4808,115 @@
 		)
 		(uuid "5034684a-9577-474d-afde-b6f4e8ac8ad1")
 	)
-	(label "VBUS"
-		(at 144.78 99.06 180)
-		(fields_autoplaced yes)
+	(label "RADAR_T"
+		(at 236.22 78.74 180)
 		(effects
 			(font
 				(size 1.27 1.27)
 			)
 			(justify right bottom)
 		)
-		(uuid "04fd1a7e-73b6-47b9-946c-4b914cff26e8")
+		(uuid "9bbbeb6a-3415-473b-b5ac-169fd1e456f7")
 	)
-	(label "GND"
-		(at 144.78 129.54 0)
-		(fields_autoplaced yes)
-		(effects
-			(font
-				(size 1.27 1.27)
-			)
-			(justify left bottom)
-		)
-		(uuid "8085cab7-2f17-44b1-91b0-e64f0aff97b2")
-	)
-	(label "GND"
-		(at 177.8 109.22 0)
-		(fields_autoplaced yes)
-		(effects
-			(font
-				(size 1.27 1.27)
-			)
-			(justify left bottom)
-		)
-		(uuid "8ce324c6-4d14-4219-b17f-56317708cc5c")
-	)
-	(label "3V3"
-		(at 134.62 114.3 0)
-		(fields_autoplaced yes)
-		(effects
-			(font
-				(size 1.27 1.27)
-			)
-			(justify left bottom)
-		)
-		(uuid "b8b28e55-140e-4c33-a8d8-214870609faa")
-	)
-	(label "RADAR_PWR_EN"
-		(at 119.38 121.92 180)
-		(fields_autoplaced yes)
+	(label "RADAR_R"
+		(at 236.22 76.2 180)
 		(effects
 			(font
 				(size 1.27 1.27)
 			)
 			(justify right bottom)
 		)
-		(uuid "c1888648-72a3-4d2b-9c4c-62f7fdce576a")
+		(uuid "d0d60dfe-1908-4712-b048-3fb299f649b0")
 	)
-	(label "RADAR_5V"
-		(at 175.26 116.84 0)
-		(fields_autoplaced yes)
-		(effects
-			(font
-				(size 1.27 1.27)
-			)
-			(justify left bottom)
-		)
-		(uuid "7628f9aa-335d-4082-9247-1c3dac3c3a9c")
-	)
-	(label "BTN_PWR"
-		(at 191.77 129.54 180)
-		(fields_autoplaced yes)
-		(effects
-			(font
-				(size 1.27 1.27)
-			)
-			(justify right bottom)
-		)
-		(uuid "28a9f635-70f7-46c0-a0da-d128e35e60a6")
-	)
-	(text "Radar header (HLK-LD2454) to radar J1 [1 5V, 2 G, 3 T, 4 R] - the cable is NOT 1:1:\n  header 1  RADAR_5V -> J1-1 5V  (LD2454 manual: DC 5 V, >200 mA)\n  header 4  GND      -> J1-2 G\n  header 3  RADAR_T  -> J1-3 T  (radar TX -> GPIO11 / Serial1 RX)\n  header 2  RADAR_R  -> J1-4 R  (radar RX <- D7 / GPIO44 / Serial1 TX, needed to enable multi-target mode)\nRadar supply: J5 pin 1 (LD2454) and J6 pin 1 (LD2412) are fed from the switched RADAR_5V rail\n(Q1 AO3401A high-side switch from VBUS, RADAR_PWR_EN = GPIO9 high = ON), no longer directly from VBUS."
+	(symbol
+		(lib_id "Transistor_FET:AO3401A")
+		(at 162.56 106.68 0)
+		(mirror x)
+		(unit 1)
+		(body_style 1)
 		(exclude_from_sim no)
-		(at 127 132.08 0)
-		(effects
-			(font
-				(size 1.27 1.27)
+		(in_bom yes)
+		(on_board yes)
+		(in_pos_files yes)
+		(dnp no)
+		(uuid "10327140-f5a0-4317-b682-045e1b76f63c")
+		(property "Reference" "Q1"
+			(at 167.64 105.41 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
 			)
-			(justify left top)
 		)
-		(uuid "66bc8663-4635-4b50-b132-9bd70b6bdb37")
-	)
-	(text "RADAR POWER SWITCH (option A) - one switch for both radars, J5 and J6:\n  Q1 AO3401A high-side P-FET VBUS -> RADAR_5V; R5 10k gate-VBUS holds Q1 off.\n  Q2 AO3400A pulls the Q1 gate low via R9 1k when RADAR_PWR_EN is high.\n  RADAR_PWR_EN = GPIO9 (XIAO D10, U8 pin 11) via R6 220 Ohm: HIGH = radars ON.\n  R7 100k pull-up to 3V3 (U8 pin 12): radars ON while the ESP32 is in reset.\n  Soft start: C13 470n X7R gate-drain + R9: RADAR_5V rises about 7 V/ms (1 ms),\n  inrush about 0.15 A per 20 uF of radar input caps; turn-off takes 20-40 ms.\n  C12 100u 10V X5R MLCC: optional VBUS bulk, place at the Q1 source.\n  Never drive the Q1 gate from 3.3 V; never switch GND.\n  Before radars off: Serial1.end(), GPIO44 (RADAR_R) low or Hi-Z.\nBUTTON LADDER on GPIO8 (XIAO D9 / A9, U8 pin 10), R1 10k pull-up to 3V3:\n  idle about 3.3 V; mode button (J8 pin 3, direct) 0 V;\n  LED-off / power button (J8 pin 2 = BTN_PWR, via R8 10k) about 1.65 V.\n  R2 not fitted (DNP). J8 pin 2 / 3 = Button 1 / 2 on sheet 2 (1:1 cable, confirmed)."
-		(exclude_from_sim no)
-		(at 15.24 97.79 0)
-		(effects
-			(font
-				(size 1.27 1.27)
+		(property "Value" "AO3401A"
+			(at 167.64 107.95 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
 			)
-			(justify left top)
 		)
-		(uuid "7adccf84-1ae0-4801-b08a-fafabc3fc9b3")
+		(property "Footprint" "Package_TO_SOT_SMD:SOT-23"
+			(at 162.56 106.68 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+					(italic yes)
+				)
+			)
+		)
+		(property "Datasheet" "http://www.aosmd.com/pdfs/datasheet/AO3401A.pdf"
+			(at 162.56 106.68 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Description" "-4.0A Id, -30V Vds, P-Channel MOSFET, SOT-23"
+			(at 162.56 106.68 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(pin "1"
+			(uuid "162a39b7-a098-448a-809c-ba15198e1216")
+		)
+		(pin "2"
+			(uuid "db684b19-8769-4f5f-bd89-d747de513a6e")
+		)
+		(pin "3"
+			(uuid "8f09c27f-c92e-4406-992d-a9d3c195cf1c")
+		)
+		(instances
+			(project "LedMatrixSensorNode"
+				(path "/366c615b-9c48-48b1-87b1-faab6a67cc80"
+					(reference "Q1")
+					(unit 1)
+				)
+			)
+		)
 	)
 	(symbol
 		(lib_id "Connector_Generic:Conn_01x04")
-		(at 241.3 76.2 0)
+		(at 254 76.2 0)
 		(unit 1)
 		(body_style 1)
 		(exclude_from_sim no)
@@ -4919,7 +4927,7 @@
 		(fields_autoplaced yes)
 		(uuid "2492cf1c-ed4a-4057-b04d-c71c1e18166c")
 		(property "Reference" "J5"
-			(at 243.84 76.1999 0)
+			(at 256.54 76.1999 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -4931,7 +4939,7 @@
 			)
 		)
 		(property "Value" "HLK-LD2454"
-			(at 243.84 77.4699 0)
+			(at 256.54 77.4699 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -4942,7 +4950,7 @@
 			)
 		)
 		(property "Footprint" ""
-			(at 241.3 76.2 0)
+			(at 254 76.2 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -4953,7 +4961,7 @@
 			)
 		)
 		(property "Datasheet" ""
-			(at 241.3 76.2 0)
+			(at 254 76.2 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -4964,7 +4972,7 @@
 			)
 		)
 		(property "Description" "Generic connector, single row, 01x04, script generated (kicad-library-utils/schlib/autogen/connector/)"
-			(at 241.3 76.2 0)
+			(at 254 76.2 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -5086,7 +5094,7 @@
 	)
 	(symbol
 		(lib_id "Device:R")
-		(at 213.36 111.76 0)
+		(at 203.2 113.03 0)
 		(unit 1)
 		(body_style 1)
 		(exclude_from_sim no)
@@ -5095,8 +5103,8 @@
 		(in_pos_files yes)
 		(dnp no)
 		(uuid "3221a330-c5d1-4a7c-bb88-b996c3f55ec5")
-		(property "Reference" "R1"
-			(at 215.9 110.4899 0)
+		(property "Reference" "R4"
+			(at 205.74 111.7599 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -5107,7 +5115,7 @@
 			)
 		)
 		(property "Value" "10k"
-			(at 216.916 112.776 0)
+			(at 206.756 114.046 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -5118,7 +5126,7 @@
 			)
 		)
 		(property "Footprint" ""
-			(at 211.582 111.76 90)
+			(at 201.422 113.03 90)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -5129,7 +5137,7 @@
 			)
 		)
 		(property "Datasheet" ""
-			(at 213.36 111.76 0)
+			(at 203.2 113.03 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -5140,7 +5148,7 @@
 			)
 		)
 		(property "Description" "Resistor"
-			(at 213.36 111.76 0)
+			(at 203.2 113.03 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -5159,7 +5167,88 @@
 		(instances
 			(project "LedMatrixSensorNode"
 				(path "/366c615b-9c48-48b1-87b1-faab6a67cc80"
-					(reference "R1")
+					(reference "R4")
+					(unit 1)
+				)
+			)
+		)
+	)
+	(symbol
+		(lib_id "Device:C")
+		(at 181.61 102.87 0)
+		(unit 1)
+		(body_style 1)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(in_pos_files yes)
+		(dnp no)
+		(uuid "41296352-3bbc-427e-ac5c-c0b8eb6267b0")
+		(property "Reference" "C12"
+			(at 184.15 101.6 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Value" "100u 10V"
+			(at 184.15 104.14 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Footprint" ""
+			(at 181.61 102.87 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Datasheet" ""
+			(at 181.61 102.87 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Description" "Unpolarized capacitor"
+			(at 181.61 102.87 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(pin "1"
+			(uuid "516f91e6-e79d-494c-a696-aaa9f6468bcd")
+		)
+		(pin "2"
+			(uuid "9b912c80-4740-4671-a3c0-f1acbff6641a")
+		)
+		(instances
+			(project "LedMatrixSensorNode"
+				(path "/366c615b-9c48-48b1-87b1-faab6a67cc80"
+					(reference "C12")
 					(unit 1)
 				)
 			)
@@ -5167,7 +5256,7 @@
 	)
 	(symbol
 		(lib_id "Regulator_Linear:L7805")
-		(at 238.76 101.6 0)
+		(at 238.76 99.06 0)
 		(unit 1)
 		(body_style 1)
 		(exclude_from_sim no)
@@ -5178,7 +5267,7 @@
 		(fields_autoplaced yes)
 		(uuid "49fc3dcb-4d8b-4c3d-849b-37b7797c8ac3")
 		(property "Reference" "U7"
-			(at 238.76 95.25 0)
+			(at 238.76 92.71 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -5189,7 +5278,7 @@
 			)
 		)
 		(property "Value" "DC/DC 3.3v"
-			(at 238.76 97.79 0)
+			(at 238.76 95.25 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -5199,7 +5288,7 @@
 			)
 		)
 		(property "Footprint" ""
-			(at 239.395 105.41 0)
+			(at 239.395 102.87 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -5212,7 +5301,7 @@
 			)
 		)
 		(property "Datasheet" "http://www.st.com/content/ccc/resource/technical/document/datasheet/41/4f/b3/b0/12/d4/47/88/CD00000444.pdf/files/CD00000444.pdf/jcr:content/translations/en.CD00000444.pdf"
-			(at 238.76 102.87 0)
+			(at 238.76 100.33 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -5223,7 +5312,7 @@
 			)
 		)
 		(property "Description" "Positive 1.5A 35V Linear Regulator, Fixed Output 5V, TO-220/TO-263/TO-252"
-			(at 238.76 101.6 0)
+			(at 238.76 99.06 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -5252,6 +5341,172 @@
 		)
 	)
 	(symbol
+		(lib_id "Device:R")
+		(at 144.78 111.76 0)
+		(unit 1)
+		(body_style 1)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(in_pos_files yes)
+		(dnp no)
+		(uuid "4cf2bf49-8ece-4603-a2bf-840e8fd0e72c")
+		(property "Reference" "R9"
+			(at 142.24 110.49 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify right)
+			)
+		)
+		(property "Value" "1k"
+			(at 142.24 113.03 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify right)
+			)
+		)
+		(property "Footprint" ""
+			(at 144.78 111.76 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Datasheet" ""
+			(at 144.78 111.76 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Description" "Resistor"
+			(at 144.78 111.76 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(pin "1"
+			(uuid "016c708e-c173-4c15-b99d-d24f8b6c13c5")
+		)
+		(pin "2"
+			(uuid "eb2043c4-5d53-4089-9e56-66ccf6c7fb77")
+		)
+		(instances
+			(project "LedMatrixSensorNode"
+				(path "/366c615b-9c48-48b1-87b1-faab6a67cc80"
+					(reference "R9")
+					(unit 1)
+				)
+			)
+		)
+	)
+	(symbol
+		(lib_id "Transistor_FET:AO3400A")
+		(at 142.24 121.92 0)
+		(unit 1)
+		(body_style 1)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(in_pos_files yes)
+		(dnp no)
+		(uuid "50173b67-acfd-46bf-8426-bbb23d1f43f1")
+		(property "Reference" "Q2"
+			(at 147.32 120.65 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Value" "AO3400A"
+			(at 147.32 123.19 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Footprint" "Package_TO_SOT_SMD:SOT-23"
+			(at 142.24 121.92 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+					(italic yes)
+				)
+			)
+		)
+		(property "Datasheet" "http://www.aosmd.com/pdfs/datasheet/AO3400A.pdf"
+			(at 142.24 121.92 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Description" "30V Vds, 5.7A Id, N-Channel MOSFET, SOT-23"
+			(at 142.24 121.92 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(pin "1"
+			(uuid "8a5116a5-90e7-4d73-abd1-ea4eac64e6e5")
+		)
+		(pin "2"
+			(uuid "fd716bbd-6361-4dde-b941-7a647b919010")
+		)
+		(pin "3"
+			(uuid "b3697140-df78-4352-9ab8-0a8be7bf0243")
+		)
+		(instances
+			(project "LedMatrixSensorNode"
+				(path "/366c615b-9c48-48b1-87b1-faab6a67cc80"
+					(reference "Q2")
+					(unit 1)
+				)
+			)
+		)
+	)
+	(symbol
 		(lib_id "Regulator_Linear:L7805")
 		(at 218.44 67.31 0)
 		(unit 1)
@@ -5263,7 +5518,7 @@
 		(dnp no)
 		(fields_autoplaced yes)
 		(uuid "528154e4-0310-47a9-97fb-3899e51dcb5b")
-		(property "Reference" "U2"
+		(property "Reference" "U9"
 			(at 218.44 60.96 0)
 			(hide yes)
 			(show_name no)
@@ -5331,7 +5586,7 @@
 		(instances
 			(project "LedMatrixSensorNode"
 				(path "/366c615b-9c48-48b1-87b1-faab6a67cc80"
-					(reference "U2")
+					(reference "U9")
 					(unit 1)
 				)
 			)
@@ -5421,6 +5676,168 @@
 			(project "LedMatrixSensorNode"
 				(path "/366c615b-9c48-48b1-87b1-faab6a67cc80"
 					(reference "J8")
+					(unit 1)
+				)
+			)
+		)
+	)
+	(symbol
+		(lib_id "Device:R")
+		(at 144.78 102.87 0)
+		(unit 1)
+		(body_style 1)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(in_pos_files yes)
+		(dnp no)
+		(uuid "62b4d529-a4ac-4464-b840-8963cd3a5123")
+		(property "Reference" "R5"
+			(at 142.24 101.6 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify right)
+			)
+		)
+		(property "Value" "10k"
+			(at 142.24 104.14 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify right)
+			)
+		)
+		(property "Footprint" ""
+			(at 144.78 102.87 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Datasheet" ""
+			(at 144.78 102.87 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Description" "Resistor"
+			(at 144.78 102.87 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(pin "1"
+			(uuid "a5d2e081-85b9-4d0c-b339-b19de4e7361d")
+		)
+		(pin "2"
+			(uuid "3a838d10-87a6-477b-aade-4d49640f764c")
+		)
+		(instances
+			(project "LedMatrixSensorNode"
+				(path "/366c615b-9c48-48b1-87b1-faab6a67cc80"
+					(reference "R5")
+					(unit 1)
+				)
+			)
+		)
+	)
+	(symbol
+		(lib_id "Device:C")
+		(at 149.86 110.49 0)
+		(unit 1)
+		(body_style 1)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(in_pos_files yes)
+		(dnp no)
+		(uuid "765a33f6-5cb3-4edf-abb1-b835568a45c0")
+		(property "Reference" "C13"
+			(at 152.4 109.22 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Value" "470n 16V"
+			(at 152.4 111.76 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Footprint" ""
+			(at 149.86 110.49 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Datasheet" ""
+			(at 149.86 110.49 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Description" "Unpolarized capacitor"
+			(at 149.86 110.49 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(pin "1"
+			(uuid "832f723f-1379-4021-b9ad-b53d9d68e655")
+		)
+		(pin "2"
+			(uuid "6b76b91a-40db-437e-b92b-28b463b7d172")
+		)
+		(instances
+			(project "LedMatrixSensorNode"
+				(path "/366c615b-9c48-48b1-87b1-faab6a67cc80"
+					(reference "C13")
 					(unit 1)
 				)
 			)
@@ -5615,40 +6032,39 @@
 	)
 	(symbol
 		(lib_id "Device:R")
-		(at 223.52 110.49 0)
+		(at 134.62 118.11 0)
 		(unit 1)
 		(body_style 1)
 		(exclude_from_sim no)
 		(in_bom yes)
 		(on_board yes)
 		(in_pos_files yes)
-		(dnp yes)
-		(fields_autoplaced yes)
-		(uuid "ae412f30-40aa-4d4a-96ec-6b58d487a767")
-		(property "Reference" "R2"
-			(at 226.06 109.2199 0)
+		(dnp no)
+		(uuid "a7ff6d23-3304-42ca-b092-a312757f2a3e")
+		(property "Reference" "R7"
+			(at 132.08 116.84 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
 				(font
 					(size 1.27 1.27)
 				)
-				(justify left)
+				(justify right)
 			)
 		)
-		(property "Value" "10k"
-			(at 226.06 111.7599 0)
+		(property "Value" "100k"
+			(at 132.08 119.38 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
 				(font
 					(size 1.27 1.27)
 				)
-				(justify left)
+				(justify right)
 			)
 		)
 		(property "Footprint" ""
-			(at 221.742 110.49 90)
+			(at 134.62 118.11 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -5659,7 +6075,7 @@
 			)
 		)
 		(property "Datasheet" ""
-			(at 223.52 110.49 0)
+			(at 134.62 118.11 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -5670,7 +6086,7 @@
 			)
 		)
 		(property "Description" "Resistor"
-			(at 223.52 110.49 0)
+			(at 134.62 118.11 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -5681,15 +6097,15 @@
 			)
 		)
 		(pin "1"
-			(uuid "c630f8fd-e8a8-4edf-86b2-36d611ff316c")
+			(uuid "d04216e4-d8b0-4ab5-9f29-827fdf1aa90c")
 		)
 		(pin "2"
-			(uuid "7c6dc198-67e4-4928-a4c1-aecb38f1808a")
+			(uuid "d9c6ca44-ede3-43d6-bc32-5dddafd922cf")
 		)
 		(instances
 			(project "LedMatrixSensorNode"
 				(path "/366c615b-9c48-48b1-87b1-faab6a67cc80"
-					(reference "R2")
+					(reference "R7")
 					(unit 1)
 				)
 			)
@@ -5697,7 +6113,7 @@
 	)
 	(symbol
 		(lib_id "Connector_Generic:Conn_01x03")
-		(at 241.3 88.9 0)
+		(at 254 88.9 0)
 		(unit 1)
 		(body_style 1)
 		(exclude_from_sim no)
@@ -5708,7 +6124,7 @@
 		(fields_autoplaced yes)
 		(uuid "c2c97c0d-73fc-4bb9-b34c-316a612f5312")
 		(property "Reference" "J6"
-			(at 243.84 87.6299 0)
+			(at 256.54 87.6299 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -5719,7 +6135,7 @@
 			)
 		)
 		(property "Value" "HLK-LD2412"
-			(at 243.84 90.1699 0)
+			(at 256.54 90.1699 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -5730,7 +6146,7 @@
 			)
 		)
 		(property "Footprint" ""
-			(at 241.3 88.9 0)
+			(at 254 88.9 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -5741,7 +6157,7 @@
 			)
 		)
 		(property "Datasheet" ""
-			(at 241.3 88.9 0)
+			(at 254 88.9 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -5752,7 +6168,7 @@
 			)
 		)
 		(property "Description" "Generic connector, single row, 01x03, script generated (kicad-library-utils/schlib/autogen/connector/)"
-			(at 241.3 88.9 0)
+			(at 254 88.9 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -5775,6 +6191,85 @@
 			(project "LedMatrixSensorNode"
 				(path "/366c615b-9c48-48b1-87b1-faab6a67cc80"
 					(reference "J6")
+					(unit 1)
+				)
+			)
+		)
+	)
+	(symbol
+		(lib_id "Device:R")
+		(at 128.27 121.92 90)
+		(unit 1)
+		(body_style 1)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(in_pos_files yes)
+		(dnp no)
+		(uuid "c6ccc4f0-7b47-4272-bcc8-d95adc36573e")
+		(property "Reference" "R6"
+			(at 128.27 124.46 90)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Value" "150"
+			(at 128.27 127 90)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Footprint" ""
+			(at 128.27 121.92 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Datasheet" ""
+			(at 128.27 121.92 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Description" "Resistor"
+			(at 128.27 121.92 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(pin "1"
+			(uuid "8cb85067-c96b-4589-b66c-17aff420a34c")
+		)
+		(pin "2"
+			(uuid "5821a1b4-8082-4395-9f28-428054dd615d")
+		)
+		(instances
+			(project "LedMatrixSensorNode"
+				(path "/366c615b-9c48-48b1-87b1-faab6a67cc80"
+					(reference "R6")
 					(unit 1)
 				)
 			)
@@ -5950,6 +6445,87 @@
 			(project "LedMatrixSensorNode"
 				(path "/366c615b-9c48-48b1-87b1-faab6a67cc80"
 					(reference "J7")
+					(unit 1)
+				)
+			)
+		)
+	)
+	(symbol
+		(lib_id "Device:R")
+		(at 213.36 125.73 0)
+		(unit 1)
+		(body_style 1)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(in_pos_files yes)
+		(dnp no)
+		(uuid "e0fe2546-3ab1-406d-8868-48955e5a6738")
+		(property "Reference" "R8"
+			(at 210.82 124.46 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify right)
+			)
+		)
+		(property "Value" "10k"
+			(at 210.82 126.365 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify right)
+			)
+		)
+		(property "Footprint" ""
+			(at 213.36 125.73 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Datasheet" ""
+			(at 213.36 125.73 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Description" "Resistor"
+			(at 213.36 125.73 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(pin "1"
+			(uuid "f28af93d-0a43-4008-92c4-465bcbdc70c1")
+		)
+		(pin "2"
+			(uuid "54e14f48-d8c6-415b-a354-9aaa6bb2ac0b")
+		)
+		(instances
+			(project "LedMatrixSensorNode"
+				(path "/366c615b-9c48-48b1-87b1-faab6a67cc80"
+					(reference "R8")
 					(unit 1)
 				)
 			)
@@ -6302,742 +6878,6 @@
 			(project "LedMatrixSensorNode"
 				(path "/366c615b-9c48-48b1-87b1-faab6a67cc80"
 					(reference "J2")
-					(unit 1)
-				)
-			)
-		)
-	)
-	(symbol
-		(lib_id "Transistor_FET:AO3401A")
-		(at 162.56 106.68 0)
-		(mirror x)
-		(unit 1)
-		(body_style 1)
-		(exclude_from_sim no)
-		(in_bom yes)
-		(on_board yes)
-		(in_pos_files yes)
-		(dnp no)
-		(uuid "10327140-f5a0-4317-b682-045e1b76f63c")
-		(property "Reference" "Q1"
-			(at 167.64 105.41 0)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify left)
-			)
-		)
-		(property "Value" "AO3401A"
-			(at 167.64 107.95 0)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify left)
-			)
-		)
-		(property "Footprint" "Package_TO_SOT_SMD:SOT-23"
-			(at 162.56 106.68 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-					(italic yes)
-				)
-			)
-		)
-		(property "Datasheet" "http://www.aosmd.com/pdfs/datasheet/AO3401A.pdf"
-			(at 162.56 106.68 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Description" "-4.0A Id, -30V Vds, P-Channel MOSFET, SOT-23"
-			(at 162.56 106.68 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(pin "1"
-			(uuid "162a39b7-a098-448a-809c-ba15198e1216")
-		)
-		(pin "2"
-			(uuid "db684b19-8769-4f5f-bd89-d747de513a6e")
-		)
-		(pin "3"
-			(uuid "8f09c27f-c92e-4406-992d-a9d3c195cf1c")
-		)
-		(instances
-			(project "LedMatrixSensorNode"
-				(path "/366c615b-9c48-48b1-87b1-faab6a67cc80"
-					(reference "Q1")
-					(unit 1)
-				)
-			)
-		)
-	)
-	(symbol
-		(lib_id "Transistor_FET:AO3400A")
-		(at 142.24 121.92 0)
-		(unit 1)
-		(body_style 1)
-		(exclude_from_sim no)
-		(in_bom yes)
-		(on_board yes)
-		(in_pos_files yes)
-		(dnp no)
-		(uuid "50173b67-acfd-46bf-8426-bbb23d1f43f1")
-		(property "Reference" "Q2"
-			(at 147.32 120.65 0)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify left)
-			)
-		)
-		(property "Value" "AO3400A"
-			(at 147.32 123.19 0)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify left)
-			)
-		)
-		(property "Footprint" "Package_TO_SOT_SMD:SOT-23"
-			(at 142.24 121.92 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-					(italic yes)
-				)
-			)
-		)
-		(property "Datasheet" "http://www.aosmd.com/pdfs/datasheet/AO3400A.pdf"
-			(at 142.24 121.92 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Description" "30V Vds, 5.7A Id, N-Channel MOSFET, SOT-23"
-			(at 142.24 121.92 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(pin "1"
-			(uuid "8a5116a5-90e7-4d73-abd1-ea4eac64e6e5")
-		)
-		(pin "2"
-			(uuid "fd716bbd-6361-4dde-b941-7a647b919010")
-		)
-		(pin "3"
-			(uuid "b3697140-df78-4352-9ab8-0a8be7bf0243")
-		)
-		(instances
-			(project "LedMatrixSensorNode"
-				(path "/366c615b-9c48-48b1-87b1-faab6a67cc80"
-					(reference "Q2")
-					(unit 1)
-				)
-			)
-		)
-	)
-	(symbol
-		(lib_id "Device:R")
-		(at 144.78 102.87 0)
-		(unit 1)
-		(body_style 1)
-		(exclude_from_sim no)
-		(in_bom yes)
-		(on_board yes)
-		(in_pos_files yes)
-		(dnp no)
-		(uuid "62b4d529-a4ac-4464-b840-8963cd3a5123")
-		(property "Reference" "R5"
-			(at 142.24 101.6 0)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify right)
-			)
-		)
-		(property "Value" "10k"
-			(at 142.24 104.14 0)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify right)
-			)
-		)
-		(property "Footprint" ""
-			(at 144.78 102.87 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Datasheet" ""
-			(at 144.78 102.87 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Description" "Resistor"
-			(at 144.78 102.87 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(pin "1"
-			(uuid "a5d2e081-85b9-4d0c-b339-b19de4e7361d")
-		)
-		(pin "2"
-			(uuid "3a838d10-87a6-477b-aade-4d49640f764c")
-		)
-		(instances
-			(project "LedMatrixSensorNode"
-				(path "/366c615b-9c48-48b1-87b1-faab6a67cc80"
-					(reference "R5")
-					(unit 1)
-				)
-			)
-		)
-	)
-	(symbol
-		(lib_id "Device:R")
-		(at 128.27 121.92 90)
-		(unit 1)
-		(body_style 1)
-		(exclude_from_sim no)
-		(in_bom yes)
-		(on_board yes)
-		(in_pos_files yes)
-		(dnp no)
-		(uuid "c6ccc4f0-7b47-4272-bcc8-d95adc36573e")
-		(property "Reference" "R6"
-			(at 128.27 124.46 90)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Value" "220"
-			(at 128.27 127 90)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Footprint" ""
-			(at 128.27 121.92 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Datasheet" ""
-			(at 128.27 121.92 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Description" "Resistor"
-			(at 128.27 121.92 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(pin "1"
-			(uuid "8cb85067-c96b-4589-b66c-17aff420a34c")
-		)
-		(pin "2"
-			(uuid "5821a1b4-8082-4395-9f28-428054dd615d")
-		)
-		(instances
-			(project "LedMatrixSensorNode"
-				(path "/366c615b-9c48-48b1-87b1-faab6a67cc80"
-					(reference "R6")
-					(unit 1)
-				)
-			)
-		)
-	)
-	(symbol
-		(lib_id "Device:R")
-		(at 134.62 118.11 0)
-		(unit 1)
-		(body_style 1)
-		(exclude_from_sim no)
-		(in_bom yes)
-		(on_board yes)
-		(in_pos_files yes)
-		(dnp no)
-		(uuid "a7ff6d23-3304-42ca-b092-a312757f2a3e")
-		(property "Reference" "R7"
-			(at 132.08 116.84 0)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify right)
-			)
-		)
-		(property "Value" "100k"
-			(at 132.08 119.38 0)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify right)
-			)
-		)
-		(property "Footprint" ""
-			(at 134.62 118.11 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Datasheet" ""
-			(at 134.62 118.11 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Description" "Resistor"
-			(at 134.62 118.11 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(pin "1"
-			(uuid "d04216e4-d8b0-4ab5-9f29-827fdf1aa90c")
-		)
-		(pin "2"
-			(uuid "d9c6ca44-ede3-43d6-bc32-5dddafd922cf")
-		)
-		(instances
-			(project "LedMatrixSensorNode"
-				(path "/366c615b-9c48-48b1-87b1-faab6a67cc80"
-					(reference "R7")
-					(unit 1)
-				)
-			)
-		)
-	)
-	(symbol
-		(lib_id "Device:R")
-		(at 194.31 125.73 0)
-		(unit 1)
-		(body_style 1)
-		(exclude_from_sim no)
-		(in_bom yes)
-		(on_board yes)
-		(in_pos_files yes)
-		(dnp no)
-		(uuid "e0fe2546-3ab1-406d-8868-48955e5a6738")
-		(property "Reference" "R8"
-			(at 191.77 124.46 0)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify right)
-			)
-		)
-		(property "Value" "10k"
-			(at 191.77 126.365 0)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify right)
-			)
-		)
-		(property "Footprint" ""
-			(at 194.31 125.73 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Datasheet" ""
-			(at 194.31 125.73 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Description" "Resistor"
-			(at 194.31 125.73 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(pin "1"
-			(uuid "f28af93d-0a43-4008-92c4-465bcbdc70c1")
-		)
-		(pin "2"
-			(uuid "54e14f48-d8c6-415b-a354-9aaa6bb2ac0b")
-		)
-		(instances
-			(project "LedMatrixSensorNode"
-				(path "/366c615b-9c48-48b1-87b1-faab6a67cc80"
-					(reference "R8")
-					(unit 1)
-				)
-			)
-		)
-	)
-	(symbol
-		(lib_id "Device:C")
-		(at 177.8 102.87 0)
-		(unit 1)
-		(body_style 1)
-		(exclude_from_sim no)
-		(in_bom yes)
-		(on_board yes)
-		(in_pos_files yes)
-		(dnp no)
-		(uuid "41296352-3bbc-427e-ac5c-c0b8eb6267b0")
-		(property "Reference" "C12"
-			(at 180.34 101.6 0)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify left)
-			)
-		)
-		(property "Value" "100u 10V X5R"
-			(at 180.34 104.14 0)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify left)
-			)
-		)
-		(property "Footprint" ""
-			(at 177.8 102.87 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Datasheet" ""
-			(at 177.8 102.87 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Description" "Unpolarized capacitor"
-			(at 177.8 102.87 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(pin "1"
-			(uuid "516f91e6-e79d-494c-a696-aaa9f6468bcd")
-		)
-		(pin "2"
-			(uuid "9b912c80-4740-4671-a3c0-f1acbff6641a")
-		)
-		(instances
-			(project "LedMatrixSensorNode"
-				(path "/366c615b-9c48-48b1-87b1-faab6a67cc80"
-					(reference "C12")
-					(unit 1)
-				)
-			)
-		)
-	)
-	(symbol
-		(lib_id "Device:R")
-		(at 144.78 111.76 0)
-		(unit 1)
-		(body_style 1)
-		(exclude_from_sim no)
-		(in_bom yes)
-		(on_board yes)
-		(in_pos_files yes)
-		(dnp no)
-		(uuid "4cf2bf49-8ece-4603-a2bf-840e8fd0e72c")
-		(property "Reference" "R9"
-			(at 142.24 110.49 0)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify right)
-			)
-		)
-		(property "Value" "1k"
-			(at 142.24 113.03 0)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify right)
-			)
-		)
-		(property "Footprint" ""
-			(at 144.78 111.76 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Datasheet" ""
-			(at 144.78 111.76 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Description" "Resistor"
-			(at 144.78 111.76 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(pin "1"
-			(uuid "016c708e-c173-4c15-b99d-d24f8b6c13c5")
-		)
-		(pin "2"
-			(uuid "eb2043c4-5d53-4089-9e56-66ccf6c7fb77")
-		)
-		(instances
-			(project "LedMatrixSensorNode"
-				(path "/366c615b-9c48-48b1-87b1-faab6a67cc80"
-					(reference "R9")
-					(unit 1)
-				)
-			)
-		)
-	)
-	(symbol
-		(lib_id "Device:C")
-		(at 149.86 110.49 0)
-		(unit 1)
-		(body_style 1)
-		(exclude_from_sim no)
-		(in_bom yes)
-		(on_board yes)
-		(in_pos_files yes)
-		(dnp no)
-		(uuid "765a33f6-5cb3-4edf-abb1-b835568a45c0")
-		(property "Reference" "C13"
-			(at 152.4 109.22 0)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify left)
-			)
-		)
-		(property "Value" "470n 16V"
-			(at 152.4 111.76 0)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify left)
-			)
-		)
-		(property "Footprint" ""
-			(at 149.86 110.49 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Datasheet" ""
-			(at 149.86 110.49 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Description" "Unpolarized capacitor"
-			(at 149.86 110.49 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(pin "1"
-			(uuid "832f723f-1379-4021-b9ad-b53d9d68e655")
-		)
-		(pin "2"
-			(uuid "6b76b91a-40db-437e-b92b-28b463b7d172")
-		)
-		(instances
-			(project "LedMatrixSensorNode"
-				(path "/366c615b-9c48-48b1-87b1-faab6a67cc80"
-					(reference "C13")
 					(unit 1)
 				)
 			)
