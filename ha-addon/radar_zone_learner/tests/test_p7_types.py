@@ -11,13 +11,13 @@ from radar_zone_learner.core import types as T
 
 class ConstantsTest(unittest.TestCase):
     def test_version_and_schema(self):
-        self.assertEqual((T.SCHEMA_VERSION, T.MIN_SCHEMA_VERSION, T.APP_VERSION), (4, 3, "0.7.0"))
-        self.assertEqual(__version__, "0.7.0")
+        self.assertEqual((T.SCHEMA_VERSION, T.MIN_SCHEMA_VERSION, T.APP_VERSION), (4, 3, "0.7.1"))
+        self.assertEqual(__version__, "0.7.1")
 
     def test_item_constants(self):
         self.assertEqual(T.ITEM_RADAR_MOVED, "radar_moved")
         self.assertEqual(T.ITEM_IDS, ("night_window", "bed_needs_data"))             # the two P4 ids: P4's persisted keys
-        self.assertEqual(T.PUSH_KINDS, ("none", "setup", "daily"))                   # a 0.6.0 app must load a 0.7.0 file
+        self.assertEqual(T.PUSH_KINDS, ("none", "setup", "daily"))                   # a 0.6.0 app must load a 0.7.1 file
         self.assertEqual(T.ANSWER_IGNORED_REASONS[:8], ("no_item", "no_such_item", "stale", "not_pending",
                                                         "not_applicable", "name_needed", "zone_limit", "times_invalid"))
         self.assertEqual(T.ANSWER_IGNORED_REASONS[8:], ("zone_busy",))

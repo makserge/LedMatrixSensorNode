@@ -46,7 +46,7 @@ TABLE = [
     ("share_rule_frac", 0.30), ("freeze_night_share", 0.5), ("default_window_min", (0, 360)),
     ("bed_name_hours", (21, 9)), ("bed_name_share", 0.6), ("bed_name_median_s", 7200),
     # 7.10
-    ("mark_min_stay_s", 20), ("label_radius_m", 0.4), ("label_match_m", 0.6), ("bed_label_names", ("bed", "bett")),
+    ("mark_min_stay_s", 20), ("mark_grace_s", 60), ("label_radius_m", 0.4), ("label_match_m", 0.6), ("bed_label_names", ("bed", "bett")),
     ("spot_name_max", 32),
     # 7.11 (D24)
     ("status_period_ms", 300000),

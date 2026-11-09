@@ -138,6 +138,7 @@ class Params:
 
     # 7.10 'Mark spot here' labels
     mark_min_stay_s: int = 20
+    mark_grace_s: int = 60               # 0.7.1: a stay whose track was lost up to this long before the press still counts
     label_radius_m: float = 0.4
     label_match_m: float = 0.6
     bed_label_names: tuple = ("bed", "bett")

@@ -126,6 +126,7 @@ class Learner:
         self.last_status_ms: Optional[int] = None
         self.last_mark: Optional[dict] = None
         self.last_mark_ms: Optional[int] = None      # core time of the last accepted press
+        self.last_det_ms: Optional[int] = None       # core time of the last frame with a detection (RAM)
         self.nightly_errors = 0                      # nightly runs that raised (RAM, since start)
         self._nl_next: Optional[int] = None          # next core time to check for the nightly run
         self._paused_on = False                      # the guests pause as applied to the evidence (spec 7.3)
@@ -677,6 +678,8 @@ class Learner:
         for dev, targets in a.frames:
             dets = [(t.x_mm / 1000.0, t.y_mm / 1000.0) for t in targets]
             tracker.step(dev, dets, off, a.start_dev, samples)
+            if dets:
+                self.last_det_ms = dev + off              # 0.7.1: only for the diagnostics of a refused press
             ze.on_frame(dev, tracker.live)
             if samples:
                 for tr, t, x, y in samples:
@@ -772,13 +775,14 @@ class Learner:
         lid = None
         kind = None
         reason = None
+        detail = None
         new = False
         if self._state_now() != "learning":
             reason = "not_observing"
         elif self.last_mark_ms is not None and 0 <= now - self.last_mark_ms < MARK_MIN_INTERVAL_MS:
             reason = "too_soon"
         else:
-            ips = labels_mod.stays_in_progress(self)
+            ips, detail = labels_mod.mark_candidates(self, now)
             if not ips:
                 reason = "no_stay"
             elif len(ips) > 1:
@@ -803,9 +807,13 @@ class Learner:
                 lid = lb["id"]
                 kind = lb["kind"]
         ok = reason is None
-        outs.append(MarkResult(ok, reason, lid, kind))
+        if ok or reason not in ("no_stay", "several_stays"):
+            detail = None
+        outs.append(MarkResult(ok, reason, lid, kind, detail))
         self.last_mark = {"result": "ok" if ok else "failed", "reason": reason, "label": lid, "kind": kind,
                           "at": _utc_min(now, 5)}
+        if detail is not None:
+            self.last_mark["detail"] = dict(detail)
         if new:
             outs.append(DebugMapChanged("label"))
             outs.append(SaveRequested("label"))

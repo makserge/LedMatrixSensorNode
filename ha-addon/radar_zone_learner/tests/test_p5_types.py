@@ -8,7 +8,7 @@ from radar_zone_learner.core import learner as LM
 from radar_zone_learner.core.params import DEFAULT_P5, DEFAULT_PARAMS, P5Params, params_digest
 
 # the digest of the committed Params (P4 and P5 share it: D4 says Params does not change)
-P4_PARAMS_DIGEST = "dbe9b3e9fea0"
+P4_PARAMS_DIGEST = "847b11ea9b79"   # 0.7.1: mark_grace_s added
 
 
 class TypesTest(unittest.TestCase):
@@ -53,7 +53,7 @@ class TypesTest(unittest.TestCase):
         self.assertEqual(T.ITEM_IDS, ("night_window", "bed_needs_data"))
         self.assertEqual(T.MARK_FAIL_REASONS, ("not_observing", "no_stay", "several_stays", "too_soon"))
         self.assertEqual(T.NODE_COMMAND_KINDS, ("schedule", "window"))
-        self.assertEqual((T.SCHEMA_VERSION, T.MIN_SCHEMA_VERSION, T.APP_VERSION), (4, 3, "0.7.0"))
+        self.assertEqual((T.SCHEMA_VERSION, T.MIN_SCHEMA_VERSION, T.APP_VERSION), (4, 3, "0.7.1"))
 
     def test_id_grammars(self):
         item = re.compile(T.ITEM_ID_RE)

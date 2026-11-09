@@ -18,7 +18,7 @@ from radar_zone_learner.shell.topics_p6 import build_topics_p6
 from tests.fakes import FakeLearner
 from tests.p6_harness import zone_view
 
-OR = '{"name":"radar_zone_learner","sw_version":"0.7.0"}'
+OR = '{"name":"radar_zone_learner","sw_version":"0.7.1"}'
 AV_ALL = ('"availability":[{"topic":"radar_zones/learner/status","payload_available":"online","payload_not_available":'
           '"offline"},{"topic":"led_matrix_node/sensors/status","payload_available":"online","payload_not_available":'
           '"offline"},{"topic":"radar_zones/zone/availability","payload_available":"online","payload_not_available":'
@@ -35,7 +35,7 @@ def settings(**changes):
 
 
 def device(zid="z0001", name="Desk", epoch=0):
-    return ('{"identifiers":["%s"],"name":"%s","model":"radar_zone_learner zone","sw_version":"0.7.0",'
+    return ('{"identifiers":["%s"],"name":"%s","model":"radar_zone_learner zone","sw_version":"0.7.1",'
             '"via_device":"Led_Matrix_Node"}' % (device_id(zid, epoch), name))
 
 
@@ -121,9 +121,9 @@ class ZoneConfigsTest(unittest.TestCase):
     def test_the_device_and_the_origin(self):
         for cfg in self.cfg.values():
             self.assertEqual(cfg["device"], {"identifiers": ["radar_zone_z0001"], "name": "Desk",
-                                             "model": "radar_zone_learner zone", "sw_version": "0.7.0",
+                                             "model": "radar_zone_learner zone", "sw_version": "0.7.1",
                                              "via_device": "Led_Matrix_Node"})
-            self.assertEqual(cfg["origin"], {"name": "radar_zone_learner", "sw_version": "0.7.0"})
+            self.assertEqual(cfg["origin"], {"name": "radar_zone_learner", "sw_version": "0.7.1"})
         self.assertEqual(DEVICE_VIA, "Led_Matrix_Node")
 
     def test_unique_ids_default_entity_ids_and_names(self):

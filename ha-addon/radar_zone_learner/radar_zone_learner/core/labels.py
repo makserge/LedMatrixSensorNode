@@ -46,6 +46,48 @@ def stays_in_progress(L) -> list:
     return out
 
 
+def mark_candidates(L, now_ms: int) -> tuple:
+    """The stays 'Mark spot here' can label (0.7.1): the live stays (``stays_in_progress``) and the recent pending stays
+    (the track was lost, but its last fragment ended within ``mark_grace_s`` of the press and the stay is at least
+    ``mark_min_stay_s`` long), merged: candidates within ``bridge_dist_m`` of each other are one, at the newest one's
+    position. Returns ``(stays, detail)``: ``stays`` as ``stays_in_progress`` ([(t0, t1, cx, cy, n)], newest first) and
+    ``detail``, a dict of counts and seconds only (no positions) that the shell reports with a refused press."""
+    p = L.p
+    now_s = now_ms / 1000.0
+    live = stays_in_progress(L)
+    best = 0.0
+    n_live = 0
+    for tr in L.tracker.live:
+        if not tr.confirmed:
+            continue
+        n_live += 1
+        tb = tr.bh
+        run = tb.run() if tb is not None and tb.active else None
+        if run is not None:
+            best = max(best, run[1] - run[0])
+    recent = 0
+    cands = list(live)
+    for st in L.bh.pending:
+        age = now_s - st.t1
+        if age < 0 or age > p.mark_grace_s:
+            continue
+        recent += 1
+        if st.t1 - st.t0 >= p.mark_min_stay_s:
+            cands.append((st.t0, st.t1, st.cx, st.cy, st.n))
+    cands.sort(key=lambda c: c[1], reverse=True)
+    merged: list = []
+    for c in cands:
+        if not any(math.hypot(c[2] - m[2], c[3] - m[3]) <= p.bridge_dist_m for m in merged):
+            merged.append(c)
+    last = getattr(L, "last_det_ms", None)
+    detail = {"live_confirmed_tracks": n_live, "best_run_s": round(best, 1),
+              "last_target_age_s": None if last is None else round(max(0.0, (now_ms - last) / 1000.0), 1),
+              "recent_stays": recent}
+    if len(merged) > 1:
+        detail["stays"] = len(merged)
+    return merged, detail
+
+
 def make_label(L, stay: tuple, now_ms: int, name: Optional[str] = None, kind: Optional[str] = None) -> dict:
     """A label at the stay. ``name`` and ``kind`` override the spot name and the kind it gives (the bed item's
     'Mark spot here' makes kind bed named 'Bed', OA 7.6)."""

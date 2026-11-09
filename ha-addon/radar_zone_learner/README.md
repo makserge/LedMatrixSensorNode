@@ -1,7 +1,7 @@
 # Radar Zone Learner (Home Assistant app)
 
 A local Home Assistant app ("add-on" in older Home Assistant versions) that learns the places people use
-in a room from the LED matrix node's LD2454 radar frames. Version 0.7.0 (phase P7, on top of P3, P4, P5 and P6) of the
+in a room from the LED matrix node's LD2454 radar frames. Version 0.7.1 (phase P7, on top of P3, P4, P5 and P6) of the
 zone-learning design. The P4 additions (night window, bed item, optional Night learning, RF and
 coverage sensors, the context blueprint) are described in section 9; the P5 additions (the review of the suggestions on
 a device in Home Assistant, notifications, the privacy controls) in section 10; the P6 additions (occupancy, count and
@@ -163,11 +163,21 @@ Labels are ground truth for the learner's checks; in P3 they do not create zones
 3. After at least 20 seconds, press 'Mark spot here'.
 4. Read `last_mark` in the status attributes:
    - `"result": "ok"`: the label is stored and appears on the debug map;
-   - `no_stay`: the radar sees nobody staying still right now. The LD2454 often drops a person who lies
-     still, so stay a little longer, move slightly, and press again;
-   - `several_stays`: more than one person is staying still in view; ask the others to move away;
+   - `no_stay`: the radar has not seen a stay of at least 20 seconds, neither right now nor within the last
+     60 seconds (`mark_grace_s`). The LD2454 often drops a person who lies or sits still; since 0.7.1 a stay
+     whose track was lost up to 60 seconds before the press still counts, so press soon after you sat down.
+     If it fails, stay a little longer, move slightly, and press again;
+   - `several_stays`: more than one person is staying still in view (or two distinct stays ended within the
+     last 60 seconds); ask the others to move away or wait a minute;
    - `too_soon`: the previous mark was less than 10 seconds ago;
    - `not_observing`: the radars are off or the frames stream stopped.
+
+A refused press (`no_stay`, `several_stays`) also carries a `detail` in `last_mark` and in the `mark_failed`
+review event: counts and seconds only, no positions. `live_confirmed_tracks` (confirmed tracks now),
+`best_run_s` (the longest current run of a live track within 0.5 m), `last_target_age_s` (seconds since the last
+detection, `null` if none since the start), `recent_stays` (stays that ended within the grace window; one that is
+too short does not count) and, for `several_stays`, `stays`. A small `best_run_s` with a large
+`last_target_age_s` means the radar lost the person.
 
 The name stays set after a mark, so a retry needs only the button. A press at a spot that already has a
 label of the same name (within 0.4 m) adds nothing and answers `ok` with the existing label. The app keeps
@@ -588,7 +598,7 @@ opens, and 'Show the item text' (off).
   turned (section 12.4). It is generic like the others (no name, no time, no distance), has no actions (open the review device
   and answer the `Radar moved` item there), and follows the same rules (one a day at most, 08:00 to 21:00, issued again the
   next day if no phone acknowledged). A `Retire` item is never the item a push offers and is never answered from a push: a
-  removal needs a look at the map first. **Copy `radar_zone_review_push.yaml` again** after you update to 0.7.0: an older copy
+  removal needs a look at the map first. **Copy `radar_zone_review_push.yaml` again** after you update to 0.7.0 or later: an older copy
   does not know the kind `attention` and ignores that request.
 
 The blueprint has never been loaded by Home Assistant: check the first trace (the request, a tap, the clear), see 10.9.
@@ -1019,7 +1029,10 @@ behind the real service is used where the core's output matters. The P7 shell te
 `-p "test_p7s_*.py"`); `tests/p7s_harness.py` is `p6_harness` with the P7 topics and layer and a fake Home Assistant that also
 models the 'Listen to a topic' tool (assumption `HA[U8]`), and the `P7Params(enabled=True)` learner behind the real layer is
 used for the modify, retire and nightly-line cases. Set `RZL_TEST_TMP` to
-choose the folder for temporary files. The replay harness in `replay/` runs the learner on simulated days
+choose the folder for temporary files. To find out why 'Mark spot here' fails on a real radar, record the frames topic
+(`mosquitto_sub -t <node>/radar/ld2454/frames > frames.jsonl` while you sit still at the spot) and run
+`python -I -B replay/analyze_capture.py frames.jsonl`: it lists every confirmed track's lifetime, its longest run within
+0.5 m and the detection gaps longer than `ttl_ms` that end a track (read-only). The replay harness in `replay/` runs the learner on simulated days
 (see `replay/run_replay.py --help`). The P3 gate (G1-G6) runs with `--profile p3` (about 1,333 simulated days, about
 22 minutes on 3 workers). The P4 checks (P4-1 to P4-7) run with `--profile p4smoke` (one 9-night run) or
 `--profile p4` (47 runs, 707 simulated days, about 12 minutes on 3 workers; the bedroom only, and no run of the

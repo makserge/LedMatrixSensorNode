@@ -40,11 +40,11 @@ class MarkTest(unittest.TestCase):
         L, f = setup()
         rng = random.Random(1)
         f.targets_until(40000, sit_fn(rng, BED))          # 30 s visible
-        f.idle_until(50000)                                 # dropped by the radar (lying still)
+        f.idle_until(50000 + 60000)                         # dropped by the radar (lying still), then longer than the grace
         self.assertEqual(len(L.bh.pending), 1)
         self.assertEqual(L.tracker.live, [])
         outs = press(L, f)
-        self.assertEqual(outs[0].reason, "no_stay")
+        self.assertEqual(outs[0].reason, "no_stay")             # 0.7.1: within 60 s it would be ok (test_mark_grace.py)
         self.assertEqual(L.labels(), ())
 
     def test_several_stays(self):

@@ -11,7 +11,7 @@ from typing import Optional, Protocol, Union
 
 SCHEMA_VERSION = 4
 MIN_SCHEMA_VERSION = 3            # older files are migrated on load (state.migrate_3_to_4)
-APP_VERSION = "0.7.0"
+APP_VERSION = "0.7.1"
 STATUS_STATES = ("starting", "learning", "not_observing", "no_data")
 SUGGESTION_TYPES = ("dwell_zone", "short_task_zone", "reflection", "ignore_zone", "room_outline", "entry_zone")
 KINDS = ("dwell", "short_task", "bed", "reflection", "ignore", "entry", "outline", "pet")   # documentation only
@@ -235,6 +235,7 @@ class MarkResult:
     reason: Optional[str]     # None when ok, else one of MARK_FAIL_REASONS
     label_id: Optional[str]
     kind: Optional[str]       # "bed" | "manual" when ok
+    detail: Optional[dict] = None   # 0.7.1: counts and seconds of a refused press (no positions, no names)
 
 
 @dataclass(frozen=True, slots=True)

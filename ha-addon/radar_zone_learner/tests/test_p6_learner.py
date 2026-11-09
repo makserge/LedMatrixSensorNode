@@ -126,7 +126,7 @@ class StateTest(unittest.TestCase):
         L = zone_learner()
         st = L.export_state()
         self.assertNotIn("p5", st)
-        self.assertEqual(st["writer"], "radar_zone_learner 0.7.0")
+        self.assertEqual(st["writer"], "radar_zone_learner 0.7.1")
 
     def test_tuning_round_trips(self):
         L = zone_learner()

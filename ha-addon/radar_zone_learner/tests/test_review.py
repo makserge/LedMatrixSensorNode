@@ -330,13 +330,13 @@ class MarkBindingTest(unittest.TestCase):
         L, f = setup()
         L.night = 7
         self.sit(L, f, until=12000)                                        # 2 s: no stay of 20 s
-        self.assertEqual(press(L, f)[0], MarkResult(False, "no_stay", None, None))
+        self.assertEqual(press(L, f)[0].reason, "no_stay")      # 0.7.1: the refusal carries a detail
         self.assertEqual(items(L), [BED_ITEM])
         L, f = setup()
         L.night = 7
         rng = random.Random(2)
         f.targets_until(35000, lambda t: sit_fn(rng, BED)(t) + sit_fn(rng, CHAIR)(t))
-        self.assertEqual(press(L, f)[0], MarkResult(False, "several_stays", None, None))
+        self.assertEqual(press(L, f)[0].reason, "several_stays")      # 0.7.1: the refusal carries a detail
         self.assertEqual(items(L), [BED_ITEM])
         self.assertEqual(L.labels(), ())
 

@@ -302,6 +302,13 @@ class P4ServiceTest(P4Harness, unittest.TestCase):
         events = [json.loads(p[1]) for p in self.published(EVENT)]
         self.assertEqual(events, [{"reason": "several_stays", "event_type": "mark_failed"}])
 
+    def test_mark_failed_event_with_detail(self):
+        self.connect()
+        d = {"live_confirmed_tracks": 0, "best_run_s": 0.0, "last_target_age_s": 7.5, "recent_stays": 1}
+        self.svc._execute(MarkResult(False, "no_stay", None, None, d))
+        events = [json.loads(p[1]) for p in self.published(EVENT)]
+        self.assertEqual(events, [{"reason": "no_stay", "detail": d, "event_type": "mark_failed"}])
+
     def test_restore_failed_event(self):
         """The core gives up putting the schedule back: the user is told (README 9.5), once per give-up."""
         self.connect()

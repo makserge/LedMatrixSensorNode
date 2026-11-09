@@ -26,6 +26,9 @@ from .p6state import Zone6, variant_id
 from .params import P6Params
 from .types import (ZONE_KINDS_DWELL, ZONE_KINDS_EVALUATED, ZoneEvent, ZoneState, ZoneStates)
 
+_EPS = 1e-8                      # metres squared: the safety margin of the per-cell and per-tile candidate settling
+TILES = 3                        # a cell is settled in TILES x TILES sub-tiles, lazily (not 4: with the usual 25 cm margin and 20 cm cells
+                                 # the edges of 4 tiles lie on the margin and every tile there would stay undecided)
 _floor = math.floor              # (a module level name: one lookup less per detection)
 FRAME_MS = 100                   # the frame period of the node (10 Hz); only used for the diagnostics
 SETTLE_EXTRA_MS = 500            # zones turn valid this long after the power-up snapshot window (spec 5.7, D20)
@@ -37,12 +40,80 @@ DEBUG_MAX = 1000
 EVENTS_24H_MS = 86400 * 1000
 
 
+_ROW_FIELDS = ("id", "occ", "count", "held", "variant", "ldr", "delay_s", "delay_src", "margin_cm", "variants", "requested",
+               "typical_hours", "confidence")
+_row_new = object.__new__
+
+
+_EVENT_FIELDS = ("id", "kind", "via", "t_dev_ms", "track", "dwell_s", "variant")
+
+
+def _slot_setters(cls, fields: tuple):
+    """The slot setters of a frozen slots dataclass in field order, or None when ``cls`` is not the record with exactly these
+    fields that this module knows. Such a class sets every field of its generated ``__init__`` through ``object.__setattr__``
+    (about 2 us for a 13-field row); the slot descriptors set a fresh instance directly (about 0.9 us) and give the same object:
+    equal, hashable and frozen alike."""
+    try:
+        if tuple(cls.__slots__) != fields:
+            return None
+        return tuple(getattr(cls, f).__set__ for f in fields)
+    except (AttributeError, TypeError):
+        return None
+
+
+_ROW_SET = _slot_setters(ZoneState, _ROW_FIELDS)
+_EVENT_SET = _slot_setters(ZoneEvent, _EVENT_FIELDS)
+
+
+def make_event(zid, kind, via, t_dev_ms, track, dwell_s, variant):
+    """A ``ZoneEvent`` of these fields (the same value as ``ZoneEvent(...)``)."""
+    if _EVENT_SET is None:
+        return ZoneEvent(zid, kind, via, t_dev_ms, track, dwell_s, variant)
+    r = _row_new(ZoneEvent)
+    s = _EVENT_SET
+    s[0](r, zid)
+    s[1](r, kind)
+    s[2](r, via)
+    s[3](r, t_dev_ms)
+    s[4](r, track)
+    s[5](r, dwell_s)
+    s[6](r, variant)
+    return r
+
+
+def make_row(zid, occ, count, held, variant, ldr, delay_s, delay_src, margin_cm, variants, requested, typical_hours, confidence):
+    """A ``ZoneState`` of these fields (the same value as ``ZoneState(...)``)."""
+    if _ROW_SET is None:
+        return ZoneState(zid, occ, count, held, variant, ldr, delay_s, delay_src, margin_cm, variants, requested, typical_hours,
+                         confidence)
+    r = _row_new(ZoneState)
+    s = _ROW_SET
+    s[0](r, zid)
+    s[1](r, occ)
+    s[2](r, count)
+    s[3](r, held)
+    s[4](r, variant)
+    s[5](r, ldr)
+    s[6](r, delay_s)
+    s[7](r, delay_src)
+    s[8](r, margin_cm)
+    s[9](r, variants)
+    s[10](r, requested)
+    s[11](r, typical_hours)
+    s[12](r, confidence)
+    return r
+
+
 class _Ring:
-    """The last detections of one track near one zone: (device ms, inside, counted)."""
-    __slots__ = ("e",)
+    """The last detections of one track near one zone: (device ms, inside, counted). ``ni`` / ``nc`` are the numbers of entries
+    that are inside / counted (kept up to date at every append, so the enter test and the 'any inside' test read a number)."""
+    __slots__ = ("e", "n", "ni", "nc")
 
     def __init__(self, n: int) -> None:
         self.e: deque = deque(maxlen=n)
+        self.n = n
+        self.ni = 0
+        self.nc = 0
 
 
 class _Trk:
@@ -125,6 +196,9 @@ class ZoneEval:
         self._dflt = dict(p6.delay_default_s)
         self.zones: dict = {}                      # zid -> _Z, evaluated kinds only
         self.cmap: dict = {}                       # cell index -> tuple of _Z that can contain a detection there
+        self._cent: dict = {}                      # cell index -> the candidates of a cell with an undecided one (lazy)
+        self._ctile: dict = {}                     # cell index -> the zone tuple of a settled cell, or its sub-tile table (lazy)
+        self._cfix_pool: dict = {}                 # zone tuple -> the shared tuple
         self.trk: dict = {}                        # track id -> _Trk
         self._act: set = set()                     # zones with a member, a hold or a late-return window
         self._door_cells: frozenset = frozenset()
@@ -148,6 +222,7 @@ class ZoneEval:
         self._zd: set = set()                      # zids whose row is stale
         self._zall = True                          # every cached state is stale
         self._out_sig = None
+        self._quiet = -1                           # device ms up to which a sweep finds nothing to do (see ``_sweep``)
         self._iview: dict = {}                     # zid -> ``_info_view`` of the zone6.info entry it was made from
         self._debug: deque = deque(maxlen=DEBUG_MAX)
         self._ev_wall: deque = deque()             # wall ms of the events of the last 24 h
@@ -157,10 +232,12 @@ class ZoneEval:
     def _mark(self, z) -> None:
         self._zd.add(z.zid)
         self._dirty = True
+        self._quiet = -1
 
     def _mark_all(self) -> None:
         self._zall = True
         self._dirty = True
+        self._quiet = -1
 
     def attach(self, zone6: Zone6) -> None:
         self.z6 = zone6
@@ -280,26 +357,130 @@ class ZoneEval:
                             rects.append((x0g + ii * cs, y0g + jj * cs, x0g + (ii + 1) * cs, y0g + (jj + 1) * cs))
                     cmap.setdefault(c, []).append((z, tuple(rects)))
         self.cmap = {key: tuple(v) for key, v in cmap.items()}
+        self._ctile = {}                           # (the margins or the masks changed: the settled cells are stale)
+        self._cent = {}
+        self._cfix_pool = {}
 
     # ------------------------------------------------------------ geometry
+    @staticmethod
+    def _settle(rects: tuple, r2: float, ring: bool, bx0: float, by0: float, bx1: float, by1: float) -> tuple:
+        """``(verdict, rects)`` for the points of a box. Verdict 1 / 0: the zone is inside / outside for every point of the box;
+        -1: the box holds points of both kinds (or too close to tell) and ``rects`` are the rectangles that can still decide it
+        (the others are beyond the margin from every point of the box). ``ring``: a positive margin (inside when some mask
+        rectangle is within the margin), else a negative one (inside when none is). The bounds carry a margin of ``_EPS``
+        (the rounding of the corners is about 1e-14 m)."""
+        near = False                       # some rectangle is within the margin from every point of the box
+        kept = []
+        for rect in rects:
+            rx0, ry0, rx1, ry1 = rect
+            dxn = max(rx0 - bx1, bx0 - rx1, 0.0)
+            dyn = max(ry0 - by1, by0 - ry1, 0.0)
+            if dxn * dxn + dyn * dyn <= r2 + _EPS:
+                kept.append(rect)
+                dxx = max(rx0 - bx0, bx1 - rx1, 0.0)
+                dyx = max(ry0 - by0, by1 - ry1, 0.0)
+                if dxx * dxx + dyx * dyx < r2 - _EPS:
+                    near = True
+        if near:
+            return (1 if ring else 0), ()
+        if not kept:
+            return (0 if ring else 1), ()
+        return -1, tuple(kept)
+
+    def _pool(self, zs: tuple) -> tuple:
+        return self._cfix_pool.setdefault(zs, zs)
+
+    def _cell_res(self, key: int) -> object:
+        """Settles the candidates of one cell once (the first detection in it). A candidate whose answer is the same for every
+        point of the cell (the cell is in the mask; a ring cell whose farthest point is within the margin of a mask cell, or
+        whose nearest point is not; the negative-margin mirror of that) is decided here; the others keep only the rectangles
+        that can still decide. A cell with no undecided candidate stores its zone tuple in ``_ctile`` (shared between cells with
+        the same zones); any other cell stores its entries ``(zone, rects or None, margin squared, ring)`` in ``_cent`` and an
+        empty table of ``TILES * TILES`` sub-tiles in ``_ctile`` (see ``_tile_res``). Returns what it stored in ``_ctile``."""
+        cand = self.cmap.get(key)
+        if not cand:
+            tl = self._ctile[key] = ()
+            return tl
+        cs = self._gcs
+        nx = self._gnx
+        cx0 = self._gx0 + (key % nx) * cs
+        cy0 = self._gy0 + (key // nx) * cs
+        cx1 = cx0 + cs
+        cy1 = cy0 + cs
+        ents = []
+        sure = True
+        for z, rects in cand:
+            if rects is None:
+                ents.append((z, None, 0.0, True))
+                continue
+            r = z.m
+            ring = r > 0
+            r2 = r * r
+            v, kept = self._settle(rects, r2, ring, cx0, cy0, cx1, cy1)
+            if v > 0:
+                ents.append((z, None, 0.0, True))        # inside everywhere in the cell
+            elif v < 0:
+                ents.append((z, kept, r2, ring))
+                sure = False
+        if sure:
+            tl = self._ctile[key] = self._pool(tuple(e[0] for e in ents))
+        else:
+            self._cent[key] = ents
+            tl = self._ctile[key] = [None] * (TILES * TILES)
+        return tl
+
+    def _tile_res(self, key: int, t: int, tl: list) -> object:
+        """The same settling for one sub-tile ``t`` (row * TILES + column) of an undecided cell: the zone tuple when every
+        undecided candidate is decided over the whole tile, else the list of the entries of the tile (decided candidates reduced
+        to inside / dropped, the others with fewer rectangles)."""
+        cs = self._gcs
+        nx = self._gnx
+        w = cs / TILES
+        bx0 = self._gx0 + (key % nx) * cs + (t % TILES) * w
+        by0 = self._gy0 + (key // nx) * cs + (t // TILES) * w
+        bx1 = bx0 + w
+        by1 = by0 + w
+        ents = []
+        sure = True
+        for z, rects, r2, ring in self._cent[key]:
+            if rects is None:
+                ents.append((z, None, 0.0, True))
+                continue
+            v, kept = self._settle(rects, r2, ring, bx0, by0, bx1, by1)
+            if v > 0:
+                ents.append((z, None, 0.0, True))
+            elif v < 0:
+                ents.append((z, kept, r2, ring))
+                sure = False
+        r = tl[t] = self._pool(tuple(e[0] for e in ents)) if sure else ents
+        return r
+
     def _zones_at(self, x: float, y: float) -> tuple:
         cs = self._gcs
-        i = _floor((x - self._gx0) / cs)
-        j = _floor((y - self._gy0) / cs)
+        qx = (x - self._gx0) / cs
+        qy = (y - self._gy0) / cs
+        i = _floor(qx)
+        j = _floor(qy)
         nx = self._gnx
         if i < 0 or j < 0 or i >= nx or j >= self._gny:
             return ()
-        cand = self.cmap.get(j * nx + i)
-        if not cand:
-            return ()
+        key = j * nx + i
+        tl = self._ctile.get(key)
+        if tl is None:
+            tl = self._cell_res(key)
+        if tl.__class__ is tuple:
+            return tl
+        t = int((qy - j) * TILES) * TILES + int((qx - i) * TILES)
+        r = tl[t]
+        if r is None:
+            r = self._tile_res(key, t, tl)
+        if r.__class__ is tuple:
+            return r
         out = []
-        for z, rects in cand:
+        for z, rects, r2, ring in r:
             if rects is None:
                 out.append(z)
-                continue
-            r = z.m
-            if r > 0:
-                r2 = r * r
+            elif ring:
                 for rx0, ry0, rx1, ry1 in rects:
                     dx = rx0 - x if x < rx0 else (x - rx1 if x > rx1 else 0.0)
                     dy = ry0 - y if y < ry0 else (y - ry1 if y > ry1 else 0.0)
@@ -307,7 +488,6 @@ class ZoneEval:
                         out.append(z)
                         break
             else:
-                r2 = r * r
                 for rx0, ry0, rx1, ry1 in rects:
                     dx = rx0 - x if x < rx0 else (x - rx1 if x > rx1 else 0.0)
                     dy = ry0 - y if y < ry0 else (y - ry1 if y > ry1 else 0.0)
@@ -476,10 +656,10 @@ class ZoneEval:
                 self._detect(t, tr)
 
     def _detect(self, t: int, tr) -> None:
-        p = self.p6
-        T = self.trk.get(tr.id)
+        tid = tr.id
+        T = self.trk.get(tid)
         if T is None:
-            T = self.trk[tr.id] = _Trk(tr.id, bool(tr.powerup))
+            T = self.trk[tid] = _Trk(tid, bool(tr.powerup))
         x = tr.rx
         y = tr.ry
         T.last_det = t
@@ -488,41 +668,59 @@ class ZoneEval:
             T.hist.append((t, x, y))
         inside = self._zones_at(x, y)
         member = T.member
-        if not inside and not member and not T.rings:
+        rings = T.rings
+        if not inside and not member and not rings:
             return
+        p = self.p6
         speed = -1.0                                  # the filtered speed, read only for a zone that the track is not in yet
         n_mem = 0                                     # the zones of ``inside`` that the track is a member of
         for z in inside:
             zid = z.zid
             if zid in member:
-                z.S[tr.id] = t
+                z.S[tid] = t
                 z.last_in = t
                 n_mem += 1
                 continue
             if speed < 0.0:
                 speed = math.hypot(tr.vx, tr.vy)
             counted = (speed < p.pass_speed_ms) if z.dwell else True
-            ring = T.rings.get(zid)
+            ring = rings.get(zid)
             if ring is None:
-                ring = T.rings[zid] = _Ring(p.enter_n)
-            ring.e.append((t, True, counted))
-            if counted and sum(1 for e in ring.e if e[2]) >= p.enter_k:
+                ring = rings[zid] = _Ring(p.enter_n)
+            e = ring.e
+            if len(e) == ring.n:
+                o = e[0]
+                ring.ni -= o[1]
+                ring.nc -= o[2]
+            e.append((t, True, counted))
+            ring.ni += 1
+            if counted:
+                ring.nc += 1
+            if counted and ring.nc >= p.enter_k:
                 self._join(z, T, t, ring)
                 n_mem += 1                            # _join made the track a member of z
-        if n_mem != len(member) or T.rings:
+        if n_mem != len(member) or rings:
             ins_ids = {z.zid for z in inside}
             if n_mem != len(member):                  # a member zone that the detection is not in: the track left it
-                for zid in sorted(zid for zid in member if zid not in ins_ids):
+                gone = [zid for zid in member if zid not in ins_ids]
+                if len(gone) > 1:
+                    gone.sort()
+                for zid in gone:
                     member.discard(zid)
                     z = self.zones.get(zid)
-                    if z is not None and tr.id in z.S:
+                    if z is not None and tid in z.S:
                         self._leave_edge(z, T, t)
-            if T.rings:
-                for zid in [zid for zid in T.rings if zid not in ins_ids]:
-                    ring = T.rings[zid]
-                    ring.e.append((t, False, False))
-                    if not any(e[1] for e in ring.e):
-                        del T.rings[zid]
+            if rings:
+                for zid in [zid for zid in rings if zid not in ins_ids]:
+                    ring = rings[zid]
+                    e = ring.e
+                    if len(e) == ring.n:
+                        o = e[0]
+                        ring.ni -= o[1]
+                        ring.nc -= o[2]
+                    e.append((t, False, False))
+                    if not ring.ni:
+                        del rings[zid]
 
     def _join(self, z: _Z, T: _Trk, t: int, ring: _Ring) -> None:
         p = self.p6
@@ -551,12 +749,11 @@ class ZoneEval:
         if silent:
             return
         first = None
-        n_counted = 0
-        for e in ring.e:
-            if e[1] and first is None:
+        for e in ring.e:                              # (a counted entry is an inside entry: all of them come from ``first`` on)
+            if e[1]:
                 first = e[0]
-            if first is not None and e[2]:
-                n_counted += 1
+                break
+        n_counted = ring.nc
         if first is None:
             first = t
         frames = int(round((t - first) / FRAME_MS)) + 1
@@ -614,18 +811,23 @@ class ZoneEval:
         vanish_ms = self.p6.vanish_ms
         if self._gap_dev is None:
             # the usual frame: every active zone has members, none of them silent, no hold and no late-return window, so the loop
-            # below would do nothing; skip it (and the sorting of the zones) then
+            # below would do nothing; skip it (and the sorting of the zones) then. The last detection of a member only grows, so
+            # nothing can happen before ``oldest last detection + vanish_ms``, unless a zone changes (``_mark`` / ``_mark_all``
+            # reset ``_quiet``: a member joins or leaves, a hold or a late window starts, a gap, a power loss, a new zone set)
+            if t <= self._quiet:
+                return
             lim = t - vanish_ms
+            old = t
             for z in self._act:
                 if z.V or z.late is not None or not z.S:
                     break
-                for ld in z.S.values():
-                    if ld < lim:
-                        break
-                else:
-                    continue
-                break
+                m = min(z.S.values())
+                if m < lim:
+                    break
+                if m < old:
+                    old = m
             else:
+                self._quiet = old + vanish_ms
                 return
         for z in self._acts():
             if z.S and self._gap_dev is None:
@@ -714,7 +916,7 @@ class ZoneEval:
             prev = self._prev_ld_t
             if prev is not None and 0 < t_ms - prev <= LD_DT_MAX_MS:
                 dt = t_ms - prev
-                for z in self.zones.values():
+                for z in self._act:                   # a zone with a member is always active (the order does not matter here)
                     if z.S:
                         z.ld_known_ms += dt
                         if p2:
@@ -748,7 +950,8 @@ class ZoneEval:
 
     # ------------------------------------------------------------ events and bookkeeping
     def _info_view(self, zid: str, info: dict) -> tuple:
-        """``(info, typical hours, confidence, variant ids, [(days, start, end, id)])`` of a ``zone6.info`` entry. The entries
+        """``(info, typical hours, confidence, variant ids, [(days, start, end, id)], memo)`` of a ``zone6.info`` entry (``memo``:
+        ``[the _lt it was last answered for, variant_now]``). The entries
         of ``zone6.info`` are replaced as a whole (nightly copy, load), never changed in place, so the view is kept for as long as
         the entry is the same object (a state row is rebuilt every time a zone changes: formatting the hours and the variant ids
         each time was the larger part of that)."""
@@ -762,7 +965,7 @@ class ZoneEval:
                 parts.append("%s %s" % (cls, ",".join(rngs)))
         conf = round(float(info["conf"]), 2) if info.get("conf") is not None else None
         vl = [(v["d"], v["s"], v["e"], variant_id(v)) for v in info["var"]]
-        c = self._iview[zid] = (info, "; ".join(parts), conf, tuple(v[3] for v in vl), vl)
+        c = self._iview[zid] = (info, "; ".join(parts), conf, tuple(v[3] for v in vl), vl, [None, ""])
         return c
 
     def _variant_now(self, zid: str) -> str:
@@ -770,17 +973,25 @@ class ZoneEval:
         lt = self._lt
         if not info or not info["var"] or lt is None:
             return ""
+        c = self._info_view(zid, info)
+        memo = c[5]                                   # the answer for this entry and this ``_lt`` object (both are replaced, not changed)
+        if memo[0] is lt:
+            return memo[1]
         cls = "wd" if lt.weekday < 5 else "we"
         h = lt.sec_of_day // 3600
-        for d, s, e, vid in self._info_view(zid, info)[4]:
+        vid = ""
+        for d, s, e, v in c[4]:
             if d != cls:
                 continue
             if (s <= h < e) if s <= e else (h >= s or h < e):
-                return vid
-        return ""
+                vid = v
+                break
+        memo[0] = lt
+        memo[1] = vid
+        return vid
 
     def _emit(self, z: _Z, kind: str, via: str, t: int, tid: int, dwell_s: int = 0) -> None:
-        self._events.append(ZoneEvent(z.zid, kind, via, int(t), int(tid), int(dwell_s), self._variant_now(z.zid)))
+        self._events.append(make_event(z.zid, kind, via, int(t), int(tid), int(dwell_s), self._variant_now(z.zid)))
         w = self.wall_ms
         self._ev_wall.append(w)
         lo = w - EVENTS_24H_MS
@@ -822,10 +1033,10 @@ class ZoneEval:
         conf = None
         variants: tuple = ()
         if info:
-            _, th, conf, variants, _ = self._info_view(zid, info)
-        return ZoneState(zid, bool(z.occ), min(len(z.S), self.p6.count_max), bool(z.occ and not z.S),
-                         self._variant_now(zid), z6.is_ldr(zid), d_s, src, z.margin_cm, variants,
-                         tuple(z6.ve.get(zid, ())), th, conf)
+            _, th, conf, variants = self._info_view(zid, info)[:4]
+        return make_row(zid, bool(z.occ), min(len(z.S), self.p6.count_max), bool(z.occ and not z.S),
+                        self._variant_now(zid), z6.is_ldr(zid), d_s, src, z.margin_cm, variants,
+                        tuple(z6.ve.get(zid, ())), th, conf)
 
     def states(self) -> ZoneStates:
         """Every zone state; only the rows of the zones marked dirty since the last call are rebuilt (the other rows are

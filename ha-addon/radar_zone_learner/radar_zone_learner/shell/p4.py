@@ -177,7 +177,8 @@ class P4Layer:
             return False
         if isinstance(out, MarkResult):
             if not out.ok:
-                self._event("mark_failed", reason=out.reason or "unknown")
+                extra = {"detail": out.detail} if getattr(out, "detail", None) else {}
+                self._event("mark_failed", reason=out.reason or "unknown", **extra)
             return False
         if isinstance(out, NodeCommand):
             self._results(self.node.send(out, now_ms))

@@ -1,5 +1,5 @@
 name: "Radar Zone Learner"
-version: "0.7.0"
+version: "0.7.1"
 slug: "radar_zone_learner"
 description: "Learns places from the LED matrix node's LD2454 radar frames, reports occupancy of the zones you confirmed and notices moved furniture and a moved radar (P7)."
 arch:

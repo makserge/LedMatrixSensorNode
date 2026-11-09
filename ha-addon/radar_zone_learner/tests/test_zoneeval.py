@@ -8,7 +8,7 @@ import unittest
 from radar_zone_learner.core.grids import GridGeom
 from radar_zone_learner.core.p6state import Zone6
 from radar_zone_learner.core.params import DEFAULT_P6, DEFAULT_PARAMS, P6Params
-from radar_zone_learner.core.types import FixedOffsetTime, ZoneEvent, ZoneStates
+from radar_zone_learner.core.types import FixedOffsetTime, ZoneEvent, ZoneState, ZoneStates
 from radar_zone_learner.core.zoneeval import ZoneEval
 
 GEOM = GridGeom(DEFAULT_PARAMS)
@@ -777,6 +777,204 @@ class DebugTest(unittest.TestCase):
         self.assertEqual(len(d), 1)
         zid, track, first, decisive, k = d[0]
         self.assertEqual((zid, track, first, decisive, k), ("z0001", 1, 10_000, 10_300, 1))
+
+
+class CellCacheTest(unittest.TestCase):
+    """``_zones_at`` settles each cell (and sub-tile) once: the answer must stay the plain geometric test for every point."""
+
+    @staticmethod
+    def plain(ze, x, y):
+        """The test the evaluator made before the cells were settled: the candidates of the cell, rectangle by rectangle."""
+        g = ze.geom
+        i = int((x - g.x0) // g.cell)
+        j = int((y - g.y0) // g.cell)
+        if i < 0 or j < 0 or i >= g.nx or j >= g.ny:
+            return ()
+        out = []
+        for z, rects in ze.cmap.get(j * g.nx + i, ()):
+            if rects is None:
+                out.append(z)
+                continue
+            r2 = z.m * z.m
+            hit = False
+            for rx0, ry0, rx1, ry1 in rects:
+                dx = rx0 - x if x < rx0 else (x - rx1 if x > rx1 else 0.0)
+                dy = ry0 - y if y < ry0 else (y - ry1 if y > ry1 else 0.0)
+                if dx * dx + dy * dy <= r2:
+                    hit = True
+                    break
+            if hit == (z.m > 0):
+                out.append(z)
+        return tuple(out)
+
+    def three(self, z6=None):
+        z6 = z6 or Zone6()
+        ze = ZoneEval(DEFAULT_P6, GEOM, FixedOffsetTime(0), z6)
+        ze.sync([("z0001", "dwell", block(-0.1, 2.9)), ("z0002", "dwell", block(0.3, 3.1, 2, 2)),
+                 ("z0003", "bed", block(0.7, 2.5, 4, 1)), ("z0004", "dwell", block(-0.5, 3.5, 1, 1))], [])
+        return ze
+
+    def points(self, n=4000):
+        import random
+        rnd = random.Random(7)
+        cs = GEOM.cell
+        pts = [(rnd.uniform(-1.2, 2.2), rnd.uniform(2.0, 4.6)) for _ in range(n)]
+        for _ in range(n):                                       # on and a hair around the cell and tile edges and the margin
+            i = rnd.randint(-8, 14)
+            j = rnd.randint(-4, 10)
+            f = rnd.choice((0.0, 1 / 3, 2 / 3, 1.0, 1.25, 0.25))
+            e = rnd.choice((0.0, 1e-12, -1e-12, 1e-9))
+            pts.append((GEOM.x0 + (i + f) * cs + e, GEOM.y0 + (j + f) * cs - e))
+        return pts
+
+    def check(self, ze, pts):
+        for _ in range(2):                                       # the second pass answers from the settled cells and tiles
+            for x, y in pts:
+                self.assertEqual(ze._zones_at(x, y), self.plain(ze, x, y), (x, y))
+
+    def test_positive_margins_with_overlapping_zones(self):
+        ze = self.three()
+        self.check(ze, self.points())
+
+    def test_zero_and_negative_margins(self):
+        z6 = Zone6()
+        z6.tune["z0001"] = {"mg": 0}
+        z6.tune["z0002"] = {"mg": -10}
+        z6.tune["z0003"] = {"mg": 40}
+        z6.tune["z0004"] = {"mg": -30}
+        ze = self.three(z6)
+        self.check(ze, self.points())
+
+    def test_margins_that_are_whole_tiles_or_whole_cells(self):
+        z6 = Zone6()
+        z6.tune["z0001"] = {"mg": 20}
+        z6.tune["z0002"] = {"mg": 40}
+        z6.tune["z0003"] = {"mg": -20}
+        z6.tune["z0004"] = {"mg": 10}
+        ze = self.three(z6)
+        self.check(ze, self.points())
+
+    def test_a_fine_grid_over_the_zones_and_their_margins(self):
+        z6 = Zone6()
+        z6.tune["z0003"] = {"mg": -10}
+        ze = self.three(z6)
+        step = 0.017
+        pts = [(-0.9 + a * step, 2.4 + b * step) for a in range(142) for b in range(89)]
+        self.check(ze, pts)
+
+    def test_a_zone_change_and_a_margin_change_drop_the_settled_cells(self):
+        z6 = Zone6()
+        ze = self.three(z6)
+        pts = self.points(1500)
+        self.check(ze, pts)
+        self.assertTrue(ze._ctile)
+        z6.tune["z0002"] = {"mg": 60}
+        ze.refresh()
+        self.assertFalse(ze._ctile)
+        self.check(ze, pts)
+        ze.sync([("z0001", "dwell", block(-0.1, 2.9)), ("z0002", "dwell", block(0.9, 3.1, 2, 2))], [])
+        self.assertFalse(ze._ctile)
+        self.check(ze, pts)
+        self.assertEqual([z.zid for z in ze._zones_at(1.0, 3.2)], ["z0002"])
+
+    def test_the_answer_of_a_cell_is_a_tuple_of_the_zones_in_zone_order(self):
+        ze = self.three()
+        self.assertEqual([z.zid for z in ze._zones_at(0.35, 3.15)], ["z0001", "z0002"])
+        self.assertEqual(ze._zones_at(50.0, 50.0), ())
+        self.assertEqual(ze._zones_at(-50.0, 3.0), ())
+
+
+class QuietSweepTest(unittest.TestCase):
+    """The sweep is skipped while nothing can happen; a member that falls silent must still be caught at the same frame."""
+
+    def test_a_silent_member_becomes_a_hold_at_the_first_frame_after_the_vanish_time(self):
+        ze = make()
+        resume(ze, 0)
+        tr = Tr(1, *IN)
+        last = run(ze, tr, 10_000, 5, IN) - 100
+        vanish = DEFAULT_P6.vanish_ms
+        for t in range(last + 100, last + vanish + 1, 100):       # the quiet frames (the last one is still 'not silent')
+            det(ze, t, [])
+            self.assertEqual(ze.states().zones[0].count, 1, t)
+        det(ze, last + vanish + 100, [])
+        st = ze.states().zones[0]
+        self.assertEqual((st.occ, st.count, st.held), (True, 0, True))
+
+    def test_a_second_member_resets_the_quiet_time(self):
+        ze = make()
+        resume(ze, 0)
+        a = Tr(1, *IN)
+        b = Tr(2, 0.0, 3.0)
+        t = run(ze, a, 10_000, 4, IN)
+        last_a = t - 100
+        det(ze, t, [])                                           # the sweep that settles the quiet time
+        self.assertGreater(ze._quiet, 0)
+        t = run(ze, b, t + 100, 3, (0.0, 3.0))                   # b joins (a reset), a stays silent from now on
+        self.assertEqual(sorted(ze.zones["z0001"].S), [1, 2])
+        t = run(ze, b, t, 25, (0.0, 3.0))
+        self.assertGreater(t, last_a + DEFAULT_P6.vanish_ms)
+        self.assertEqual(sorted(ze.zones["z0001"].S), [2])        # a became a hold, b is still a member
+        self.assertEqual([v.tid for v in ze.zones["z0001"].V], [1])
+
+    def test_a_gap_resets_the_quiet_time(self):
+        ze = make()
+        resume(ze, 0)
+        tr = Tr(1, *IN)
+        t = run(ze, tr, 10_000, 4, IN)
+        det(ze, t, [])
+        self.assertGreater(ze._quiet, 0)
+        ze.on_censor("GAP", t)
+        self.assertEqual(ze._quiet, -1)
+
+
+class RowBuildTest(unittest.TestCase):
+    def test_make_row_and_make_event_are_the_plain_records(self):
+        from radar_zone_learner.core.zoneeval import make_event, make_row
+        f = ("z0001", True, 2, False, "wd0608", True, 300, "default", 25, ("wd0608", "we1012"), ("wd0608",), "wd 09-12", 0.8)
+        r = make_row(*f)
+        self.assertIs(type(r), ZoneState)
+        self.assertEqual(r, ZoneState(*f))
+        self.assertEqual(hash(r), hash(ZoneState(*f)))
+        self.assertEqual(repr(r), repr(ZoneState(*f)))
+        with self.assertRaises(Exception):
+            r.occ = False
+        e = make_event("z0001", "leave", "edge", 1200, 3, 40, "wd0608")
+        self.assertIs(type(e), ZoneEvent)
+        self.assertEqual(e, ZoneEvent("z0001", "leave", "edge", 1200, 3, 40, "wd0608"))
+        self.assertEqual(hash(e), hash(ZoneEvent("z0001", "leave", "edge", 1200, 3, 40, "wd0608")))
+
+    def test_variant_now_is_kept_per_entry_and_per_local_time_object(self):
+        z6 = Zone6()
+        z6.info["z0001"] = {"th": {}, "var": [{"d": "wd", "s": 9, "e": 17, "n": 12}], "conf": 0.8}
+        ze = make(z6=z6)
+        ze.on_tick(WALL0 + 10 * 3600_000)                         # Monday 10:00
+        self.assertEqual(ze._variant_now("z0001"), "wd0917")
+        z6.info["z0001"] = {"th": {}, "var": [{"d": "wd", "s": 11, "e": 17, "n": 12}], "conf": 0.8}     # replaced as a whole
+        self.assertEqual(ze._variant_now("z0001"), "")
+        z6.info["z0001"] = {"th": {}, "var": [{"d": "wd", "s": 9, "e": 17, "n": 12}], "conf": 0.8}
+        self.assertEqual(ze._variant_now("z0001"), "wd0917")
+        ze.on_tick(WALL0 + 18 * 3600_000)                         # a new minute: a new local time
+        self.assertEqual(ze._variant_now("z0001"), "")
+        ze.on_tick(WALL0 + 5 * 24 * 3600_000 + 10 * 3600_000)      # Saturday 10:00
+        self.assertEqual(ze._variant_now("z0001"), "")
+
+
+class RingCountTest(unittest.TestCase):
+    def test_the_ring_counters_follow_the_entries(self):
+        import random
+        rnd = random.Random(3)
+        ze = make()
+        resume(ze, 0)
+        tr = Tr(1, *FAR)
+        t = 10_000
+        for _ in range(400):
+            pos = rnd.choice((IN, EDGE_OUT, FAR, (0.5, 3.1)))
+            vx = rnd.choice((0.0, 0.0, 1.5))
+            t = run(ze, tr, t, rnd.randint(1, 2), pos, vx=vx)
+            for T in ze.trk.values():
+                for ring in T.rings.values():
+                    self.assertEqual(ring.ni, sum(1 for e in ring.e if e[1]))
+                    self.assertEqual(ring.nc, sum(1 for e in ring.e if e[2]))
 
 
 if __name__ == "__main__":

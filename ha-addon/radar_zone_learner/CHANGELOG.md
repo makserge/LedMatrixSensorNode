@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.7.1 - 'Mark spot here' after the radar lost you, and why a press was refused
+
+Two real installs always answered `no_stay` after sitting at a spot. Cause: 'Mark spot here' counted only live confirmed
+tracks, and the tracker ends a track after `ttl_ms` = 2000 ms without a detection, so a person who sits still and is lost
+by the radar for more than 2 s never has a live track long enough (8 s run, 20 s stay).
+
+- New parameter `mark_grace_s` (60). A stay that is still pending (not yet committed) and whose last fragment ended up to
+  60 s before the press, and that is at least `mark_min_stay_s` (20 s) long, now counts like a live stay. Live and recent
+  stays are one candidate list; candidates within `bridge_dist_m` (0.6 m) are one, at the newest one's position. One
+  candidate: the label is made there; none: `no_stay`; more than one: `several_stays`.
+- A refused press says why in numbers: `last_mark.detail` and the `mark_failed` event payload `detail` carry
+  `live_confirmed_tracks`, `best_run_s`, `last_target_age_s`, `recent_stays` and, for `several_stays`, `stays`. Counts and
+  seconds only; no positions, no names. A press that succeeds has no `detail`.
+- `replay/analyze_capture.py` (a recording of the frames topic shows what the tracker sees) is documented in the README.
+- `ttl_ms`, the tracker, the learning pipeline, the zones, drift and review are unchanged; `where.py` (the live view's
+  'staying' marker and `stay_ready`) keeps the live-only rule. The real-radar behaviour still needs the capture analysis:
+  this release is a fix of the reported symptom, not a measurement of how often the LD2454 drops a still person.
+- Risk: a press right after getting up can label where you just were (up to 60 s).
+- Zone evaluator cost (P6-R3): on the 200-zone walking stress case the evaluator now costs about 7 us per detection (was
+  11.5-13.8; target 8.3) and 5 us sitting (was 7.5-8.7), with identical outputs and memory. `_zones_at` settles each grid cell
+  and 3x3 sub-tile once, on first use: candidates that are inside or outside for every point of the tile are decided at once and
+  the rest keep only the rectangles that can still decide them. The caches are dropped whenever the zones or margins are
+  recomputed. State rows and events are built through the slot setters instead of the frozen dataclass constructor,
+  `variant_now` is kept per `zone6.info` entry and local-time object, the hold sweep is skipped until the oldest member could go
+  silent, and the enter-evidence rings keep their counters. Behaviour is unchanged (the walk and sit scenarios through the whole
+  Learner hash identically; the P6 replay jobs p6hold, p6door, p6count and p6pow give the same results).
+
 ## 0.7.0 - P7 drift, moves, retire, radar moved, tuning
 
 The learner now notices that the room changed and **asks you** about it: a piece of furniture that was moved (a *Moved* item

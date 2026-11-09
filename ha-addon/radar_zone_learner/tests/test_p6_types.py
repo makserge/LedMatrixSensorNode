@@ -11,8 +11,8 @@ from radar_zone_learner.core.params import DEFAULT_P6, DEFAULT_PARAMS, P6Params,
 
 class TypesTest(unittest.TestCase):
     def test_versions(self):
-        self.assertEqual((T.SCHEMA_VERSION, T.MIN_SCHEMA_VERSION, T.APP_VERSION), (4, 3, "0.7.0"))
-        self.assertEqual(__version__, "0.7.0")
+        self.assertEqual((T.SCHEMA_VERSION, T.MIN_SCHEMA_VERSION, T.APP_VERSION), (4, 3, "0.7.1"))
+        self.assertEqual(__version__, "0.7.1")
 
     def test_constants(self):
         self.assertEqual(T.ZONE_EVENT_KINDS, ("enter", "leave"))

@@ -297,7 +297,7 @@ class ManifestTest(unittest.TestCase):
 
     def test_version_description_and_no_new_option(self):
         lines = self.lines()
-        self.assertIn('version: "0.7.0"', lines)
+        self.assertIn('version: "0.7.1"', lines)
         self.assertTrue(any(ln.startswith("description: ") and "(P7)" in ln for ln in lines))
         i = lines.index("options:")
         j = lines.index("schema:")
