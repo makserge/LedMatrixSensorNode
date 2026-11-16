@@ -11,8 +11,8 @@ from radar_zone_learner.core import types as T
 
 class ConstantsTest(unittest.TestCase):
     def test_version_and_schema(self):
-        self.assertEqual((T.SCHEMA_VERSION, T.MIN_SCHEMA_VERSION, T.APP_VERSION), (4, 3, "0.7.1"))
-        self.assertEqual(__version__, "0.7.1")
+        self.assertEqual((T.SCHEMA_VERSION, T.MIN_SCHEMA_VERSION, T.APP_VERSION), (4, 3, "0.7.2"))
+        self.assertEqual(__version__, "0.7.2")
 
     def test_item_constants(self):
         self.assertEqual(T.ITEM_RADAR_MOVED, "radar_moved")

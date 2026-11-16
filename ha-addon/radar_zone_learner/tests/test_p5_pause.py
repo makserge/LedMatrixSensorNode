@@ -1,5 +1,6 @@
 """P5 'Guests present - pause learning': a real pause, judged at the time of the evidence (spec 7.3, D34, §11.3
 `test_p5_pause`): one test per guard row, the evidence-time cases, the OR with the context, persistence."""
+import dataclasses
 import json
 import random
 import unittest
@@ -341,7 +342,7 @@ class LearnerPauseTest(unittest.TestCase):
         rng = random.Random(3)
         f.targets_until(f.next_ms + 40000, sit_fn(rng, BED))
         outs = press(L, f)
-        self.assertEqual(outs[0], MarkResult(True, None, "l0001", "manual"))
+        self.assertEqual(dataclasses.replace(outs[0], detail=None), MarkResult(True, None, "l0001", "manual"))
 
     def test_the_context_pauses_too_and_the_pause_is_the_or_of_both(self):
         L, f = setup()

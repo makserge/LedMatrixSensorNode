@@ -446,7 +446,7 @@ class MainWiringTest(unittest.TestCase):
         self.assertEqual(kwargs["topics"].frames, "node_b/radar/ld2454/frames")
         self.assertFalse(kwargs["p4"].debug_map)
         self.assertFalse(kwargs["p4"].maps.enabled)
-        self.assertEqual(len(kwargs["topics"].subscriptions()), 30 + 4 + 1)  # the 30 of P5, the four zone command patterns and P7's export
+        self.assertEqual(len(kwargs["topics"].subscriptions()), 30 + 4 + 2)  # the 30 of P5, the four zone command patterns and P7's two exports
         self.assertEqual(len(TopicsP5.subscriptions(kwargs["topics"])), 30)   # the P5 part is exactly P5's, unchanged
         self.assertEqual(kwargs["topics"].subscriptions()[:30], TopicsP5.subscriptions(kwargs["topics"]))
         self.assertIs(mqtt_cls.call_args.args[1], kwargs["topics"])

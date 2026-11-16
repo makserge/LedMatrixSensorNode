@@ -76,9 +76,13 @@ class LayerRig7(LayerRig):
             test.addCleanup(tmp.cleanup)
             data_dir = Path(tmp.name)
         self.data_dir = Path(data_dir)
+        share = tmpdir()                                   # 0.7.2: a debug export never touches the real /share
+        test.addCleanup(share.cleanup)
+        self.share_root = Path(share.name)
         self.topics = build_topics_p7(self.settings)
         self.layer = P7Layer(self.topics, self.publish, self.data_dir, monotonic=self.clock.monotonic,
-                             clock_ms=self.clock.clock_ms, debug_map=False, p6params=self.p6, day_of=kw.get("day_of"))
+                             clock_ms=self.clock.clock_ms, debug_map=False, p6params=self.p6, day_of=kw.get("day_of"),
+                             share_root=self.share_root)
         self.ha = FakeP7Ha(self.client, self.clock, kw.get("create_delay_s", 0.0))
         # what a command of Home Assistant does: the mapper of the MQTT thread, then the layer, then the learner (the rig plays
         # the service's part, as ``send_event`` says)
@@ -106,8 +110,12 @@ class P7Harness(P6Harness):
                            clock_ms=self.clock.clock_ms, monotonic=self.clock.monotonic)
         self.store = StateStore(self.dir, validate=lambda state: self.learner)
         self.p6 = replace(DEFAULT_P6, valve_after_episodes=self.valve)
+        share = tmpdir()
+        self.addCleanup(share.cleanup)
+        self.share_root = Path(share.name)
         self.layer = P7Layer(self.topics, self.mqtt.publish, self.dir, monotonic=self.clock.monotonic,
-                             clock_ms=self.clock.clock_ms, debug_map=self.debug_map, p6params=self.p6)
+                             clock_ms=self.clock.clock_ms, debug_map=self.debug_map, p6params=self.p6,
+                             share_root=self.share_root)
         self.layer.attach_mapper(self.mqtt.mapper)
         if self.layer.capture is not None:
             self.addCleanup(self.layer.capture.stop)

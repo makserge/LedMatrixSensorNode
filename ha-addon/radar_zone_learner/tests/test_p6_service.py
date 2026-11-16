@@ -236,7 +236,7 @@ class MainWiringTest(unittest.TestCase):
         self.assertIsInstance(topics, TopicsP6)
         self.assertEqual(topics.frames, "node_b/radar/ld2454/frames")
         self.assertEqual(topics.node_status, "node_b/sensors/status")
-        self.assertEqual(len(topics.subscriptions()), 34 + 1)                       # P7 adds the one export command
+        self.assertEqual(len(topics.subscriptions()), 34 + 2)                       # P7 adds the two export commands (0.7.2: the debug export)
         self.assertEqual(topics.subscriptions()[:34], TopicsP6.subscriptions(topics))
         self.assertIs(mqtt.topics, topics)
         self.assertIs(layer.mapper, mqtt.mapper)

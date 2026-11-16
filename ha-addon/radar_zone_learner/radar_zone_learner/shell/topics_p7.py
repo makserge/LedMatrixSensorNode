@@ -9,8 +9,9 @@ Three topics are new, all on the learner device and none of them per zone or per
 - ``radar_zones/learner/export_tuning``   ``PRESS``                    command, the button 'Export tuning data' (input)
 - ``radar_zones/learner/tuning``          ``none`` or ``<n> nights``   retained, the diagnostic sensor 'Tuning data'
 - ``radar_zones/learner/tuning/export``   one JSON document            NOT retained, the pooled counts record (spec 4.8)
+- ``radar_zones/learner/export_debug``    ``PRESS``                    command, the button 'Export debug data' (input, 0.7.2)
 
-Only the first is an input: 34 + 1 = 35 subscriptions (QoS 1). It is a command topic, so a retained message on it is ignored
+Only the first is an input (0.7.2 adds the command ``export_debug``): 34 + 2 = 36 subscriptions (QoS 1). It is a command topic, so a retained message on it is ignored
 and deleted like the other commands of the app (an export must never be started by a message that was left on the broker).
 The export topic is published once per press and never retained: nothing of the tuning data stays on the broker.
 """
@@ -20,7 +21,7 @@ from dataclasses import dataclass, fields
 
 from .topics_p6 import TopicMapperP6, TopicsP6, build_topics_p6, parse_press
 
-__all__ = ["ExportTuningPress", "TopicsP7", "TopicMapperP7", "build_topics_p7", "LEARNER_BASE"]
+__all__ = ["ExportTuningPress", "ExportDebugPress", "TopicsP7", "TopicMapperP7", "build_topics_p7", "LEARNER_BASE"]
 
 LEARNER_BASE = "radar_zones/learner"
 
@@ -32,21 +33,28 @@ class ExportTuningPress:
 
 
 @dataclass(frozen=True)
+class ExportDebugPress:
+    """The button 'Export debug data' was pressed (0.7.2; a shell event, answered by the layer)."""
+    recv_ms: int
+
+
+@dataclass(frozen=True)
 class TopicsP7(TopicsP6):
     learner_export_tuning: str              # input (command), not retained
     learner_tuning: str                     # output, retained: ``none`` or ``<n> nights``
     learner_tuning_export: str              # output, NOT retained: the pooled record
+    learner_export_debug: str               # input (command), not retained (0.7.2)
 
     # ------------------------------------------------------------ subscriptions
     def _p7_inputs(self) -> tuple:
-        return (self.learner_export_tuning,)
+        return (self.learner_export_tuning, self.learner_export_debug)
 
     def subscriptions(self) -> list:
-        """The 34 of P6, then the one command of P7, QoS 1: 35 topics."""
+        """The 34 of P6, then the two commands of P7 (0.7.2: the debug export is the second), QoS 1: 36 topics."""
         return super().subscriptions() + [(topic, 1) for topic in self._p7_inputs()]
 
     def command_topics(self) -> tuple:
-        """The 21 of P6 and the export command (22): a retained message on one is ignored and deleted."""
+        """The 21 of P6 and the two export commands (23): a retained message on one is ignored and deleted."""
         return super().command_topics() + self._p7_inputs()
 
     def make_mapper(self) -> "TopicMapperP7":
@@ -58,7 +66,8 @@ def build_topics_p7(settings) -> TopicsP7:
     return TopicsP7(**{f.name: getattr(base, f.name) for f in fields(base)},
                     learner_export_tuning=f"{LEARNER_BASE}/export_tuning",
                     learner_tuning=f"{LEARNER_BASE}/tuning",
-                    learner_tuning_export=f"{LEARNER_BASE}/tuning/export")
+                    learner_tuning_export=f"{LEARNER_BASE}/tuning/export",
+                    learner_export_debug=f"{LEARNER_BASE}/export_debug")
 
 
 class TopicMapperP7(TopicMapperP6):
@@ -68,6 +77,7 @@ class TopicMapperP7(TopicMapperP6):
         super().__init__(topics)
         self._commands = frozenset(topics.command_topics())
         self._handlers[topics.learner_export_tuning] = self._export
+        self._handlers[topics.learner_export_debug] = self._export_debug
 
     # ``map`` is inherited: the P6 mapper passes a topic that is not a zone topic to the P5 mapper, whose handler table does
     # the rest (the 256-byte cap, the retained-command rule, the echo of the app's own clear)
@@ -75,3 +85,5 @@ class TopicMapperP7(TopicMapperP6):
     def _export(self, payload, recv_ms):
         return [ExportTuningPress(recv_ms)] if parse_press(payload) else self._ignored()
 
+    def _export_debug(self, payload, recv_ms):
+        return [ExportDebugPress(recv_ms)] if parse_press(payload) else self._ignored()

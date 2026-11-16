@@ -16,6 +16,9 @@ What it does:
 - answers the button 'Export tuning data' (``ExportTuningPress``) by publishing **one pooled record** (sums and histograms over
   the kept nights: no per-night series, no date) once on ``radar_zones/learner/tuning/export``, **not retained**; the record is
   scanned for privacy and size first, and a refusal is only counted. No file is written for the export (spec 4.8);
+- answers the button 'Export debug data' (0.7.2, ``ExportDebugPress``) by copying the capture frames and ``state.json`` into
+  ``<share>/radar_zone_learner/export-<UTC stamp>/`` (``debugexport``); counted as ``debug_exports`` / ``debug_export_refused``,
+  a refusal also fires the review event ``export_refused``;
 - shows ``none`` or ``<n> nights`` on the diagnostic sensor 'Tuning data' (retained), and the counters ``tuning_exports``,
   ``tuning_export_refused``, ``tuning_write_errors`` and ``p7_shell_errors`` in the status attributes (counts only).
 
@@ -36,26 +39,38 @@ from typing import Callable, Optional
 
 from ..core.params import DEFAULT_P6, DEFAULT_P7
 from ..core.types import TuningLine
+from .debugexport import SHARE_ROOT, export_debug
+from .discovery_p5 import EVENT_TYPES_P5
 from .discovery_p7 import p7_discovery_messages
 from .p6 import P6Layer
 from .select_model import SELECT_MODE
-from .topics_p7 import ExportTuningPress, TopicsP7
+from .topics_p7 import ExportDebugPress, ExportTuningPress, TopicsP7
 from .tuningexport import REJECTED, STORED, TuningStore, state_text
 
 log = logging.getLogger("radar_zone_learner.p7")
 
 
+EVENT_TYPES_P7 = EVENT_TYPES_P5 + ("export_refused",)      # 0.7.2: a debug export that was refused or failed
+
+
 class P7Layer(P6Layer):
+    EVENT_TYPES = EVENT_TYPES_P7
+
     def __init__(self, topics, publish: Callable[..., bool], data_dir=None, *,
                  monotonic: Callable[[], float] = time.monotonic, select_mode: str = SELECT_MODE,
                  debug_map: bool = True,
                  clock_ms: Callable[[], int] = lambda: time.time_ns() // 1_000_000,
-                 p6params=DEFAULT_P6, day_of: Optional[Callable[[int], int]] = None, p7params=DEFAULT_P7) -> None:
+                 p6params=DEFAULT_P6, day_of: Optional[Callable[[int], int]] = None, p7params=DEFAULT_P7,
+                 share_root=SHARE_ROOT) -> None:
         if not isinstance(topics, TopicsP7):
             raise TypeError("P7Layer needs the topics of build_topics_p7")
         super().__init__(topics, publish, data_dir, monotonic=monotonic, select_mode=select_mode, debug_map=debug_map,
                          clock_ms=clock_ms, p6params=p6params, day_of=day_of)
         self.p7params = p7params
+        self.data_dir = data_dir
+        self.share_root = share_root           # the Home Assistant share folder (0.7.2); tests pass a temporary one
+        self.debug_exports = 0                 # debug-data exports made since the app started (RAM only)
+        self.debug_export_refused = 0          # presses that exported nothing (empty, too large, error)
         self.tuning: Optional[TuningStore] = (
             TuningStore(data_dir, keep=p7params.agg_keep_nights, line_max=p7params.agg_night_bytes_max,
                         export_max=p7params.agg_export_bytes_max) if data_dir is not None else None)
@@ -110,13 +125,17 @@ class P7Layer(P6Layer):
     def attributes(self) -> dict:
         out = super().attributes()
         out.update({"tuning_exports": self.tuning_exports, "tuning_export_refused": self.tuning_export_refused,
-                    "tuning_write_errors": self.tuning_write_errors, "p7_shell_errors": self.p7_shell_errors})
+                    "tuning_write_errors": self.tuning_write_errors, "p7_shell_errors": self.p7_shell_errors,
+                    "debug_exports": self.debug_exports, "debug_export_refused": self.debug_export_refused})
         return out
 
     # ------------------------------------------------------------ input events
     def on_event(self, ev, now_ms: int) -> list:
         if isinstance(ev, ExportTuningPress):
             self._p7_safe(self._export)
+            return []
+        if isinstance(ev, ExportDebugPress):
+            self._p7_safe(self._export_debug, now_ms)
             return []
         return super().on_event(ev, now_ms)
 
@@ -163,3 +182,16 @@ class P7Layer(P6Layer):
         else:
             self.tuning_export_refused += 1
             log.warning("tuning export: not sent, the broker link is down")
+
+    def _export_debug(self, now_ms: int) -> None:
+        """The button 'Export debug data' (0.7.2): copies the capture and the state into ``<share>/radar_zone_learner``.
+        Only on a press; counts and a reason are all that is logged or published."""
+        res = export_debug(self.data_dir, self.share_root, now_ms / 1000.0) if self.data_dir is not None else None
+        if res is not None and res.ok:
+            self.debug_exports += 1
+            log.info("debug export: %d files, %d bytes, %d older folders deleted", res.files, res.bytes, res.pruned)
+            return
+        self.debug_export_refused += 1
+        reason = res.reason if res is not None else "empty"
+        log.warning("debug export: nothing exported (%s)", reason)
+        self._event("export_refused", reason=reason)

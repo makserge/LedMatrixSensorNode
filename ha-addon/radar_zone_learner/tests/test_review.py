@@ -1,5 +1,6 @@
 """P4: review items, the bed item and its answers, 'Mark spot here' binding, zones by approval, the
 night_window item (OA 7.6, 7.8, 7.9)."""
+import dataclasses
 import json
 import random
 import unittest
@@ -232,7 +233,7 @@ class MarkBindingTest(unittest.TestCase):
         L.night = 7
         self.sit(L, f)
         outs = press(L, f)
-        self.assertEqual(outs[0], MarkResult(True, None, "l0001", "bed"))
+        self.assertEqual(dataclasses.replace(outs[0], detail=None), MarkResult(True, None, "l0001", "bed"))
         lb = L.labels()[0]
         self.assertEqual((lb.name, lb.kind), ("Bed", "bed"))
         self.assertAlmostEqual(lb.x_m, BED[0], delta=0.05)
@@ -251,7 +252,7 @@ class MarkBindingTest(unittest.TestCase):
         L.handle(SpotName("Master", BASE_MS + 10000))
         self.sit(L, f)
         outs = press(L, f)
-        self.assertEqual(outs[0], MarkResult(True, None, "l0001", "bed"))
+        self.assertEqual(dataclasses.replace(outs[0], detail=None), MarkResult(True, None, "l0001", "bed"))
         self.assertEqual(L.labels()[0].name, "Master")
 
     def test_another_selected_item_gives_kind_manual(self):
@@ -262,7 +263,7 @@ class MarkBindingTest(unittest.TestCase):
         L.handle(SpotName("Desk", BASE_MS + 10000))
         self.sit(L, f)
         outs = press(L, f)
-        self.assertEqual(outs[0], MarkResult(True, None, "l0001", "manual"))
+        self.assertEqual(dataclasses.replace(outs[0], detail=None), MarkResult(True, None, "l0001", "manual"))
         self.assertEqual(L.labels()[0].name, "Desk")
         self.assertEqual(L.review.bed_state(L)[0], "open")                 # the item stays open
         self.assertEqual(items(L), [NW_ITEM, BED_ITEM])
@@ -278,7 +279,7 @@ class MarkBindingTest(unittest.TestCase):
             L.handle(SpotName(name, BASE_MS + 10000))
             self.sit(L, f)
             outs = press(L, f)
-            self.assertEqual(outs[0], MarkResult(True, None, "l0001", "bed"), name)
+            self.assertEqual(dataclasses.replace(outs[0], detail=None), MarkResult(True, None, "l0001", "bed"), name)
             self.assertEqual(L.review.bed_state(L), ("withdrawn", "bed_zone"), name)
             self.assertEqual(items(L), [NW_ITEM], name)
         L, f = setup()                                                     # 'bedroom' is not the name of a bed
@@ -286,7 +287,7 @@ class MarkBindingTest(unittest.TestCase):
         with_proposal(L)
         L.handle(SpotName("Bedroom", BASE_MS + 10000))
         self.sit(L, f)
-        self.assertEqual(press(L, f)[0], MarkResult(True, None, "l0001", "manual"))
+        self.assertEqual(dataclasses.replace(press(L, f)[0], detail=None), MarkResult(True, None, "l0001", "manual"))
 
     def test_after_selecting_the_bed_item_the_same_press_makes_the_bed(self):
         L, f = setup()
@@ -294,7 +295,7 @@ class MarkBindingTest(unittest.TestCase):
         with_proposal(L)
         L.handle(ReviewSelect(BED_ITEM, BASE_MS + 9000))
         self.sit(L, f)
-        self.assertEqual(press(L, f)[0], MarkResult(True, None, "l0001", "bed"))
+        self.assertEqual(dataclasses.replace(press(L, f)[0], detail=None), MarkResult(True, None, "l0001", "bed"))
 
     def test_none_selected_gives_the_p3_rule_too(self):
         L, f = setup()
@@ -302,7 +303,7 @@ class MarkBindingTest(unittest.TestCase):
         L.handle(ReviewSelect(None, BASE_MS + 9000))
         L.handle(SpotName("Desk", BASE_MS + 9500))
         self.sit(L, f)
-        self.assertEqual(press(L, f)[0], MarkResult(True, None, "l0001", "manual"))
+        self.assertEqual(dataclasses.replace(press(L, f)[0], detail=None), MarkResult(True, None, "l0001", "manual"))
         self.assertEqual(items(L), [BED_ITEM])
 
     def test_a_chosen_item_that_is_gone_falls_back_to_the_first(self):
@@ -316,11 +317,11 @@ class MarkBindingTest(unittest.TestCase):
     def test_before_the_setup_review_the_p3_rule_applies(self):
         L, f = setup()
         self.sit(L, f)
-        self.assertEqual(press(L, f)[0], MarkResult(True, None, "l0001", "manual"))
+        self.assertEqual(dataclasses.replace(press(L, f)[0], detail=None), MarkResult(True, None, "l0001", "manual"))
         L, f = setup()
         L.handle(SpotName("Bett", BASE_MS + 10000))
         self.sit(L, f)
-        self.assertEqual(press(L, f)[0], MarkResult(True, None, "l0001", "bed"))
+        self.assertEqual(dataclasses.replace(press(L, f)[0], detail=None), MarkResult(True, None, "l0001", "bed"))
 
     def test_failures_leave_the_item_open(self):
         L = ready_learner()

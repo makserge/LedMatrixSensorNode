@@ -64,7 +64,7 @@ P7 two on the learner device (section 12.6: a button and a diagnostic sensor for
 4. Open it and press Install. The host builds the image, which takes a few minutes and downloads the
    Home Assistant Python base image and paho-mqtt. Then press Start and turn on **Watchdog** on the Info
    tab.
-5. The log shows `connected to core-mosquitto:1883`, `subscribed (35 topics)` (34 before P7, 30 before P6, 18 before P5, 9 before P4) and, once
+5. The log shows `connected to core-mosquitto:1883`, `subscribed (36 topics)` (35 in 0.7.0 and 0.7.1, 34 before P7, 30 before P6, 18 before P5, 9 before P4) and, once
    frames arrive, `status learning`. Every later change of the learner status is logged the same way.
 
 ### Updating
@@ -179,6 +179,20 @@ detection, `null` if none since the start), `recent_stays` (stays that ended wit
 too short does not count) and, for `several_stays`, `stays`. A small `best_run_s` with a large
 `last_target_age_s` means the radar lost the person.
 
+Since 0.7.2 every press is also written to the add-on log as one `info` line with the same numbers and no position, for
+example `mark ok l0002 bed source=live age=0.0 dur=34.2 live_tracks=1` or `mark failed no_stay live_tracks=0 best_run=0.0
+recent=1`, and an **accepted** press carries a `detail` too, so you can see what the app saw when it said `ok`:
+`source` (`live` when the chosen stay came from a track that was still alive, `recent` when it came only from a recent stay
+whose track had already been lost), `age_s` (seconds since the chosen stay's last fragment; `0.0` for `live`), `dur_s` (the
+length of the stay), `live_confirmed_tracks` and `recent_stays`. A `recent` press with a large `age_s` is the signature of
+'it said ok although I had already left the view'.
+
+`last_mark` has these fields: `result` (`ok` or `failed`), `reason`, `label` (the label id or `null`), `kind`, `at`, `n`
+and `detail`. **`at` is rounded to 5 minutes on purpose** (the app never publishes a finer time), so it can lag the real
+press by up to 5 minutes and two presses in one window have the same `at`. **`n` is the number of presses the app has seen
+since it started** (every press counts, also a refused one; RAM only, back to 0 at a start): if `n` goes up, the press
+arrived, even when everything else in `last_mark` is identical to the one before.
+
 The name stays set after a mark, so a retry needs only the button. A press at a spot that already has a
 label of the same name (within 0.4 m) adds nothing and answers `ok` with the existing label. The app keeps
 at most 100 labels (the oldest manual one goes first).
@@ -213,6 +227,15 @@ What is stored where:
   would show a night with nobody home, so it is **local only**: `config.yaml` excludes `tuning/*` from backups, nothing
   publishes it, and 'Forget all learned data' deletes the folder. Only when you press 'Export tuning data' does the app
   publish **one pooled record** (sums over the kept nights, no per-night list) once, on a topic that is not retained.
+
+- **Privacy changes in 0.7.2: the debug-data export.** Only when you press `button.radar_zones_learner_export_debug` ('Export
+  debug data', diagnostic) the app **copies raw positions and the learned map into Home Assistant's `share` folder**
+  (`/share/radar_zone_learner/export-<UTC date-time>/`: the current capture files and `state.json`, section 10.6). The `share`
+  folder is reachable from the Samba share and from other apps that map it, and a Home Assistant backup that includes the
+  `share` folder contains it (the app's `backup_exclude` covers only its own `/data/capture` and `/data/tuning`). The app keeps the newest 3 export
+  folders and deletes older ones; nothing is exported automatically, nothing is published over MQTT, and 'Forget all learned
+  data' does not delete an export: delete the folders yourself when the developer has what he needs. `config.yaml` now has
+  `map: share:rw` for this; the app writes nowhere else in `share`.
 
 The radar sees everyone in the room. Tell the other people in the household what the radar and this app
 record.
@@ -529,7 +552,7 @@ item costs one tap and it comes back after the next nightly run. A text entry (t
 | `switch.radar_zones_review_approve_sched` ('Approve also switches schedule ON') | OFF by default; when ON the next night-window approval also switches 'Radar night schedule' ON, and the box then switches itself OFF again |
 | `select.radar_zones_review_advanced` ('Advanced item') and `button.radar_zones_review_apply_advanced` ('Apply advanced') | section 10.3 |
 | `sensor.radar_zones_review_push` ('Review push request', diagnostic) | what the push blueprint reads (section 10.4) |
-| `event.radar_zones_review_event` ('Review event') | `mark_failed`, `device_not_confirmed`, `restore_failed` (section 9), and since P5 `answer_ignored` (with `reason`, `op`, `item`), `forget_refused` (with `reason`) and `forgotten` |
+| `event.radar_zones_review_event` ('Review event') | `mark_failed`, `device_not_confirmed`, `restore_failed` (section 9), and since P5 `answer_ignored` (with `reason`, `op`, `item`), `forget_refused` (with `reason`) and `forgotten`, and since 0.7.2 `export_refused` (with `reason`, a debug export that exported nothing) |
 
 When the list of options changes (a new place, an answered one) the app publishes the select's discovery config again and
 sends the state twice, 2 s apart, because Home Assistant applies a changed option list in a task and drops a state for an
@@ -625,6 +648,7 @@ bed); red and orange squares = the live positions. It follows the option `debug_
 | `switch.radar_zones_learner_pets` ('Pets in home') | OFF by default. With it ON a silent ignore-zone suggestion that was used mostly while the home was empty gets the kind `pet` (counted in `pet_spots`); nothing else changes. |
 | `switch.radar_zones_learner_detail_text` ('Detailed review text') | OFF by default. ON adds 'Used mostly 09-12 h and 13-17 h.' to a place text; it is the app's half of the push opt-in. |
 | `switch.radar_zones_learner_debug_capture` ('Debug capture') | OFF at every start, never resumed after a restart. ON writes the frames topic (raw positions) to `/data/capture/capture-<UTC date-hour>.jsonl`, one line per message, for `replay/capture_replay.py`; no other topic is recorded. It switches itself off after 48 h or 100 MiB, the files are deleted after 72 h, 'Forget all learned data' deletes them, and `config.yaml` excludes `capture/*` (relative to the app's data folder) from backups. The status attribute `capture` counts files and bytes. |
+| `button.radar_zones_learner_export_debug` ('Export debug data', diagnostic) | 0.7.2. The capture lives in the app's private `/data/capture`, which you cannot reach from the Samba share or the Terminal & SSH app. A press **copies** every current `capture-*.jsonl` file (raw frames only) and a copy of `state.json` (the learned map) into `/share/radar_zone_learner/export-<UTC YYYYMMDD-HHMMSS>/` (`/share` is Home Assistant's `share` folder, the `share` share of Samba) with a `README.txt`. Nothing is exported unless you press it. At most 100 MiB are copied (the state first, then the newest capture files that fit), only the newest 3 `export-*` folders are kept (older ones are deleted, only inside `/share/radar_zone_learner`), a symbolic link is never followed, and the folder appears by one rename, so it is complete or absent. With no capture file and no state, or when `share` is not available, nothing is exported: the press is counted (`debug_export_refused`) and the event `export_refused` (with `reason` `empty`, `too_large`, `exists` or `error`) says why. A good export is counted in the status attribute `debug_exports` (since the start) and logged as `debug export: <n> files, <n> bytes`, never with a path or a position. **The copy holds raw positions and the learned map: it is for you and the developer; delete the folder when you are done.** To capture a failing run: switch 'Debug capture' ON, do the walk or the mark, press 'Export debug data', send the folder. |
 | `button.radar_zones_learner_forget_rejections`, `button.radar_zones_learner_resuggest_night_window` | section 10.3 |
 
 All switches here persist in the state (the capture does not) and are published retained. 'Forget all learned data' cannot
@@ -975,11 +999,13 @@ never proposed; you read their distributions and decide (acceptance step A8).
 
 The export is your action on purpose. The record is counts only, but it says how many places the household confirmed and
 how you answered, and an MQTT message can be read by Home Assistant and every add-on that uses MQTT. Each export logs
-`tuning export: <n> nights` and nothing else, and the status attribute `tuning_exports` counts them.
+`tuning export: <n> nights` and nothing else, and the status attribute `tuning_exports` counts them. This export is an MQTT
+message and writes no file; the 0.7.2 button 'Export debug data' (section 10.6) is the other one: it writes a folder into
+`share`, with raw positions, and is meant for the developer.
 
 The status attributes (counts only: never a name, an id or a coordinate) gain `zones_frozen`, `zones_blind`, `zones_falling`,
 `zones_unused`, `zones_recheck`, `moved_from`, `radar_moved`, `places_probation`, `places_recheck_held`, and from the shell `tuning_exports`, `tuning_export_refused`,
-`tuning_write_errors` and `p7_shell_errors`. A step of the P7 nightly work that fails writes one error
+`tuning_write_errors` and `p7_shell_errors`, and since 0.7.2 `debug_exports` and `debug_export_refused` (counts since the start). A step of the P7 nightly work that fails writes one error
 line that starts `p7:` with the step's name (the counts `zone7_pruned`, `zone7_reset` and `p7_errors` are `Learner.counters()`,
 read by the replay, not status attributes) and never stops the review, the suggestions or the zones.
 
@@ -992,8 +1018,9 @@ use and is not built, designed or reserved.
 ### 12.8 New topics and entities
 
 One new input (QoS 1, a command: a retained message on it is ignored and deleted): `radar_zones/learner/export_tuning`
-(`PRESS`), which makes 35 subscriptions in all. Outputs: retained `radar_zones/learner/tuning`; not retained
-`radar_zones/learner/tuning/export`. Two discovery messages (the button and the sensor) come on top of the 35 of section 10.7
+(`PRESS`), which made 35 subscriptions; 0.7.2 adds the command `radar_zones/learner/export_debug` (`PRESS`, QoS 1, same
+rule for a retained message): 36 in all. Outputs: retained `radar_zones/learner/tuning`; not retained
+`radar_zones/learner/tuning/export`. Three discovery messages (the two buttons and the sensor) come on top of the 35 of section 10.7
 and the 6 for each zone. The push request sensor can now have the kind `attention` (section 10.4). P7 adds no per-zone entity.
 
 ### 12.9 What to check once on the real installation

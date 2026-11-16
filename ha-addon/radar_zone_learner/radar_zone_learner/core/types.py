@@ -11,7 +11,7 @@ from typing import Optional, Protocol, Union
 
 SCHEMA_VERSION = 4
 MIN_SCHEMA_VERSION = 3            # older files are migrated on load (state.migrate_3_to_4)
-APP_VERSION = "0.7.1"
+APP_VERSION = "0.7.2"
 STATUS_STATES = ("starting", "learning", "not_observing", "no_data")
 SUGGESTION_TYPES = ("dwell_zone", "short_task_zone", "reflection", "ignore_zone", "room_outline", "entry_zone")
 KINDS = ("dwell", "short_task", "bed", "reflection", "ignore", "entry", "outline", "pet")   # documentation only

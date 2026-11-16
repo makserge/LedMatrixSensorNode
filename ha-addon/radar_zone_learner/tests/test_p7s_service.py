@@ -79,15 +79,15 @@ class WiringTest(FakeCoreBase, unittest.TestCase):
         self.up()
         self.svc._publish_status(force=True)
         attr = json.loads(self.last("radar_zones/learner/attr"))
-        for key in ("tuning_exports", "tuning_export_refused", "tuning_write_errors", "p7_shell_errors"):
+        for key in ("tuning_exports", "tuning_export_refused", "tuning_write_errors", "p7_shell_errors", "debug_exports"):
             self.assertEqual(attr[key], 0, key)
         self.assertNotIn("Desk", json.dumps(attr))
 
-    def test_the_layers_mapper_is_the_mqtt_threads_mapper_and_the_client_subscribes_to_35(self):
+    def test_the_layers_mapper_is_the_mqtt_threads_mapper_and_the_client_subscribes_to_36(self):
         self.up()
         self.assertIs(self.layer.mapper, self.mqtt.mapper)
         self.assertIs(type(self.mqtt.mapper), TopicMapperP7)
-        self.assertEqual(len(self.client.subscriptions), 35)
+        self.assertEqual(len(self.client.subscriptions), 36)
         self.assertIn((EXPORT_CMD, 1), self.client.subscriptions)
 
     def test_an_error_in_the_p7_code_is_contained_and_the_review_path_goes_on(self):
@@ -107,11 +107,12 @@ class BurstTest(FakeCoreBase, unittest.TestCase):
         self.client.published.clear()
         self.svc._republish()
         configs = [p for p in self.client.published if p[0].startswith("homeassistant/") and p[0].endswith("/config")]
-        self.assertEqual(len(configs), 35 + 2 + 6)                    # P5 and the service's four, the two of P7, one zone
-        self.assertEqual(len({p[0] for p in configs}), 43)
+        self.assertEqual(len(configs), 35 + 3 + 6)                    # P5 and the service's four, the three of P7, one zone
+        self.assertEqual(len({p[0] for p in configs}), 44)
         self.assertTrue(all(p[2:] == (1, False) for p in configs))    # QoS 1, not retained
         self.assertIn("homeassistant/button/radar_zones_learner_export_tuning/config", {p[0] for p in configs})
         self.assertIn("homeassistant/sensor/radar_zones_learner_tuning/config", {p[0] for p in configs})
+        self.assertIn("homeassistant/button/radar_zones_learner_export_debug/config", {p[0] for p in configs})
 
     def test_the_sensor_state_is_published_retained_after_a_connect(self):
         self.up()
@@ -258,7 +259,7 @@ class MainWiringTest(unittest.TestCase):
         self.assertIsInstance(topics, TopicsP7)
         self.assertIsInstance(topics, TopicsP6)
         self.assertEqual(topics.frames, "node_b/radar/ld2454/frames")
-        self.assertEqual(len(topics.subscriptions()), 35)
+        self.assertEqual(len(topics.subscriptions()), 36)
         self.assertIs(mqtt.topics, topics)
         self.assertIs(layer.mapper, mqtt.mapper)
         self.assertIs(type(mqtt.mapper), TopicMapperP7)
@@ -297,7 +298,7 @@ class ManifestTest(unittest.TestCase):
 
     def test_version_description_and_no_new_option(self):
         lines = self.lines()
-        self.assertIn('version: "0.7.1"', lines)
+        self.assertIn('version: "0.7.2"', lines)
         self.assertTrue(any(ln.startswith("description: ") and "(P7)" in ln for ln in lines))
         i = lines.index("options:")
         j = lines.index("schema:")
@@ -308,7 +309,8 @@ class ManifestTest(unittest.TestCase):
         lines = self.lines()
         i = lines.index("backup_exclude:")
         self.assertEqual(lines[i + 1:i + 3], ['  - "capture/*"', '  - "tuning/*"'])
-        self.assertTrue(lines[i + 3].startswith("options:"))
+        self.assertEqual(lines[i + 3:i + 5], ["map:", '  - "share:rw"'])          # 0.7.2: the debug export goes to /share
+        self.assertTrue(lines[i + 5].startswith("options:"))
 
     def test_the_tuning_folder_the_layer_writes_is_the_one_the_pattern_names(self):
         from pathlib import PurePosixPath

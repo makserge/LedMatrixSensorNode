@@ -8,7 +8,7 @@ ADDON = Path(__file__).resolve().parents[1]
 
 CONFIG_LINES = [
     'name: "Radar Zone Learner"',
-    'version: "0.7.1"',
+    'version: "0.7.2"',
     'slug: "radar_zone_learner"',
     "description: \"Learns places from the LED matrix node's LD2454 radar frames, reports occupancy of the "
     "zones you confirmed and notices moved furniture and a moved radar (P7).\"",
@@ -26,6 +26,8 @@ CONFIG_LINES = [
     "backup_exclude:",
     '  - "capture/*"',
     '  - "tuning/*"',
+    "map:",
+    '  - "share:rw"',
     "options:",
     "  log_level: info",
     "  node_prefix: led_matrix_node",
@@ -43,7 +45,7 @@ CONFIG_LINES = [
     '  mqtt_username: "str?"',
     '  mqtt_password: "password?"',
 ]
-FORBIDDEN_KEYS = ("ports", "host_network", "hassio_api", "homeassistant_api", "map", "privileged", "image")
+FORBIDDEN_KEYS = ("ports", "host_network", "hassio_api", "homeassistant_api", "privileged", "image")
 
 
 def addon_files():
@@ -150,6 +152,8 @@ class ManifestTest(unittest.TestCase):
         self.assertIn("0.4.0 - P4 night window", (ADDON / "CHANGELOG.md").read_text(encoding="utf-8"))
         self.assertIn("0.5.0 - P5 setup review", (ADDON / "CHANGELOG.md").read_text(encoding="utf-8"))
         self.assertIn("0.6.0 - P6 confirmed-zone evaluation", (ADDON / "CHANGELOG.md").read_text(encoding="utf-8"))
+        self.assertIn("0.7.2 - Mark diagnostics and the debug data export",
+                      (ADDON / "CHANGELOG.md").read_text(encoding="utf-8"))
         self.assertIn("0.7.1 - 'Mark spot here' after the radar lost you",
                       (ADDON / "CHANGELOG.md").read_text(encoding="utf-8"))
         self.assertIn("0.7.0 - P7 drift, moves, retire, radar moved, tuning",

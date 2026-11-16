@@ -11,10 +11,11 @@ from radar_zone_learner.shell.p4_types import ReviewAnswer
 from radar_zone_learner.shell.topics import ClearRetained
 from radar_zone_learner.shell.topics_p5 import TopicMapperP5, build_topics_p5
 from radar_zone_learner.shell.topics_p6 import TopicMapperP6, TopicsP6, build_topics_p6
-from radar_zone_learner.shell.topics_p7 import ExportTuningPress, TopicMapperP7, build_topics_p7
+from radar_zone_learner.shell.topics_p7 import ExportDebugPress, ExportTuningPress, TopicMapperP7, build_topics_p7
 from tests.fakes import FakeClientFactory, quiet_logs
 
 CMD = "radar_zones/learner/export_tuning"
+DEBUG_CMD = "radar_zones/learner/export_debug"
 STATE = "radar_zones/learner/tuning"
 EXPORT = "radar_zones/learner/tuning/export"
 
@@ -37,13 +38,13 @@ class TopicsP7Test(unittest.TestCase):
         self.assertEqual((self.t.learner_export_tuning, self.t.learner_tuning, self.t.learner_tuning_export),
                          (CMD, STATE, EXPORT))
 
-    def test_35_subscriptions_the_p6_34_then_the_export_command_at_qos_one(self):
+    def test_36_subscriptions_the_p6_34_then_the_two_export_commands_at_qos_one(self):
         base = build_topics_p6(self.s).subscriptions()
         subs = self.t.subscriptions()
-        self.assertEqual(len(subs), 35)
+        self.assertEqual(len(subs), 36)
         self.assertEqual(subs[:34], base)
-        self.assertEqual(subs[34], (CMD, 1))
-        self.assertEqual(len({topic for topic, _ in subs}), 35)
+        self.assertEqual(subs[34:], [(CMD, 1), (DEBUG_CMD, 1)])
+        self.assertEqual(len({topic for topic, _ in subs}), 36)
         self.assertEqual(dict(subs)[self.t.frames], 0)
 
     def test_only_the_command_is_an_input_the_sensor_and_the_export_are_not_subscribed(self):
@@ -52,10 +53,10 @@ class TopicsP7Test(unittest.TestCase):
         self.assertNotIn(STATE, subs)
         self.assertNotIn(EXPORT, subs)                                      # the app must never receive its own output
 
-    def test_command_topics_are_the_p6_twenty_one_and_the_export_command(self):
+    def test_command_topics_are_the_p6_twenty_one_and_the_two_export_commands(self):
         cmds = self.t.command_topics()
-        self.assertEqual(len(cmds), 22)
-        self.assertEqual(set(cmds), set(build_topics_p6(self.s).command_topics()) | {CMD})
+        self.assertEqual(len(cmds), 23)
+        self.assertEqual(set(cmds), set(build_topics_p6(self.s).command_topics()) | {CMD, DEBUG_CMD})
 
     def test_the_p5_and_p6_classes_are_unchanged(self):
         t6 = build_topics_p6(self.s)
@@ -85,6 +86,9 @@ class MapperTest(unittest.TestCase):
     def test_a_press_is_an_export_event(self):
         self.assertEqual(self.m.map(CMD, b"PRESS", False, 5), [ExportTuningPress(5)])
         self.assertEqual(self.m.map(CMD, b" press ", False, 6), [ExportTuningPress(6)])
+        self.assertEqual(self.m.map(DEBUG_CMD, b"PRESS", False, 7), [ExportDebugPress(7)])
+        self.assertEqual(self.m.map(DEBUG_CMD, b" press ", False, 8), [ExportDebugPress(8)])
+        self.assertEqual(self.m.map(DEBUG_CMD, b"OFF", False, 9), [])
 
     def test_anything_else_is_ignored_and_counted(self):
         for bad in (b"", b"ON", b"1", b"export", b"\xff", b"PRESS PRESS"):
@@ -127,7 +131,7 @@ class MapperTest(unittest.TestCase):
 class MqttIoTest(unittest.TestCase):
     """The MQTT thread subscribes to the 35 and clears a retained press."""
 
-    def test_the_client_subscribes_to_35_topics_and_a_retained_press_is_cleared(self):
+    def test_the_client_subscribes_to_36_topics_and_a_retained_press_is_cleared(self):
         import queue
         quiet_logs(self)
         t = build_topics_p7(settings())
@@ -137,8 +141,8 @@ class MqttIoTest(unittest.TestCase):
         io.start()
         client = factory.last
         client.fire_connect(0)
-        self.assertEqual(len(client.subscriptions), 35)
-        self.assertEqual(client.subscriptions[-1], (CMD, 1))
+        self.assertEqual(len(client.subscriptions), 36)
+        self.assertEqual(client.subscriptions[-2:], [(CMD, 1), (DEBUG_CMD, 1)])
         self.assertIs(type(io.mapper), TopicMapperP7)
         client.fire_message(CMD, b"PRESS", retain=True)
         self.assertEqual(client.published_to(CMD), [(CMD, b"", 1, True)])

@@ -1,5 +1,45 @@
 # Changelog
 
+## 0.7.2 - Mark diagnostics and the debug data export
+
+The first hands-on test of 0.7.1 left three things the outputs could not answer: why 'Mark spot here' said `ok` about 70 s
+after the tester had left the radar's view (V2), why `last_mark` seemed to lag by minutes and a second press 'never
+showed', and how to hand a failing run (a walk past a zone that turned the capture on, Z7; V2) to the developer, because the
+capture lives in the app's private `/data/capture`. This release adds the numbers and the way out; it changes no behaviour.
+
+- `last_mark` gets `n`, the number of presses the app has seen since it started (every press, RAM only, 0 at a start). `at`
+  stays rounded to 5 minutes by design (documented): that rounding plus an identical result made a repeated press
+  invisible; `n` goes up with every press.
+- An accepted press now carries a `detail` in `last_mark` and in the `MarkResult`: `source` (`live` or `recent`, whether the
+  chosen stay came from a live track or only from a recent pending stay within `mark_grace_s`), `age_s` (seconds since its
+  last fragment, 0.0 for live), `dur_s`, `live_confirmed_tracks`, `recent_stays`. Counts and seconds only, no positions. Which
+  stay is chosen, the refusal rules, the refusal `detail` and `mark_grace_s` (60) are unchanged
+  (`labels.mark_candidate_sources`; `mark_candidates` keeps its old two-value result).
+- The shell logs one `info` line for every press with these numbers, no coordinates:
+  `mark ok l0002 bed source=live age=0.0 dur=34.2 live_tracks=1`, `mark failed no_stay live_tracks=0 best_run=0.0 recent=1`.
+- New button `button.radar_zones_learner_export_debug` ('Export debug data', diagnostic; command topic
+  `radar_zones/learner/export_debug`, QoS 1, a retained press is ignored and deleted; 36 subscriptions instead of 35). A
+  press copies every current `capture/capture-*.jsonl` file (frames only) and a copy of `state.json` into the Home Assistant
+  `share` folder, `/share/radar_zone_learner/export-<UTC YYYYMMDD-HHMMSS>/`, with a `README.txt`. `config.yaml` gets
+  `map: share:rw`. Bounded: at most 100 MiB (the state first, then the newest capture files that fit), only the newest 3
+  `export-*` folders are kept (older ones deleted, only inside `/share/radar_zone_learner`, only folders that match the
+  name), no symbolic link is followed, written under a temporary name and renamed (complete or absent), a capture file is cut
+  after its last whole line, refused when there is neither a capture file nor a state or `share` is not available. New status
+  attributes `debug_exports` (exports since the start) and `debug_export_refused`; new review event type `export_refused`
+  (with `reason`: `empty`, `too_large`, `exists`, `error`); one `info` line `debug export: <n> files, <n> bytes, ...`
+  without a path. Code: `shell/debugexport.py`, `p7.py`, `topics_p7.py`, `discovery_p7.py`; the path comes from the constant
+  `SHARE_ROOT` and tests inject a temporary base.
+- **Privacy note.** The export writes **raw positions and the learned map** into `share` (reachable from Samba and from apps
+  that map `share`; a Home Assistant backup that includes `share` contains it) **only when you press the button**. The
+  newest 3 folders are kept, nothing is exported automatically and nothing goes over MQTT. 'Forget all learned data' does not
+  delete exports; delete the folders yourself.
+- Open points, to be analysed from an export: the cause of V2 (a live static ghost track, or a recent pending stay inside the
+  60 s grace: `source` and `age_s` of the next such press will say) and Z7 (a walk past a zone turned the zone on) are still
+  unexplained. Nothing was tuned for them.
+- Tests: `test_mark_diag` (live and recent accept, `n`, refusals unchanged), `test_p7s_debugexport` (copy, newest 3, refusals,
+  atomic rename, never outside the base, symlinks, size limit, layer counters and event), and the discovery, topic and
+  manifest tests that pin 36 subscriptions, three P7 configs, `map:` and the version.
+
 ## 0.7.1 - 'Mark spot here' after the radar lost you, and why a press was refused
 
 Two real installs always answered `no_stay` after sitting at a spot. Cause: 'Mark spot here' counted only live confirmed

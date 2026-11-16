@@ -6,8 +6,8 @@ from pathlib import Path
 
 from radar_zone_learner.core.types import APP_VERSION
 from radar_zone_learner.shell.discovery import discovery_messages
-from radar_zone_learner.shell.discovery_p7 import (EXPORT_TUNING_ID, TUNING_ID, export_tuning_config, p7_discovery_messages,
-                                                   tuning_config)
+from radar_zone_learner.shell.discovery_p7 import (EXPORT_DEBUG_ID, EXPORT_TUNING_ID, TUNING_ID, export_debug_config,
+                                                   export_tuning_config, p7_discovery_messages, tuning_config)
 from radar_zone_learner.shell.options import Settings
 from radar_zone_learner.shell.p6 import P6Layer
 from radar_zone_learner.shell.p7 import P7Layer
@@ -20,6 +20,7 @@ DEVICE = ('{"identifiers":["radar_zones_learner"],"name":"Radar zone learner","m
           '"sw_version":"%s"}' % APP_VERSION)
 ORIGIN = '{"name":"radar_zone_learner","sw_version":"%s"}' % APP_VERSION
 BUTTON = "homeassistant/button/radar_zones_learner_export_tuning/config"
+DEBUG_BUTTON = "homeassistant/button/radar_zones_learner_export_debug/config"
 SENSOR = "homeassistant/sensor/radar_zones_learner_tuning/config"
 
 
@@ -37,8 +38,8 @@ class ConfigTest(unittest.TestCase):
         self.msgs = p7_discovery_messages(self.t)
         self.raw = dict(self.msgs)
 
-    def test_two_messages_the_button_then_the_sensor(self):
-        self.assertEqual([t for t, _ in self.msgs], [BUTTON, SENSOR])
+    def test_three_messages_the_button_the_sensor_then_the_debug_button(self):
+        self.assertEqual([t for t, _ in self.msgs], [BUTTON, SENSOR, DEBUG_BUTTON])
         for _, payload in self.msgs:
             self.assertIsInstance(payload, bytes)
             self.assertGreater(len(payload), 0)                       # a config, never a removal
@@ -57,6 +58,16 @@ class ConfigTest(unittest.TestCase):
                     '"diagnostic","icon":"mdi:chart-histogram","availability_topic":"radar_zones/learner/status","device":' +
                     DEVICE + ',"origin":' + ORIGIN + '}')
         self.assertEqual(self.raw[SENSOR].decode(), expected)
+
+    def test_the_debug_button_config_byte_for_byte(self):
+        expected = ('{"name":"Export debug data","unique_id":"radar_zones_learner_export_debug","default_entity_id":'
+                    '"button.radar_zones_learner_export_debug","command_topic":"radar_zones/learner/export_debug",'
+                    '"payload_press":"PRESS","qos":1,"retain":false,"entity_category":"diagnostic","icon":'
+                    '"mdi:folder-download-outline","availability_topic":"radar_zones/learner/status","device":' + DEVICE +
+                    ',"origin":' + ORIGIN + '}')
+        self.assertEqual(self.raw[DEBUG_BUTTON].decode(), expected)
+        self.assertEqual(self.t.discovery("button", EXPORT_DEBUG_ID), DEBUG_BUTTON)
+        self.assertIn(export_debug_config(self.t)["command_topic"], {t for t, _ in self.t.subscriptions()})
 
     def test_the_ids(self):
         self.assertEqual(EXPORT_TUNING_ID, "radar_zones_learner_export_tuning")
@@ -98,7 +109,8 @@ class ConfigTest(unittest.TestCase):
     def test_the_discovery_prefix_option_applies(self):
         t = build_topics_p7(settings(discovery_prefix="ha2"))
         self.assertEqual([m[0] for m in p7_discovery_messages(t)],
-                         ["ha2/button/radar_zones_learner_export_tuning/config", "ha2/sensor/radar_zones_learner_tuning/config"])
+                         ["ha2/button/radar_zones_learner_export_tuning/config", "ha2/sensor/radar_zones_learner_tuning/config",
+                          "ha2/button/radar_zones_learner_export_debug/config"])
 
 
 class LayerDiscoveryTest(unittest.TestCase):
@@ -120,14 +132,18 @@ class LayerDiscoveryTest(unittest.TestCase):
         l6, t6, s = self.make(P6Layer, build_topics_p6)
         l7, t7, _ = self.make(P7Layer, build_topics_p7)
         m6, m7 = l6.discovery(), l7.discovery()
-        self.assertEqual(m7[:len(m6)], m6)
-        self.assertEqual([t for t, _ in m7[len(m6):]], [BUTTON, SENSOR])
-        self.assertEqual(len(m7), len(m6) + 2)
+        ev6, ev7 = [m for m in m6 if b"event_types" in m[1]], [m for m in m7 if b"event_types" in m[1]]
+        self.assertEqual([m for m in m7[:len(m6)] if m not in ev7], [m for m in m6 if m not in ev6])
+        # 0.7.2: the review event config of P7 lists one more type
+        self.assertEqual(len(ev6), len(ev7))
+        self.assertEqual(json.loads(ev7[0][1])["event_types"], json.loads(ev6[0][1])["event_types"] + ["export_refused"])
+        self.assertEqual([t for t, _ in m7[len(m6):]], [BUTTON, SENSOR, DEBUG_BUTTON])
+        self.assertEqual(len(m7), len(m6) + 3)
 
     def test_p3_to_p6_messages_with_no_zone_are_thirty_one_and_the_service_adds_four(self):
         l7, t7, s = self.make(P7Layer, build_topics_p7, zones=False)
-        self.assertEqual(len(l7.discovery()), 31 + 2)
-        self.assertEqual(len(l7.discovery()) + len(discovery_messages(s, t7)), 31 + 4 + 2)
+        self.assertEqual(len(l7.discovery()), 31 + 3)
+        self.assertEqual(len(l7.discovery()) + len(discovery_messages(s, t7)), 31 + 4 + 3)
 
     def test_every_unique_id_of_the_burst_is_unique_and_no_new_per_zone_entity_exists(self):
         l7, t7, s = self.make(P7Layer, build_topics_p7)
@@ -136,8 +152,8 @@ class LayerDiscoveryTest(unittest.TestCase):
             if payload:
                 ids.append(json.loads(payload)["unique_id"])
         self.assertEqual(len(ids), len(set(ids)))
-        new = [i for i in ids if i in (EXPORT_TUNING_ID, TUNING_ID)]
-        self.assertEqual(sorted(new), sorted([EXPORT_TUNING_ID, TUNING_ID]))
+        new = [i for i in ids if i in (EXPORT_TUNING_ID, TUNING_ID, EXPORT_DEBUG_ID)]
+        self.assertEqual(sorted(new), sorted([EXPORT_TUNING_ID, TUNING_ID, EXPORT_DEBUG_ID]))
         zone_ids = [i for i in ids if i.startswith("radar_spot_")]
         self.assertEqual(len(zone_ids), 6)                              # the one zone's six entities (P6), nothing more
 

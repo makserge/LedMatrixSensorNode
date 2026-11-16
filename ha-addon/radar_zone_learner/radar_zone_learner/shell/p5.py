@@ -117,6 +117,8 @@ class LiveView:
 
 
 class P5Layer(P4Layer):
+    EVENT_TYPES = EVENT_TYPES_P5               # the review event types of the discovery config (P7 adds one)
+
     def __init__(self, topics, publish: Callable[..., bool], data_dir=None, *,
                  monotonic: Callable[[], float] = time.monotonic, select_mode: str = SELECT_MODE,
                  debug_map: bool = True,
@@ -241,7 +243,7 @@ class P5Layer(P4Layer):
         """P4's twelve (select options and event types of the moment) and the nineteen of P5: 31 messages."""
         self._select_cfg = self.sel.options
         self._adv_cfg = self.adv.options
-        return (p4_discovery_messages(self.topics, self._select_cfg, list(EVENT_TYPES_P5))
+        return (p4_discovery_messages(self.topics, self._select_cfg, list(self.EVENT_TYPES))
                 + p5_discovery_messages(self.topics, self.debug_map, self._adv_cfg))
 
     def republish(self, now_ms: int) -> None:

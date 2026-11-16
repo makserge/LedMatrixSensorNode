@@ -320,10 +320,13 @@ class Service:
             self._map_dirty = True
             self._publish_map()
         elif isinstance(out, MarkResult):
+            d = out.detail if isinstance(out.detail, dict) else {}
             if out.ok:
-                log.info("mark ok %s %s", out.label_id, out.kind)
+                log.info("mark ok %s %s source=%s age=%s dur=%s live_tracks=%s", out.label_id, out.kind, d.get("source"),
+                         d.get("age_s"), d.get("dur_s"), d.get("live_confirmed_tracks"))
             else:
-                log.info("mark failed %s", out.reason)
+                log.info("mark failed %s live_tracks=%s best_run=%s recent=%s", out.reason,
+                         d.get("live_confirmed_tracks"), d.get("best_run_s"), d.get("recent_stays"))
         elif isinstance(out, NameEcho):
             self._spot_name = out.text
             self.mqtt.publish(self.topics.review_name, out.text, qos=1, retain=True)

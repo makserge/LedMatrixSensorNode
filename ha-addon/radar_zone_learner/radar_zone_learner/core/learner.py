@@ -126,6 +126,7 @@ class Learner:
         self.last_status_ms: Optional[int] = None
         self.last_mark: Optional[dict] = None
         self.last_mark_ms: Optional[int] = None      # core time of the last accepted press
+        self.mark_presses = 0                        # presses seen since the app started (RAM only; ``last_mark.n``)
         self.last_det_ms: Optional[int] = None       # core time of the last frame with a detection (RAM)
         self.nightly_errors = 0                      # nightly runs that raised (RAM, since start)
         self._nl_next: Optional[int] = None          # next core time to check for the nightly run
@@ -776,19 +777,22 @@ class Learner:
         kind = None
         reason = None
         detail = None
+        src = None
         new = False
+        self.mark_presses += 1
         if self._state_now() != "learning":
             reason = "not_observing"
         elif self.last_mark_ms is not None and 0 <= now - self.last_mark_ms < MARK_MIN_INTERVAL_MS:
             reason = "too_soon"
         else:
-            ips, detail = labels_mod.mark_candidates(self, now)
+            ips, detail, srcs = labels_mod.mark_candidate_sources(self, now)
             if not ips:
                 reason = "no_stay"
             elif len(ips) > 1:
                 reason = "several_stays"
             else:
                 # the review's bed item is selected: kind bed, named 'Bed' or the name text (OA 7.6)
+                src = srcs[0]
                 bound = self.review.bound_to_bed(self)
                 name = (self.spot_name or "Bed") if bound else self.spot_name
                 lb = labels_mod.find_same(self.label_list, ips[0][2], ips[0][3], name, self.p.label_radius_m)
@@ -807,11 +811,15 @@ class Learner:
                 lid = lb["id"]
                 kind = lb["kind"]
         ok = reason is None
-        if ok or reason not in ("no_stay", "several_stays"):
+        if ok:
+            stay = ips[0]
+            detail = {"source": src[0], "age_s": src[1], "dur_s": round(stay[1] - stay[0], 1),
+                      "live_confirmed_tracks": detail["live_confirmed_tracks"], "recent_stays": detail["recent_stays"]}
+        elif reason not in ("no_stay", "several_stays"):
             detail = None
         outs.append(MarkResult(ok, reason, lid, kind, detail))
         self.last_mark = {"result": "ok" if ok else "failed", "reason": reason, "label": lid, "kind": kind,
-                          "at": _utc_min(now, 5)}
+                          "at": _utc_min(now, 5), "n": self.mark_presses}
         if detail is not None:
             self.last_mark["detail"] = dict(detail)
         if new:

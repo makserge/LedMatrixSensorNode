@@ -1,5 +1,6 @@
 """P5 review items: tiers, the place predicate, order and cap, tags, revisions, selection and the cost of `items()`
 (spec 2, §11.3 `test_p5_items`)."""
+import dataclasses
 import json
 import random
 import statistics
@@ -333,21 +334,21 @@ class MarkBindingTest(unittest.TestCase):
     def test_a_place_item_selected_gives_kind_manual_for_a_name_that_is_no_bed(self):
         L, f = self.setup_learner("Desk")
         outs = press(L, f)
-        self.assertEqual(outs[0], MarkResult(True, None, "l0001", "manual"))
+        self.assertEqual(dataclasses.replace(outs[0], detail=None), MarkResult(True, None, "l0001", "manual"))
         self.assertEqual(L.labels()[0].name, "Desk")
         self.assertEqual(L.review.bed_state(L)[0], "open")                 # the bed item stays open
         self.assertIn(BED_ITEM, ids(L))
 
     def test_the_bed_names_keep_their_p4_reading_whatever_item_is_selected(self):
         L, f = self.setup_learner("Bett")
-        self.assertEqual(press(L, f)[0], MarkResult(True, None, "l0001", "bed"))      # D28
+        self.assertEqual(dataclasses.replace(press(L, f)[0], detail=None), MarkResult(True, None, "l0001", "bed"))      # D28
         self.assertEqual(L.review.bed_state(L), ("withdrawn", "bed_zone"))
 
     def test_the_bed_item_binding_is_unchanged(self):
         L, f = self.setup_learner("")
         L.handle(ReviewSelect(BED_ITEM, BASE_MS + 9800))
         self.assertTrue(L.review.bound_to_bed(L))
-        self.assertEqual(press(L, f)[0], MarkResult(True, None, "l0001", "bed"))
+        self.assertEqual(dataclasses.replace(press(L, f)[0], detail=None), MarkResult(True, None, "l0001", "bed"))
 
 
 class FirstSetupTest(unittest.TestCase):
@@ -378,7 +379,7 @@ class FirstSetupTest(unittest.TestCase):
         # tap 2: Mark spot here, bound to the bed item
         outs = press(L, f)
         taps += 1
-        self.assertEqual(outs[0], MarkResult(True, None, "l0001", "bed"))
+        self.assertEqual(dataclasses.replace(outs[0], detail=None), MarkResult(True, None, "l0001", "bed"))
         self.assertEqual(L.review.selected(L), "s0005-1")                 # the bed item is withdrawn: the first place
         # taps 3-7: Approve each place with its current revision
         for i in range(1, 6):

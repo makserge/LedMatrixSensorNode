@@ -3,6 +3,7 @@
 ========================  ===========  ==================================  ============================================
 entity                    component    ``unique_id``                       topic
 ========================  ===========  ==================================  ============================================
+Export debug data         button       ``radar_zones_learner_export_debug``   command ``radar_zones/learner/export_debug`` (0.7.2, diagnostic)
 Export tuning data        button       ``radar_zones_learner_export_tuning``  command ``radar_zones/learner/export_tuning``
 Tuning data               sensor       ``radar_zones_learner_tuning``         state ``radar_zones/learner/tuning``
 ========================  ===========  ==================================  ============================================
@@ -21,6 +22,7 @@ from .discovery import _device_learner, _dumps, _origin
 
 EXPORT_TUNING_ID = "radar_zones_learner_export_tuning"
 TUNING_ID = "radar_zones_learner_tuning"
+EXPORT_DEBUG_ID = "radar_zones_learner_export_debug"
 
 
 def _tail(topics) -> dict:
@@ -36,6 +38,16 @@ def export_tuning_config(topics) -> dict:
     return cfg
 
 
+def export_debug_config(topics) -> dict:
+    """0.7.2: the diagnostic button 'Export debug data' (copies the capture and the state into the ``share`` folder)."""
+    cfg = {"name": "Export debug data", "unique_id": EXPORT_DEBUG_ID,
+           "default_entity_id": "button." + EXPORT_DEBUG_ID, "command_topic": topics.learner_export_debug,
+           "payload_press": "PRESS", "qos": 1, "retain": False, "entity_category": "diagnostic",
+           "icon": "mdi:folder-download-outline"}
+    cfg.update(_tail(topics))
+    return cfg
+
+
 def tuning_config(topics) -> dict:
     cfg = {"name": "Tuning data", "unique_id": TUNING_ID, "default_entity_id": "sensor." + TUNING_ID,
            "state_topic": topics.learner_tuning, "entity_category": "diagnostic", "icon": "mdi:chart-histogram"}
@@ -44,6 +56,7 @@ def tuning_config(topics) -> dict:
 
 
 def p7_discovery_messages(topics) -> list:
-    """(topic, payload bytes) of the two P7 configs: the button, then the sensor."""
+    """(topic, payload bytes) of the P7 configs: the tuning button, the sensor, then (0.7.2) the debug export button."""
     return [(topics.discovery("button", EXPORT_TUNING_ID), _dumps(export_tuning_config(topics))),
-            (topics.discovery("sensor", TUNING_ID), _dumps(tuning_config(topics)))]
+            (topics.discovery("sensor", TUNING_ID), _dumps(tuning_config(topics))),
+            (topics.discovery("button", EXPORT_DEBUG_ID), _dumps(export_debug_config(topics)))]

@@ -1,4 +1,5 @@
 """0.7.1: 'Mark spot here' counts a recent pending stay whose track was lost (mark_grace_s) and a refusal carries numbers."""
+import dataclasses
 import json
 import random
 import unittest
@@ -19,9 +20,9 @@ class MarkGraceTest(unittest.TestCase):
         L, f = setup()
         f.targets_until(40000, sit_fn(random.Random(1), BED))
         outs = press(L, f)
-        self.assertEqual(outs[0], MarkResult(True, None, "l0001", "manual"))
-        self.assertIsNone(outs[0].detail)
-        self.assertNotIn("detail", L.status().attributes["last_mark"])
+        self.assertEqual(dataclasses.replace(outs[0], detail=None), MarkResult(True, None, "l0001", "manual"))
+        self.assertEqual(outs[0].detail["source"], "live")                  # 0.7.2: an accepted press carries a detail
+        self.assertEqual(L.status().attributes["last_mark"]["detail"], outs[0].detail)
 
     def test_track_died_10s_ago_with_25s_pending_stay_is_ok(self):
         L, f = setup()

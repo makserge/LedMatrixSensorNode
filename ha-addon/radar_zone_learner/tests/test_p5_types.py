@@ -53,7 +53,7 @@ class TypesTest(unittest.TestCase):
         self.assertEqual(T.ITEM_IDS, ("night_window", "bed_needs_data"))
         self.assertEqual(T.MARK_FAIL_REASONS, ("not_observing", "no_stay", "several_stays", "too_soon"))
         self.assertEqual(T.NODE_COMMAND_KINDS, ("schedule", "window"))
-        self.assertEqual((T.SCHEMA_VERSION, T.MIN_SCHEMA_VERSION, T.APP_VERSION), (4, 3, "0.7.1"))
+        self.assertEqual((T.SCHEMA_VERSION, T.MIN_SCHEMA_VERSION, T.APP_VERSION), (4, 3, "0.7.2"))
 
     def test_id_grammars(self):
         item = re.compile(T.ITEM_ID_RE)

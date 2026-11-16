@@ -1,3 +1,4 @@
+import dataclasses
 import random
 import unittest
 
@@ -62,7 +63,7 @@ class MarkTest(unittest.TestCase):
         f.targets_until(67000, sit_fn(rng, BED))           # 12 s visible again: the run alone is < 20 s
         outs = press(L, f)
         self.assertEqual([type(o) for o in outs], [MarkResult, StatusChanged, DebugMapChanged, SaveRequested])
-        self.assertEqual(outs[0], MarkResult(True, None, "l0001", "bed"))
+        self.assertEqual(dataclasses.replace(outs[0], detail=None), MarkResult(True, None, "l0001", "bed"))
         self.assertEqual((outs[2].reason, outs[3].reason), ("label", "label"))
         lb = L.labels()[0]
         self.assertAlmostEqual(lb.x_m, BED[0], delta=0.05)
@@ -97,7 +98,7 @@ class MarkTest(unittest.TestCase):
         self.assertEqual(press(L, f)[0].reason, "no_stay")
         f.targets_until(32000, sit_fn(rng, BED))           # 22 s
         outs = press(L, f)
-        self.assertEqual(outs[0], MarkResult(True, None, "l0001", "manual"))
+        self.assertEqual(dataclasses.replace(outs[0], detail=None), MarkResult(True, None, "l0001", "manual"))
         self.assertEqual(L.labels()[0].name, "")
 
     def test_kind_of_name(self):
@@ -115,7 +116,7 @@ class MarkLimitsTest(unittest.TestCase):
         L.handle(SpotName("Bed", BASE_MS + 9000))
         f.targets_until(40000, sit_fn(rng, BED))
         first = press(L, f)
-        self.assertEqual(first[0], MarkResult(True, None, "l0001", "bed"))
+        self.assertEqual(dataclasses.replace(first[0], detail=None), MarkResult(True, None, "l0001", "bed"))
         self.assertEqual([type(o) for o in first if isinstance(o, SaveRequested)], [SaveRequested])
         f.targets_until(f.next_ms + 500, sit_fn(rng, BED))             # 0.5 s later: too soon
         outs = press(L, f)
@@ -124,7 +125,7 @@ class MarkLimitsTest(unittest.TestCase):
         self.assertEqual(L.status().attributes["last_mark"]["reason"], "too_soon")
         f.targets_until(f.next_ms + 10000, sit_fn(rng, BED))            # later, the same spot: nothing new
         outs = press(L, f)
-        self.assertEqual(outs[0], MarkResult(True, None, "l0001", "bed"))
+        self.assertEqual(dataclasses.replace(outs[0], detail=None), MarkResult(True, None, "l0001", "bed"))
         self.assertEqual(len(L.labels()), 1)
         self.assertEqual([o for o in outs if isinstance(o, (SaveRequested, DebugMapChanged))], [])
         saves = 0
@@ -138,7 +139,7 @@ class MarkLimitsTest(unittest.TestCase):
         L.handle(SpotName("Desk", BASE_MS + f.next_ms))
         f.targets_until(f.next_ms + 10000, sit_fn(rng, BED))
         outs = press(L, f)
-        self.assertEqual(outs[0], MarkResult(True, None, "l0002", "manual"))
+        self.assertEqual(dataclasses.replace(outs[0], detail=None), MarkResult(True, None, "l0002", "manual"))
         self.assertEqual(len(L.labels()), 2)
 
     def test_cap_drops_the_oldest_manual_label(self):

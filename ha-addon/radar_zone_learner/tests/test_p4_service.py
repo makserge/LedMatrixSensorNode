@@ -309,6 +309,19 @@ class P4ServiceTest(P4Harness, unittest.TestCase):
         events = [json.loads(p[1]) for p in self.published(EVENT)]
         self.assertEqual(events, [{"reason": "no_stay", "detail": d, "event_type": "mark_failed"}])
 
+    def test_every_press_logs_one_info_line_with_the_numbers(self):
+        self.connect()
+        ok = {"source": "recent", "age_s": 12.3, "dur_s": 34.2, "live_confirmed_tracks": 0, "recent_stays": 1}
+        with self.assertLogs("radar_zone_learner", level="INFO") as cm:
+            self.svc._execute(MarkResult(True, None, "l0002", "bed", ok))
+            self.svc._execute(MarkResult(False, "no_stay", None, None, {"live_confirmed_tracks": 1, "best_run_s": 12.0,
+                                                                         "last_target_age_s": 1.0, "recent_stays": 2}))
+            self.svc._execute(MarkResult(False, "too_soon", None, None))
+        lines = [r.getMessage() for r in cm.records if r.getMessage().startswith("mark ")]
+        self.assertEqual(lines, ["mark ok l0002 bed source=recent age=12.3 dur=34.2 live_tracks=0",
+                                 "mark failed no_stay live_tracks=1 best_run=12.0 recent=2",
+                                 "mark failed too_soon live_tracks=None best_run=None recent=None"])
+
     def test_restore_failed_event(self):
         """The core gives up putting the schedule back: the user is told (README 9.5), once per give-up."""
         self.connect()
