@@ -12,6 +12,8 @@ static uint16_t colorForRow(int row) {
     return colorRed;
 }
 
+// currentBars: height of the solid bar per column in rows (0..16).
+// currentPeaks: row + 1 of the peak dot per column (0 = none).
 void renderSpectrumBarsView(uint8_t* currentBars, uint8_t* currentPeaks, uint16_t barColor, uint16_t peakColor) {
     spectrumAnalyzer.getBarsAndPeaks(currentBars, currentPeaks);
     for (int x = 0; x < 24; x++) {

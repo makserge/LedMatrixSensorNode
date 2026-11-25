@@ -9,41 +9,18 @@ extern Ld2454Sensor ld2454Sensor;
 static const uint32_t INITIAL_SAMPLE_RATE = 44100; // until a stream's WAV header says otherwise
 
 namespace {
-const float kBandCenters[24] = {
-    31.0f,   63.0f,   80.0f,   100.0f,  125.0f,  160.0f,
-    200.0f,  250.0f,  315.0f,  400.0f,  500.0f,  630.0f,
-    800.0f,  1000.0f, 1250.0f, 1600.0f, 2000.0f, 2500.0f,
-    3150.0f, 4000.0f, 5000.0f, 6300.0f, 8000.0f, 16000.0f
-};
-
-const float kBandEdges[25] = {
-    22.0f,    44.2f,    70.9f,    89.4f,    111.8f,   141.4f,   178.9f,
-    223.6f,   280.6f,   355.0f,   447.2f,   565.7f,   714.1f,
-    894.4f,   1118.0f,  1414.2f,  1788.9f,  2236.1f,  2806.2f,
-    3549.6f,  4472.1f,  5656.9f,  7141.4f,  11313.7f, 16000.0f
-};
-
-float g_bandLogCenter[24];
-float g_bandSigmaOct[24];
-float g_bandTiltDb[24];
-
-// LED rows added to (dB / SPECTRUM_DB_PER_STEP) so that SPECTRUM_FLOOR_DB lands on row 0.
-const float kFloorSteps = -SPECTRUM_FLOOR_DB / SPECTRUM_DB_PER_STEP;
-
-// The library's own Hann class uses the Hamming coefficient (0.54) instead of
-// Hann's 0.5 - a bug in the third-party audio-tools implementation. Supply a
-// correct one instead of relying on it. The coefficients are tabulated because
-// WindowFunction::factor() is called for every sample of every frame.
-class SpectrumHannWindow : public WindowFunction {
+// The window of Web Audio's AnalyserNode: Blackman, alpha 0.16 (sd_blackman). The
+// coefficients are tabulated because WindowFunction::factor() is called for every sample of every frame.
+class SpectrumBlackmanWindow : public WindowFunction {
 public:
-    const char* name() override { return "SpectrumHann"; }
+    const char* name() override { return "SpectrumBlackman"; }
 
     void begin(int samples) override {
         if (samples == i_samples && !_table.empty()) return;
         WindowFunction::begin(samples);
         _table.resize(i_half_samples + 1);
         for (int idx = 0; idx <= i_half_samples; idx++) {
-            _table[idx] = 0.5f * (1.0f - cosf(twoPi * ratio(idx)));
+            _table[idx] = sd_blackman(ratio(idx));
         }
         _powerSum = 0.0f;
         for (int idx = 0; idx < i_samples; idx++) {
@@ -62,8 +39,8 @@ private:
     std::vector<float> _table;
     float _powerSum = 0.0f;
 };
-SpectrumHannWindow g_hannWindowLow;
-SpectrumHannWindow g_hannWindowHigh;
+SpectrumBlackmanWindow g_windowLow;
+SpectrumBlackmanWindow g_windowHigh;
 
 // Views that end on their own (timer / scroll count): never a restore target.
 bool isTransientView(DisplayView v) {
@@ -83,14 +60,62 @@ int fftStride(uint32_t sampleRate, uint16_t framesPerSecond, uint16_t length) {
 inline int16_t readLe16(const uint8_t* p) {
     return (int16_t)((uint16_t)p[0] | ((uint16_t)p[1] << 8));
 }
+
+// |X[bin]| of FFTReal's packed output: real parts first, imaginary parts from 'half' on (bin 0 has none).
+inline float binMagnitude(const float* packed, int half, int bin) {
+    if (bin == 0) return fabsf(packed[0]);
+    float re = packed[bin];
+    float im = packed[half + bin];
+    return sqrtf(re * re + im * im);
+}
+
+// Pushes the bins of one FFT frame through the dsp module (scale, smoothing, dB per bin) and reads the bands'
+// weighted dB values back, in the plan's band order. Returns the number of bands of the plan.
+int measureBands(sd_fft_t& plan, const float* packed, int half, float* bandDb) {
+    for (int bin = plan.firstBin; bin <= plan.lastBin; bin++) {
+        sd_fft_bin(&plan, bin, binMagnitude(packed, half, bin));
+    }
+    const int bands = plan.nBands;
+    for (int j = 0; j < bands; j++) {
+        bandDb[j] = sd_fft_band_db(&plan, j);
+    }
+    return bands;
+}
+
+// One tick of the sleep fade: towards 0 while silent, towards 1 otherwise, from wherever it is.
+float stepVisibility(float visibility, bool silent) {
+    if (silent) {
+        return fmaxf(0.0f, visibility - (float)BALLISTICS_TICK_MS / (float)SPECTRUM_SLEEP_FADE_MS);
+    }
+    return fminf(1.0f, visibility + (float)BALLISTICS_TICK_MS / (float)SPECTRUM_WAKE_FADE_MS);
+}
+
+struct ColumnRows {
+    uint8_t bar;   // lit rows
+    uint8_t peak;  // row + 1 of the peak dot, 0 = none
+};
+
+// Rows of one column from the bar's held level and its peak marker, both scaled by the fade.
+ColumnRows columnRows(float heldLevel, const sd_peak_t& marker, float visibility) {
+    const int bar = sd_bar_rows(heldLevel * visibility);
+    int peak = sd_bar_rows(sd_peak_level(&marker) * visibility);
+    if (bar == 0 && peak <= 1) peak = 0; // a dot on the bottom row of an empty column would just flicker
+    ColumnRows rows;
+    rows.bar = (uint8_t)bar;
+    rows.peak = (uint8_t)peak;
+    return rows;
+}
 }
 
 void SpectrumAnalyzer::begin() {
-    for (int i = 0; i < 24; i++) {
-        g_bandLogCenter[i] = log2f(kBandCenters[i]);
-        g_bandSigmaOct[i] = (log2f(kBandEdges[i + 1]) - log2f(kBandEdges[i])) * 0.5f;
-        g_bandTiltDb[i] = SPECTRUM_TILT_DB_PER_OCTAVE * log2f(kBandCenters[i] / SPECTRUM_TILT_REFERENCE_HZ);
+    for (int i = 0; i < SD_BANDS; i++) {
+        sd_peak_reset(&_peak[i]);
+        _pendingDb[i] = SD_SILENCE_DB;
+        _valueDb[i] = SD_SILENCE_DB;
     }
+    sd_agc_reset(&_agc, 1000.0f / (float)BALLISTICS_TICK_MS);
+    sd_fft_setup(&_planLow, SPECTRUM_FFT_LOW_SIZE, SPECTRUM_FFT_LOW_FRAMES_PER_S, _smoothLow, _dbLow);
+    sd_fft_setup(&_planHigh, SPECTRUM_FFT_HIGH_SIZE, SPECTRUM_FFT_HIGH_FRAMES_PER_S, _smoothHigh, _dbHigh);
     configureFfts(INITIAL_SAMPLE_RATE);
 }
 
@@ -101,7 +126,7 @@ void SpectrumAnalyzer::configureFfts(uint32_t sampleRate) {
     lowCfg.sample_rate = sampleRate;
     lowCfg.channels = 1; // multichannel streams are downmixed in writeAudio()
     lowCfg.bits_per_sample = 16;
-    lowCfg.window_function_fft = &g_hannWindowLow;
+    lowCfg.window_function_fft = &g_windowLow;
     lowCfg.callback = &SpectrumAnalyzer::fftCallbackLow;
     lowCfg.ref = this;
     _fftLow.begin(lowCfg);
@@ -112,54 +137,54 @@ void SpectrumAnalyzer::configureFfts(uint32_t sampleRate) {
     highCfg.sample_rate = sampleRate;
     highCfg.channels = 1;
     highCfg.bits_per_sample = 16;
-    highCfg.window_function_fft = &g_hannWindowHigh;
+    highCfg.window_function_fft = &g_windowHigh;
     highCfg.callback = &SpectrumAnalyzer::fftCallbackHigh;
     highCfg.ref = this;
     _fftHigh.begin(highCfg);
 
-    // FFTReal output is unnormalised: the mean bin magnitude of noise grows with
-    // sqrt(sum w^2), i.e. ~3 dB more in the 2048- than in the 1024-point FFT. Scale the
-    // short FFT to the long one, so the bass bands and the AGC reference (both from the
-    // long FFT) keep their level and broadband content no longer steps down at 400/500 Hz.
-    buildBandTable(_bandsLow, SPECTRUM_FFT_LOW_SIZE, sampleRate, 0, SPECTRUM_LOW_BAND_COUNT, true, 1.0f);
-    buildBandTable(_bandsHigh, SPECTRUM_FFT_HIGH_SIZE, sampleRate, SPECTRUM_LOW_BAND_COUNT, 24, false,
-                   sqrtf(g_hannWindowLow.powerSum() / g_hannWindowHigh.powerSum()));
+    // FFTReal output is unnormalised and its input is scaled to +-1.0. A band's level is |X| / N in dBFS with
+    // N = 2048 for both FFTs (spectrum_dsp.h). The mean bin magnitude of noise grows with sqrt(sum w^2), i.e. ~3 dB
+    // more in the 2048- than in the 1024-point FFT, so the short FFT is scaled to the long one's noise level:
+    // broadband content then doesn't step at SPECTRUM_SPLIT_HZ. A pure tone in the short FFT reads about 3 dB
+    // lower than in the long one.
+    _planLow.scale = 1.0f / (float)SPECTRUM_FFT_LOW_SIZE;
+    _planHigh.scale = sqrtf(g_windowLow.powerSum() / g_windowHigh.powerSum()) / (float)SPECTRUM_FFT_LOW_SIZE;
+    // Activity thresholds (SPECTRUM_ABS_SILENCE_MAG ...) were tuned with a Hann window, whose noise level is
+    // sqrt(3N/8 / sum w^2) times the Blackman window's.
+    _activityScale = sqrtf(0.375f * (float)SPECTRUM_FFT_LOW_SIZE / g_windowLow.powerSum());
+
     _sampleRate = sampleRate;
+    _planDirty = true; // band tables follow the sample rate
 }
 
-// Precomputes what processFftFrame() used to recompute every frame (log2f/expf per
-// bin and band) - same expressions, same per-band accumulation order.
-void SpectrumAnalyzer::buildBandTable(BandTable& table, int length, uint32_t sampleRate,
-                                      int band_start, int band_end, bool isPrimary, float magScale) {
-    table.entries.clear();
-    for (int i = 0; i < 24; i++) table.weightSum[i] = 0.0f;
-    table.firstBin = length;
-    table.lastBin = -1;
-    table.magScale = magScale;
+// Called at the start of every FFT frame (StreamIngest): rebuilds the band plans when the sample rate
+// has changed.
+void SpectrumAnalyzer::refreshPlans() {
+    if (!_planDirty) return;
+    rebuildPlans();
+    _planDirty = false;
+}
 
-    const int num_bins = length / 2;
-    const float bin_resolution = (float)sampleRate / (float)length;
-    for (int bin_idx = 0; bin_idx < num_bins; bin_idx++) {
-        float current_freq = bin_idx * bin_resolution;
-        if (current_freq < 22.0f || current_freq > 16000.0f) continue;
+// Not in the hot loop: runs when the sample rate changes (a few ms).
+void SpectrumAnalyzer::rebuildPlans() {
+    const float sampleRate = (float)_sampleRate;
 
-        bool used = isPrimary; // the primary FFT's frame level averages every in-range bin
-        float log_freq = log2f(current_freq);
-        for (int band_idx = band_start; band_idx < band_end; band_idx++) {
-            float sigma = g_bandSigmaOct[band_idx];
-            float delta = fabsf(log_freq - g_bandLogCenter[band_idx]);
-            if (delta > sigma * 3.0f) continue;
-
-            float weight = expf(-0.5f * (delta * delta) / (sigma * sigma));
-            table.entries.push_back({(uint16_t)bin_idx, (uint8_t)band_idx, weight});
-            table.weightSum[band_idx] += weight;
-            used = true;
-        }
-        if (used) {
-            if (bin_idx < table.firstBin) table.firstBin = bin_idx;
-            table.lastBin = bin_idx;
-        }
+    // Bands, bin maps, tilt, smoothing factors; also clears the per-bin state of both FFTs.
+    if (sd_plan_bands(&_planLow, &_planHigh, sampleRate, SPECTRUM_SPLIT_HZ) != SD_BANDS) {
+        _planLow.nBands = 0;   // refused (cannot happen for a validated rate): no band is fed
+        _planHigh.nBands = 0;
     }
+
+    // The activity measure keeps its 22 Hz - 16 kHz mean over the long FFT.
+    const float binWidthHz = sampleRate / (float)SPECTRUM_FFT_LOW_SIZE;
+    _actFirstBin = (int)ceilf(22.0f / binWidthHz);
+    _actLastBin = min((int)floorf(16000.0f / binWidthHz), SPECTRUM_FFT_LOW_SIZE / 2 - 1);
+
+    // Values of the previous layout mean nothing now.
+    portENTER_CRITICAL(&_stateMux);
+    for (int i = 0; i < SD_BANDS; i++) _pendingDb[i] = SD_SILENCE_DB;
+    memset(_newBand, 0, sizeof(_newBand));
+    portEXIT_CRITICAL(&_stateMux);
 }
 
 void SpectrumAnalyzer::beginStream(uint32_t sampleRate, uint16_t channels) {
@@ -173,7 +198,6 @@ void SpectrumAnalyzer::beginStream(uint32_t sampleRate, uint16_t channels) {
     _frameBytes = (uint8_t)(channels * 2);
     _carryLen = 0;
     _rollingAvgRawMag = 0.0f;
-    _referenceMag = SPECTRUM_REF_FLOOR_MAG;
     _havePrimaryFrame = false;
     _activeStreak = 0;
 
@@ -199,9 +223,9 @@ void SpectrumAnalyzer::setStreamConnected(bool connected) {
 // Starting asleep also means a new stream has to wake the bars before it counts.
 void SpectrumAnalyzer::resetActivityLocked() {
     _hasActiveFrame = false;
-    _newLowData = false;
-    _newHighData = false;
+    for (int i = 0; i < SD_BANDS; i++) _newBand[i] = false;
     _sleepMode = true;
+    _frameQuiet = true;
 }
 
 int16_t SpectrumAnalyzer::downmixFrame(const uint8_t* frame) const {
@@ -253,47 +277,34 @@ size_t SpectrumAnalyzer::writeAudio(const uint8_t* buffer, size_t size) {
 
 void SpectrumAnalyzer::fftCallbackLow(AudioFFTBase &fft_ref) {
     SpectrumAnalyzer& self = fft_ref.reference<SpectrumAnalyzer>();
-    self.processFftFrame(fft_ref, self._bandsLow, 0, SPECTRUM_LOW_BAND_COUNT, true);
+    self.processFftFrame(fft_ref, self._planLow, true);
 }
 
 void SpectrumAnalyzer::fftCallbackHigh(AudioFFTBase &fft_ref) {
     SpectrumAnalyzer& self = fft_ref.reference<SpectrumAnalyzer>();
-    self.processFftFrame(fft_ref, self._bandsHigh, SPECTRUM_LOW_BAND_COUNT, 24, false);
+    self.processFftFrame(fft_ref, self._planHigh, false);
 }
 
-void SpectrumAnalyzer::processFftFrame(AudioFFTBase &fft_ref, const BandTable& table, int band_start, int band_end, bool isPrimary) {
+// One FFT frame (StreamIngest, inside FFT.write()). Per bin the spectrum_dsp module scales the magnitude,
+// smooths it and converts it to dB; per band it then gives the weighted dB value (spectrum_dsp.h). The automatic
+// gain turns those into levels 0..1 in runBallisticsTick().
+void SpectrumAnalyzer::processFftFrame(AudioFFTBase &fft_ref, sd_fft_t& plan, bool isPrimary) {
+    refreshPlans();
+    if (!isPrimary && plan.nBands == 0) return;
+
     const float* packed = static_cast<AudioRealFFT&>(fft_ref).imgArray();
     const int half = fft_ref.size();
+    uint32_t nowMs = millis();
 
-    float band_magnitudes[24] = {0};
-    float frame_mag_sum = 0.0f; // sum of bin magnitudes (not energies) over 22 Hz-16 kHz
-    int frame_bin_count = 0;
-
-    const BinWeight* entry = table.entries.data();
-    const BinWeight* entriesEnd = entry + table.entries.size();
-    for (int bin_idx = table.firstBin; bin_idx <= table.lastBin; bin_idx++) {
-        float mag_val;
-        if (bin_idx == 0) {
-            mag_val = fabsf(packed[0]);
-        } else {
-            float re = packed[bin_idx];
-            float im = packed[half + bin_idx];
-            mag_val = sqrtf(re * re + im * im);
-        }
-
-        if (isPrimary) {
-            frame_mag_sum += mag_val;
+    float frame_average_mag = 0.0f;
+    if (isPrimary) {
+        float frame_mag_sum = 0.0f; // sum of bin magnitudes (not energies) over 22 Hz-16 kHz
+        int frame_bin_count = 0;
+        for (int bin_idx = _actFirstBin; bin_idx <= _actLastBin; bin_idx++) {
+            frame_mag_sum += binMagnitude(packed, half, bin_idx);
             frame_bin_count++;
         }
-
-        for (; entry < entriesEnd && entry->bin == bin_idx; entry++) {
-            band_magnitudes[entry->band] += (mag_val * entry->weight);
-        }
-    }
-
-    uint32_t nowMs = millis();
-    if (isPrimary) {
-        float frame_average_mag = (frame_bin_count > 0) ? (frame_mag_sum / frame_bin_count) : 0.0f;
+        frame_average_mag = (frame_bin_count > 0) ? (frame_mag_sum / frame_bin_count) * _activityScale : 0.0f;
 
         float dt = !_havePrimaryFrame ? (1.0f / 30.0f) : (float)(nowMs - _lastPrimaryFrameMs) / 1000.0f;
         dt = constrain(dt, 0.005f, 0.5f);
@@ -311,45 +322,27 @@ void SpectrumAnalyzer::processFftFrame(AudioFFTBase &fft_ref, const BandTable& t
         } else {
             _activeStreak = 0;
         }
-
-        float refTarget = fmaxf(frame_average_mag, SPECTRUM_REF_FLOOR_MAG);
-        if (refTarget > _referenceMag) {
-            _referenceMag += (refTarget - _referenceMag) * SPECTRUM_REF_RISE_ALPHA;
-        } else {
-            _referenceMag += (refTarget - _referenceMag) * SPECTRUM_REF_FALL_ALPHA;
-        }
-        if (_referenceMag < SPECTRUM_REF_FLOOR_MAG) _referenceMag = SPECTRUM_REF_FLOOR_MAG;
     }
 
-    float levels[24];
-    for (int i = band_start; i < band_end; i++) {
-        float avg_magnitude = (table.weightSum[i] > 0.0f) ? (band_magnitudes[i] / table.weightSum[i]) : 0.0f;
-        avg_magnitude *= table.magScale;
-        float bandDb = (avg_magnitude > 1e-6f)
-            ? 20.0f * log10f(avg_magnitude / (_referenceMag * SPECTRUM_REF_SCALE))
-            : -200.0f;
-
-        bandDb += g_bandTiltDb[i];
-
-        float compressedDb = bandDb;
-        if (compressedDb > SPECTRUM_COMPRESSION_KNEE_DB) {
-            float over = compressedDb - SPECTRUM_COMPRESSION_KNEE_DB;
-            compressedDb = SPECTRUM_COMPRESSION_KNEE_DB + (over / SPECTRUM_COMPRESSION_RATIO);
-        }
-        float targetSteps = (compressedDb / SPECTRUM_DB_PER_STEP) + kFloorSteps;
-        levels[i] = constrain(targetSteps, 0.0f, BALLISTICS_MAX_LEVEL);
-    }
+    float bandDb[SD_BANDS] = {0};
+    const int bandCount = measureBands(plan, packed, half, bandDb);
 
     portENTER_CRITICAL(&_stateMux);
-    bool& pending = isPrimary ? _newLowData : _newHighData;
-    for (int i = band_start; i < band_end; i++) {
+    for (int j = 0; j < bandCount; j++) {
+        const int column = plan.bandIndex[j];
         // Frames that arrive in a TCP burst can outpace the 10 ms ballistics tick:
         // keep the loudest one until it is consumed instead of only the last.
-        _pendingLevel[i] = pending ? fmaxf(_pendingLevel[i], levels[i]) : levels[i];
+        if (_newBand[column]) {
+            _pendingDb[column] = fmaxf(_pendingDb[column], bandDb[j]);
+        } else {
+            _pendingDb[column] = bandDb[j];
+            _newBand[column] = true;
+        }
     }
-    pending = true;
     if (isPrimary) {
         _lastFrameMs = nowMs;
+        // A frame that could not keep the bars awake must not pull the automatic gain down either.
+        _frameQuiet = frame_average_mag < SPECTRUM_SLEEP_ENTER_MAG;
         // SPECTRUM_ACTIVE_MIN_FRAMES in a row start activity; once active, any loud
         // frame keeps it (quiet passages are released by the bar fade instead).
         bool stillActive = _hasActiveFrame && (nowMs - _lastActiveFrameMs) < AUDIO_SILENCE_TIMEOUT_MS;
@@ -442,84 +435,65 @@ void SpectrumAnalyzer::updateAudio() {
 
 void SpectrumAnalyzer::getBarsAndPeaks(uint8_t* outBars, uint8_t* outPeaks) {
     portENTER_CRITICAL(&_ballisticsMux);
-    memcpy(outBars, _sharedBars, 24);
-    memcpy(outPeaks, _sharedPeaks, 24);
+    memcpy(outBars, _sharedBars, SD_BANDS);
+    memcpy(outPeaks, _sharedPeaks, SD_BANDS);
     portEXIT_CRITICAL(&_ballisticsMux);
 }
 
+// Every BALLISTICS_TICK_MS (core 1). The bars' smoothing happens per bin in processFftFrame(); what is left
+// here is the automatic gain, the peak model, the sleep fade and the mapping to rows (solid bars).
 void SpectrumAnalyzer::runBallisticsTick() {
-    static const float kBallisticsTickSec = BALLISTICS_TICK_MS / 1000.0f;
+    const float ticksPerSecond = 1000.0f / (float)BALLISTICS_TICK_MS;
 
-    float levels[24];
+    float latest[SD_BANDS];
+    bool fresh[SD_BANDS];
     portENTER_CRITICAL(&_stateMux);
-    bool newLowData = _newLowData;
-    bool newHighData = _newHighData;
-    _newLowData = false;
-    _newHighData = false;
-    memcpy(levels, _pendingLevel, sizeof(levels));
+    memcpy(latest, _pendingDb, sizeof(latest));
+    memcpy(fresh, _newBand, sizeof(fresh));
+    memset(_newBand, 0, sizeof(_newBand));
     bool silent = _sleepMode || !_streamConnected;
+    bool quiet = _frameQuiet || !_streamConnected;
     uint32_t lastFrameMs = _lastFrameMs;
     portEXIT_CRITICAL(&_stateMux);
     uint32_t nowMs = millis(); // after the snapshot, see isAudioActive()
 
     // No fresh FFT frame (stalled or closed stream) counts as silence too.
-    if ((nowMs - lastFrameMs) > SPECTRUM_FRAME_STALE_MS) silent = true;
+    if ((nowMs - lastFrameMs) > SPECTRUM_FRAME_STALE_MS) {
+        silent = true;
+        quiet = true;
+    }
 
     // Fade from the current visibility in either direction, so a level hovering near
     // the sleep thresholds can't snap the bars on or restart the fade from full.
-    if (silent) {
-        _visibility = fmaxf(0.0f, _visibility - (float)BALLISTICS_TICK_MS / (float)SPECTRUM_SLEEP_FADE_MS);
-    } else {
-        _visibility = fminf(1.0f, _visibility + (float)BALLISTICS_TICK_MS / (float)SPECTRUM_WAKE_FADE_MS);
-    }
+    _visibility = stepVisibility(_visibility, silent);
     const float visibility = _visibility;
 
-    uint8_t localBars[24];
-    uint8_t localPeaks[24];
+    for (int column = 0; column < SD_BANDS; column++) {
+        if (fresh[column]) _valueDb[column] = latest[column]; // held (already smoothed) until the next frame of its FFT
+    }
+    // Automatic gain: the display range follows the loudest band (fast up, slowly down, never below
+    // SD_AGC_FLOOR_DB). It never amplifies what the sleep logic counts as silence:
+    // - while nothing is visible the reference sits on the loudest band, so a wake-up (new stream, end of a
+    //   pause) starts settled on what plays now, not on whatever played before, and the peak dots start from 0;
+    // - while the input is below the sleep level (a pause, the noise after a track) the reference goes down only
+    //   as far as leaves that input below the bottom row, so noise is not raised into view before the sleep fade.
+    if (visibility <= 0.0f) {
+        sd_agc_snap(&_agc, _valueDb, SD_BANDS);
+        for (int column = 0; column < SD_BANDS; column++) sd_peak_reset(&_peak[column]);
+    } else if (quiet) {
+        sd_agc_quiet(&_agc, _valueDb, SD_BANDS);
+    } else {
+        sd_agc_step(&_agc, _valueDb, SD_BANDS);
+    }
 
-    for (int i = 0; i < 24; i++) {
-        BandBallistics &b = _ballistics[i];
-
-        bool newDataForBand = (i < SPECTRUM_LOW_BAND_COUNT) ? newLowData : newHighData;
-        float target = newDataForBand ? levels[i] : (b.current_level * BALLISTICS_DECAY_COEFF);
-
-        if (target > b.current_level) {
-            b.current_level = (target * (1.0f - BALLISTICS_ATTACK_COEFF))
-                            + (b.current_level * BALLISTICS_ATTACK_COEFF);
-        } else {
-            b.current_level = (target * (1.0f - BALLISTICS_DECAY_COEFF))
-                             + (b.current_level * BALLISTICS_DECAY_COEFF);
-        }
-        if (b.current_level < 0.05f) b.current_level = 0.0f;
-
-        if (b.current_level >= b.peak_hold_level) {
-            b.peak_hold_level = b.current_level;
-            b.peak_timer = nowMs;
-            b.decaying = false;
-            b.peak_velocity = 0.0f;
-        } else {
-            if (!b.decaying && (nowMs - b.peak_timer) >= BALLISTICS_PEAK_HOLD_MS) {
-                b.decaying = true;
-                b.peak_velocity = 0.0f; // starts falling from rest, like a dropped object
-            }
-            if (b.decaying) {
-                b.peak_velocity += SPECTRUM_PEAK_GRAVITY_STEPS_PER_S2 * kBallisticsTickSec;
-                b.peak_hold_level -= b.peak_velocity * kBallisticsTickSec;
-
-                if (b.peak_hold_level <= b.current_level) {
-                    b.peak_hold_level = b.current_level;
-                    b.decaying = false;
-                    b.peak_velocity = 0.0f;
-                }
-            }
-        }
-
-        uint8_t barHeight = (uint8_t)((b.current_level * visibility) + 0.5f);
-        uint8_t peakHeight = (uint8_t)((b.peak_hold_level * visibility) + 0.5f);
-        if (barHeight == 0 && peakHeight <= 1) peakHeight = 0;
-
-        localBars[i] = barHeight;
-        localPeaks[i] = peakHeight;
+    uint8_t localBars[SD_BANDS];
+    uint8_t localPeaks[SD_BANDS];
+    for (int column = 0; column < SD_BANDS; column++) {   // column i shows band i
+        const float level = sd_agc_level(&_agc, _valueDb[column]);
+        sd_peak_step(&_peak[column], level, ticksPerSecond);
+        const ColumnRows rows = columnRows(level, _peak[column], visibility);
+        localBars[column] = rows.bar;
+        localPeaks[column] = rows.peak;
     }
 
     portENTER_CRITICAL(&_ballisticsMux);

@@ -11,13 +11,13 @@ The firmware is split into FreeRTOS tasks, each pinned to a core. They share sta
 | Task (name in panics and task lists) | Core | Priority | Stack (bytes) | Runs every | Responsibility |
 |---|---|---|---|---|---|
 | `MatrixEngine` (`LedMatrix::displayTaskEngine`) | 1 | 5 | 4096 | frame (5 ms) | Bit-bangs the panel's HUB75-style interface from double-buffered R/G/B column data. It busy-waits each column's full 180 µs window (lit part and dark remainder alike, so its CPU use does not depend on brightness) and sleeps one tick per frame: about 4.5 ms of every 5 ms, roughly 90% of core 1 |
-| `Ballistics` | 1 | 3 | 3072 | 10 ms | Per-band bar/peak ballistics and sleep fade |
+| `Ballistics` | 1 | 3 | 3072 | 10 ms | Automatic gain, peak model (hold, gravity), bar rows and sleep fade of the spectrum |
 | `DisplayTask` | 1 | 1 | 4096 | 33 ms (10 ms in spectrum, 50 ms panel off / WiFi down, 200 ms during OTA) | Renders the views; view state machine, CO₂ alarm logic, the beeper (alarm and MQTT beeps), button input (rev2: the GPIO8 ladder), OTA screen |
 | `NtpClockTask` | 1 | 1 | 3072 | 500 ms | Keeps wall-clock time via NTP, pushes the formatted clock text through a queue |
 | `MqttTask` | 1 | 1 | 8192 (rev2: 10240) | 40 ms | Connects/reconnects to the broker, publishes sensor + radar data, dispatches incoming commands |
 | `AudioViewSwitch` | 1 | 1 | 4096 | 10 ms | Spectrum auto-entry/return |
 | Arduino `loopTask` | 1 | 1 | 8192 | 5 ms | Runs `setup()`, then `loop()`: the web UI / OTA server (`webUi.loop()`) and WiFi link supervision |
-| `StreamIngest` | 0 | 4 | 8192 | 1 ms tick | Fetches and parses the WAV audio stream and runs both FFTs (their callbacks run inside its writes to the FFTs) |
+| `StreamIngest` | 0 | 4 | 8192 | 1 ms tick | Fetches and parses the WAV audio stream and runs both FFTs (their callbacks run inside its writes to the FFTs: smoothing and the band values of the spectrum are computed there) |
 | `CO2Task`, `TempHumTask`, `LightTask`, `LD2412Task`, `LD2454Task` | 0 | 1 | 4096 each | 30 s (5 s without a value), 15 s, 2 s, 500 ms, 50 ms | Poll their respective sensors |
 | `RadarPower` (board revision 2 only) | 0 | 1 | 4096 | 1 s tick (5-100 ms steps while switching; woken early by commands) | Owns GPIO9, the radar power switch, and the night schedule: the park handshake with `LD2454Task`, the minimum ON / OFF times and the throttle, the offline failsafe, the `radar` NVS settings. It never publishes: `MqttTask` reads the `RadarStatus` snapshot it keeps |
 
@@ -83,7 +83,7 @@ static const char* const WIFI_BACKUP_PASS = "backup-password";
 
 ### Library dependencies
 
-`WiFiManager`, `PubSubClient`, `ArduinoJson`, `Preferences`, `SensirionI2cScd4x`, `HTU21D`, `BH1750`, and `AudioTools` (with `AudioRealFFT`). The web UI / OTA uses the core's synchronous `WebServer` and `Update` (no extra library). The LD2454 radar driver is built in (`ld2454_sensor.cpp`) — no external library.
+`WiFiManager`, `PubSubClient`, `ArduinoJson`, `Preferences`, `SensirionI2cScd4x`, `HTU21D`, `BH1750`, and `AudioTools` (with `AudioRealFFT`). The spectrum's signal processing (`spectrum_dsp.*`) needs no library. The web UI / OTA uses the core's synchronous `WebServer` and `Update` (no extra library). The LD2454 radar driver is built in (`ld2454_sensor.cpp`) — no external library.
 
 ---
 
@@ -217,7 +217,7 @@ An unknown CO₂ value (see [Environmental Sensors](#environmental-sensors)) end
 
 ## Audio Spectrum Analyzer
 
-Dual-resolution FFT (2048-pt bass / 1024-pt mid-high) driving a 24-column VU-style display with Gaussian-weighted log-frequency bands, compression, adaptive AGC, and tilt EQ. Auto-enters `VIEW_SPECTRUM` on active audio (respecting the view-arbitration rules above) and fades to sleep on sustained silence.
+Dual-resolution FFT (2048-pt bass / 1024-pt mid-high) driving a 24-column display in **one fixed look** (below): the classic hi-fi analyzer. There are no user options: no MQTT keys, no Home Assistant entities, nothing stored in NVS. Auto-enters `VIEW_SPECTRUM` on active audio (respecting the view-arbitration rules above) and fades to sleep on sustained silence. Bar heights are relative to the music's loudness: an automatic gain keeps the loudest band at about 14 of the 16 rows (below), and a tilt of +3 dB per octave balances bass and treble.
 
 **Stream source.** `StreamIngest` fetches `AUDIO_STREAM_URL` with an `HTTP/1.0` GET (so compliant servers send the body as-is; `Host` carries the port when it isn't 80) and expects:
 
@@ -232,9 +232,31 @@ The connection is dropped and re-established if the HTTP and WAV headers aren't 
 - *Audio active* (auto-entry and holding the view): `SPECTRUM_ACTIVE_MIN_FRAMES` (3, ≈100ms) loud frames in a row start it, any loud frame keeps it, and it ends `AUDIO_SILENCE_TIMEOUT_MS` (2s) after the last loud frame — or as soon as the bars have faded out. It is judged only on frames that actually arrive, so a stream that stops sending (or reconnects) can't keep the view on a blank spectrum; a disconnect resets it.
 - *Sleep fade*: the bars fade out over `SPECTRUM_SLEEP_FADE_MS` (2s) when the 2s average level drops below `SPECTRUM_SLEEP_ENTER_MAG` (0.12) or no frame arrived for `SPECTRUM_FRAME_STALE_MS` (200ms), and fade back in over `SPECTRUM_WAKE_FADE_MS` (250ms) once it rises above `SPECTRUM_SLEEP_EXIT_MAG` (0.18), always from the current brightness.
 
-**Band mapping.** Both FFTs use a tabulated Hann window and precomputed Gaussian band weights (rebuilt only when the sample rate changes). The 1024-point FFT is scaled by √(Σw²₂₀₄₈/Σw²₁₀₂₄) so broadband content reads the same on both sides of the 400/500 Hz split. Band levels are dB relative to the AGC reference (not dBFS), tilted by `SPECTRUM_TILT_DB_PER_OCTAVE`, compressed 2:1 above `SPECTRUM_COMPRESSION_KNEE_DB` (−12 dB) and mapped at `SPECTRUM_DB_PER_STEP` (2.5 dB) per LED row from `SPECTRUM_FLOOR_DB` (−20 dB = 0 rows): 0 dB → 5.6 rows, +12 dB → 8, +52 dB → 16.
+**Analysis.** Both FFTs use a tabulated Blackman window (the Web Audio `AnalyserNode` window, alpha 0.16) on samples scaled to ±1.0. Per bin: `|X| / 2048` (the 1024-point FFT is scaled to the long one's noise level, so a pure tone in the 500 Hz+ bands reads about 3 dB lower than in the bass bands and broadband content doesn't step at `SPECTRUM_SPLIT_HZ`, 500 Hz), then the `AnalyserNode` smoothing filter on the linear magnitude (`s = τ·s + (1−τ)·|X|`, τ = 0.7 at 60 frames/s, applied per FFT frame with τ^(60/fps): 30 fps bass, 100 fps mid-high), then dB. A band's value is the larger of the interpolated dB values at its two edge frequencies and of every bin between them, plus the band's tilt (+3 dB per octave relative to 1 kHz: -13.5 dB for the lowest band, +11.6 dB for the highest); it is held until the next frame of its FFT. The 24 columns are the 24 bands. Bands with a centre below 500 Hz come from the 2048-point FFT, the rest from the 1024-point one. The exact formulas and numbers are in `spectrum_dsp.h` and the host test.
 
-**Peak-dot physics** are ported from [`audioMotion-analyzer`](https://github.com/hvianna/audioMotion-analyzer)'s gravity-based fall model: rather than dropping at a fixed rate, each band's peak indicator accelerates continuously after `BALLISTICS_PEAK_HOLD_MS` (700ms hold), governed by `SPECTRUM_PEAK_GRAVITY_STEPS_PER_S2` — tune this constant to make peaks fall faster/slower/more "floaty". Frames that arrive in a TCP burst faster than the 10 ms ballistics tick are merged by keeping each band's maximum, so short transients still show.
+**Band layout.** 24 bands from 30 Hz to 16 kHz (limited to the Nyquist frequency), lowest frequencies on the left, equally spaced on a warped frequency axis `ln(1 + f / 140 Hz)`: close to linear in Hz at the bottom, logarithmic above. The range below 500 Hz takes 7 columns (it took almost 11 on a plain log axis, which left too little room for mids and highs), and no band is narrower than 1.5 FFT bins, so every bass column reads bins of its own (neighbours share only the bin at their common edge; a pure bass tone still lights two or three columns, because the bins are 21.5 Hz wide and the window's main lobe spans six of them). At 22.05 kHz streams the range ends at 11 kHz and 500 Hz lies at column 7.6. Edges at 44.1/48 kHz: 30, 66, 108, 160, 223, 299, 391, 502, 636, 798, 993, 1230, 1516, 1862, 2281, 2787, 3398, 4137, 5031, 6111, 7417, 8995, 10904, 13211, 16000 Hz.
+
+**Automatic gain.** Every 10 ms `Ballistics` moves a reference level towards the loudest band (weighted dB): up with a 0.1 s time constant - at once if the band is more than 6 dB above it, so no column is ever cut off at the top - and down with a 3 s time constant, never below -60 dB. The panel shows the 48 dB below "reference + 6 dB" at 3 dB per row. So the loudest band of steady music sits at 14 rows whether the stream is loud or quiet, loud bass no longer pins the left columns at 16 rows, 16 rows appear only for about 0.1 s after a sudden rise, and after a drop in loudness the bars grow back within a few seconds. Signals whose loudest band is below the floor are shown lower instead of being amplified, and silence is not amplified at all: the sleep fade above works on the raw frame level. The gain takes two cues from it. While a frame is below the sleep level (`SPECTRUM_SLEEP_ENTER_MAG`: a pause, the noise after a track) the reference goes down only as far as leaves that input below the bottom row (`sd_agc_quiet`), so noise is not raised into view in the seconds before the bars fade. While the bars are completely faded out the reference sits on the loudest band (`sd_agc_snap`) and the peak dots are cleared, so every wake-up (new stream, end of a long pause) starts settled at 14 rows on what plays now.
+
+**The fixed look** (compile-time constants in `spectrum_dsp.h`; change them there and rebuild if another look is wanted):
+
+| Setting | Value |
+|---|---|
+| Bands / scale / range | 24, warped axis `ln(1 + f/140 Hz)` (7 columns below 500 Hz), 30 Hz - 16 kHz (`SD_WARP_HZ`) |
+| Weighting | tilt +3 dB per octave around 1 kHz (`SD_TILT_DB_PER_OCTAVE`, `SD_TILT_REF_HZ`) |
+| Smoothing | 0.7 (analyser time constant at 60 frames/s) |
+| dB range | automatic gain: 48 dB, top row 6 dB above the reference, i.e. 3 dB per row (`SD_AGC_RANGE_DB`, `SD_AGC_HEADROOM_DB`) |
+| Gain timing | reference follows the loudest band with 0.1 s up / 3 s down, floor -60 dB (`SD_AGC_ATTACK_S`, `SD_AGC_RELEASE_S`, `SD_AGC_FLOOR_DB`) |
+| LED bars | solid, 16 rows: the bar is `value x 16` rounded to the nearest row (0..16 rows), as in the original firmware |
+| Peaks | on: hold 500 ms, then fall with an accelerating fall of 13.77 panel heights/s^2 (the same as the firmware's earlier peak dots) |
+| Colours | classic: green below row 7, yellow below row 12, red above; blue peak dots |
+| Column order | band 0 (lowest) on the left |
+
+**The fixed preset in short.** The analysis state is four float arrays (smoothed magnitude and dB per bin of both FFTs, 12288 B of `.bss`) plus small structs owned by `SpectrumAnalyzer` (the tilt per band and the automatic gain add about 200 B); `spectrum_dsp.*` itself has no globals, locks, heap or Arduino headers (reentrant, C99 / C++ common subset), and the PC test in `test/host` builds the same source and checks it against numbers that `tools/tests/spectrum_reference.py` regenerates from the formulas (see TESTING.md). Expected readings with a steady tone at 44.1 kHz (columns counted from 0 on the left; with the automatic gain the loudest column of any steady tone settles at 14 rows, whatever its level): 1 kHz lights columns 9 and 10 with 14 rows, 100 Hz columns 1 and 2 with 13 and 14 rows (and column 0 with 9), 250 Hz column 4 with 14 rows (column 3: 11), 10 kHz column 21 with 14 rows; a full-scale 1 kHz tone looks the same as one at -6 dBFS. A lone sine must be louder than about -18 dBFS to wake the bars at all (the sleep rule, unchanged), so test with -6 dBFS or more (TESTING.md section 9). Pink noise: all 24 columns at about 12-13 rows.
+
+The `led_matrix_node/spectrum/...` topics, their Home Assistant entities and the NVS namespace `spectrum` of the earlier option-based version do not exist. A retained `spectrum_*` discovery config of such a build can be removed from the broker with an empty retained publish. The panel itself has no spectrum controls: mode button and `display/mode` only select the view.
+
+**Peak dots** are stepped every `BALLISTICS_TICK_MS` (10 ms = 100 frames/s): a bar at or above the peak takes it over and restarts the hold; after the 500 ms hold the peak falls by `n · 0.0013768` of the panel height per frame (n = frames since the hold ended, the fall accelerates like a dropped object). Frames that arrive in a TCP burst faster than the 10 ms tick are merged by keeping each band's maximum, so short transients still show. A bar's smoothing is the 0.7 smoothing filter (above); there is no separate bar decay.
 
 ## mmWave Radar
 
@@ -412,9 +434,8 @@ When the broker is unreachable or refuses the login, the node retries after `MQT
 | Radar (rev2) | `LD2412_OUT_IGNORE_MS` / `LD2412_OUT_MIN_HIGH_MS` / `LD2412_STATIC_WARMUP_MS` | 3000ms / 2000ms / 12000ms |
 | Radar (rev2) | `LD2454_STREAM_OFF_IDLE_MS` / `LEGACY_HEARTBEAT_MS` | 30000ms / 30000ms |
 | Buttons (rev2) | `LADDER_MODE_MAX_MV` / `LADDER_POWER_MIN_MV`-`LADDER_POWER_MAX_MV` / `LADDER_IDLE_MIN_MV` / `LADDER_CONFIRM_MS` | 500mV / 1150-2150mV / 2600mV / 3ms |
-| Spectrum | `SPECTRUM_FLOOR_DB` / `SPECTRUM_DB_PER_STEP` / `SPECTRUM_COMPRESSION_KNEE_DB` | −20 dB / 2.5 dB / −12 dB (relative to the AGC reference) |
-| Spectrum | `SPECTRUM_TILT_DB_PER_OCTAVE` | 3dB/oct |
-| Spectrum | `SPECTRUM_PEAK_GRAVITY_STEPS_PER_S2` | 220.0 (steps/s²) |
+| Spectrum | `SPECTRUM_FFT_LOW_SIZE` / `SPECTRUM_FFT_HIGH_SIZE` / `SPECTRUM_SPLIT_HZ` | 2048 / 1024 / 500 Hz (FFT points; bands below the split come from the long FFT) |
+| Spectrum | the fixed look (bands, tilt, automatic gain, smoothing, peaks, solid 16-row bars, colours) | compile-time constants in `spectrum_dsp.h`, see *The fixed look* above |
 | Spectrum | `SPECTRUM_ABS_SILENCE_MAG` / `SPECTRUM_ACTIVE_MIN_FRAMES` | 0.15 / 3 frames |
 | Spectrum | `SPECTRUM_SLEEP_ENTER_MAG` / `SPECTRUM_SLEEP_EXIT_MAG` | 0.12 / 0.18 |
 | Spectrum | `SPECTRUM_SLEEP_FADE_MS` / `SPECTRUM_WAKE_FADE_MS` / `SPECTRUM_FRAME_STALE_MS` | 2000ms / 250ms / 200ms |
@@ -434,3 +455,6 @@ See `constants.h` for the full list. The board-revision-2 constants (the rows ma
 - On rev2 the radar commands (`led_matrix_node/radar/...`) are as unauthenticated as the display commands: anyone who can publish to the broker, or reach `POST /api/radar` from the LAN, can switch the radars off, and a manual OFF persists across reboots until it is switched on again. There are no ACLs on the broker by design.
 - The RLE icon generator (`RLE icon generator/`) saves the MQTT password only when its *Remember* box is ticked, and then in plain text in the browser's storage (see its README).
 - The web UI (`/`, `/update`, `/api/reset-wifi`, and `/api/radar` on rev2) has no login: any device on the local network can flash firmware, reset WiFi or switch the radars off (e.g. with curl). Other *websites* are blocked by the Origin/Host guard above, but treat the LAN itself as trusted. The WiFiManager setup access point is open (no password) while it runs — only at boot, when the saved network doesn't connect; a link lost later never reopens it.
+## License
+
+The code of this repository is licensed under the Apache License 2.0 (see `LICENSE`). A firmware binary also contains third-party libraries, notably the GPLv3 licensed arduino-audio-tools: a distributed image has to be offered under GPLv3 terms as a whole. See `NOTICE`.

@@ -168,12 +168,8 @@ static const uint16_t SPECTRUM_FFT_LOW_FRAMES_PER_S = 30;   // stride = sample r
 static const uint16_t SPECTRUM_FFT_HIGH_SIZE = 1024;
 static const uint16_t SPECTRUM_FFT_HIGH_FRAMES_PER_S = 100; // stride 441 at 44.1 kHz
 
-static const uint8_t SPECTRUM_LOW_BAND_COUNT = 10;
-
-static const float SPECTRUM_REF_FLOOR_MAG = 0.7f;
-static const float SPECTRUM_REF_RISE_ALPHA = 0.05f;
-static const float SPECTRUM_REF_FALL_ALPHA = 0.01f;
-static const float SPECTRUM_REF_SCALE = 0.35f;
+// Bands whose centre frequency is below this are read from the long (low) FFT, the others from the short one.
+static const float SPECTRUM_SPLIT_HZ = 500.0f;
 
 // Frame level = mean bin magnitude (22 Hz-16 kHz) of a 2048-point frame; 0.15 is about -43 dBFS RMS.
 static const float SPECTRUM_ABS_SILENCE_MAG = 0.15f;      // a frame at/above this counts as audio
@@ -189,29 +185,14 @@ static const uint32_t AUDIO_SILENCE_TIMEOUT_MS = 2000;
 static const uint32_t MIN_SPECTRUM_DISPLAY_MS = 5000;
 static const uint32_t SPECTRUM_PRESENCE_OVERRIDE_MS = 5000;
 
-// Band level -> LED rows. Levels are dB relative to the AGC reference (_referenceMag * SPECTRUM_REF_SCALE)
-// after the tilt EQ, not dBFS. Linear below the knee, SPECTRUM_COMPRESSION_RATIO:1 above it, so with the
-// values below: -20 dB -> 0 rows, -12 dB (knee) -> 3.2, 0 dB -> 5.6, +12 dB -> 8, +52 dB -> 16.
-static const float SPECTRUM_DB_PER_STEP = 2.5f;            // dB per LED row below the knee (twice that above it)
-static const float SPECTRUM_FLOOR_DB = -20.0f;             // lights 0 rows; must stay below the knee
-static const float SPECTRUM_COMPRESSION_KNEE_DB = -12.0f;
-static const float SPECTRUM_COMPRESSION_RATIO = 2.0f;
-
-static const float SPECTRUM_TILT_DB_PER_OCTAVE = 3.0f;
-static const float SPECTRUM_TILT_REFERENCE_HZ = 1000.0f;
+// Band level -> LED rows: the signal chain and the fixed look are implemented in
+// spectrum_dsp.h / .cpp. A band's dBFS value (FFT magnitude / FFT size, Blackman window) gets a tilt of
+// +3 dB per octave and is mapped to 0..1 by the automatic gain (48 dB below "loudest band + 6 dB", SD_AGC_*),
+// then to LED rows. There are no user options.
 
 static const uint32_t BALLISTICS_TICK_MS = 10;
 
-static const float BALLISTICS_ATTACK_COEFF = 0.0f;
-
-static const float BALLISTICS_DECAY_COEFF = 0.75f;
-
-static const uint32_t BALLISTICS_PEAK_HOLD_MS = 700;
-static const uint32_t BALLISTICS_PEAK_DECAY_STEP_MS = 70; // superseded by gravity fall below, left in place unused
-
-static const float BALLISTICS_MAX_LEVEL = 16.0f;
-
-static const float SPECTRUM_PEAK_GRAVITY_STEPS_PER_S2 = 220.0f;
+// The peak model (hold, fall) is in spectrum_dsp.h; it steps once per BALLISTICS_TICK_MS.
 
 // Scrolling messages run in whole passes: as many as come closest to their duration
 // (MQTT_MSG_DURATION_MS, WIFI_IP_DISPLAY_DURATION_MS), at least one - so a long text is
